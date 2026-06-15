@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+import sys
+import os
+import argparse
+import subprocess
+import time
+from pathlib import Path
+import numpy as np
+import tifffile
+import matplotlib.pyplot as plt
+
+
+# ==========================================
+# Terminal Aesthetics & State
+# ==========================================
+class T:
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    MAGENTA = "\033[95m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+
+
+# Global flag to mute verbose output during batch processing
+QUIET_MODE = False
+
+
+def print_step(msg):
+    if not QUIET_MODE:
+        print(f"{T.CYAN}[ * ]{T.RESET} {msg}")
+
+
+def print_success(msg):
+    if not QUIET_MODE:
+        print(f"{T.GREEN}[ ✔ ]{T.RESET} {msg}")
+
+
+def print_warning(msg):
+    print(f"{T.YELLOW}[ ! ]{T.RESET} {msg}")
+
+
+def progress_bar(iteration, total, prefix="", length=40):
+    """Dynamic terminal progress bar."""
+    percent = f"{100 * (iteration / float(total)):.1f}"
+    filled_length = int(length * iteration // total)
+    bar = "█" * filled_length + "-" * (length - filled_length)
+    sys.stdout.write(f"\r{prefix} |{T.CYAN}{bar}{T.RESET}| {percent}% ")
+    sys.stdout.flush()
+    if iteration == total:
+        print()
+
+
+# ==========================================
+# Logic: Interactive Picker
+# ==========================================
+def interactive_density_balance(img_array, title_override=None):
+    if not QUIET_MODE:
+        print_step("Opening interactive picker...")
+        print(f"      {T.DIM}(Waiting for user input via Matplotlib...){T.RESET}")
+
+    display_img = img_array[::4, ::4, :]
+    display_img = np.clip(display_img ** (1 / 2.2), 0, 1)
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax.imshow(display_img)
+
+    title = (
+        title_override
+        if title_override
+        else "1. Click a NEUTRAL SHADOW (Dmax)\n2. Click a NEUTRAL HIGHLIGHT (Dmin)"
+    )
+    ax.set_title(title, fontsize=12, fontweight="bold")
+    plt.axis("off")
+
+    coords = []
+
+    def onclick(event):
+        if event.inaxes is None:
+            return
+        toolbar = plt.get_current_fig_manager().toolbar
+        if toolbar.mode != "":
+            return
+
+        coords.append((event.xdata, event.ydata))
+        ax.plot(event.xdata, event.ydata, "r+", markersize=12, markeredgewidth=2)
+        fig.canvas.draw()
+
+        if len(coords) == 2:
+            plt.close(fig)
+
+    fig.canvas.mpl_connect("button_press_event", onclick)
+    plt.show(block=True)
+
+    if len(coords) != 2:
+        print_warning(
+            "You must click exactly two points. Falling back to 1.0 defaults."
+        )
+        return 1.0, 1.0, 1.0, 1.0
+
+    x1, y1 = int(coords[0][0] * 4), int(coords[0][1] * 4)
+    x2, y2 = int(coords[1][0] * 4), int(coords[1][1] * 4)
+
+    t2_raw = np.median(img_array[y1 - 1 : y1 + 2, x1 - 1 : x1 + 2], axis=(0, 1))
+    t1_raw = np.median(img_array[y2 - 1 : y2 + 2, x2 - 1 : x2 + 2], axis=(0, 1))
+
+    t1_raw = np.maximum(t1_raw, 0.00002)
+    t2_raw = np.maximum(t2_raw, 0.00001)
+
+    r1_raw, g1_raw, b1_raw = t1_raw[0], t1_raw[1], t1_raw[2]
+    r2_raw, g2_raw, b2_raw = t2_raw[0], t2_raw[1], t2_raw[2]
+
+    r1_log, g1_log, b1_log = [np.log10(1 / c) for c in (r1_raw, g1_raw, b1_raw)]
+    r2_log, g2_log, b2_log = [np.log10(1 / c) for c in (r2_raw, g2_raw, b2_raw)]
+
+    rs = 1 / (r2_log - r1_log) if (r2_log - r1_log) != 0 else 1
+    gs = 1 / (g2_log - g1_log) if (g2_log - g1_log) != 0 else 1
+    bs = 1 / (b2_log - b1_log) if (b2_log - b1_log) != 0 else 1
+
+    rs_norm, bs_norm, gs_norm = rs / gs, bs / gs, 1.0
+    rd, bd, md = r1_log * rs_norm, b1_log * bs_norm, g1_log * gs_norm
+
+    ra = (md - rd) / rs_norm if rs_norm != 0 else 0
+    ba = (md - bd) / bs_norm if bs_norm != 0 else 0
+
+    rm, bm = 1 / (10**ra), 1 / (10**ba)
+    red_gamma, blue_gamma = 1 / rs_norm, 1 / bs_norm
+
+    return rm, bm, red_gamma, blue_gamma
+
+
+# ==========================================
+# Logic: Auto-Exposure
+# ==========================================
+def global_auto_exposure(img_array, headroom=0.02):
+    print_step("Calculating global auto-exposure (Histogram Stretch)...")
+    global_min = np.percentile(img_array, 0.05)
+    global_max = np.percentile(img_array, 99.95)
+
+    if global_max > global_min:
+        stretched = (img_array - global_min) / (global_max - global_min)
+        safe_range = 1.0 - (headroom * 2)
+        buffered = (stretched * safe_range) + headroom
+
+        if not QUIET_MODE:
+            print(f"      {T.DIM}-> Black point buffered to {headroom:.3f}{T.RESET}")
+            print(
+                f"      {T.DIM}-> White point buffered to {1.0 - headroom:.3f}{T.RESET}"
+            )
+
+        return np.clip(buffered, 0.0, 1.0)
+
+    print_warning("Could not calculate valid stretch range. Skipping auto-exposure.")
+    return img_array
+
+
+# ==========================================
+# Core Processing Pipeline
+# ==========================================
+def process_core(input_file, output_file, args, override_density=None):
+    """The central math engine, decoupled from terminal UI prints."""
+    with tifffile.TiffFile(input_file) as tif:
+        raw_array = tif.asarray()
+        icc_tag = tif.pages[0].tags.get(34675)
+        icc_profile = icc_tag.value if icc_tag else None
+
+    if raw_array.dtype == np.uint16:
+        print_step("Normalizing 16-bit integer to 32-bit float.")
+        img_array = raw_array.astype(np.float32) / 65535.0
+    elif raw_array.dtype == np.uint8:
+        img_array = raw_array.astype(np.float32) / 255.0
+    else:
+        img_array = raw_array.astype(np.float32)
+
+    # Density Balance
+    if not args.invert_only:
+        if override_density:
+            rm, bm, rg, bg = override_density
+        elif args.rm is not None and args.bm is not None:
+            rm, bm, rg, bg = args.rm, args.bm, args.rg, args.bg
+        else:
+            title = f"Picker: {Path(input_file).name}\n1. Shadow | 2. Highlight"
+            rm, bm, rg, bg = interactive_density_balance(
+                img_array, title_override=title
+            )
+
+        if not QUIET_MODE:
+            print(f"\n{T.CYAN}    ┌── Density Constants ───────────┐{T.RESET}")
+            print(
+                f"{T.CYAN}    │{T.RESET} R_Mult: {T.BOLD}{rm:6.4f}{T.RESET} {T.CYAN}│{T.RESET} R_Gam: {T.BOLD}{rg:6.4f}{T.RESET} {T.CYAN}│{T.RESET}"
+            )
+            print(
+                f"{T.CYAN}    │{T.RESET} B_Mult: {T.BOLD}{bm:6.4f}{T.RESET} {T.CYAN}│{T.RESET} B_Gam: {T.BOLD}{bg:6.4f}{T.RESET} {T.CYAN}│{T.RESET}"
+            )
+            print(f"{T.CYAN}    └────────────────────────────────┘{T.RESET}\n")
+
+        print_step("Applying exposure multipliers and gamma curves...")
+        img_array[:, :, 0] *= rm
+        img_array[:, :, 2] *= bm
+
+        img_safe = np.maximum(img_array, 0.0001)
+        img_safe[:, :, 0] = img_safe[:, :, 0] ** (1.0 / rg)
+        img_safe[:, :, 2] = img_safe[:, :, 2] ** (1.0 / bg)
+    else:
+        print_step("Skipping Density Balance (--invert-only active).")
+        img_safe = np.maximum(img_array, 0.0001)
+
+    # Inversion
+    if not args.density_only:
+        print_step("Executing 0.01/x mathematical inversion...")
+        final_array = 0.01 / img_safe
+
+        if not args.no_auto_expose:
+            final_array = global_auto_exposure(final_array, headroom=args.headroom)
+    else:
+        print_step("Skipping Inversion (--density-only active).")
+        final_array = img_safe
+
+    # Save
+    print_step(f"Writing to: {T.BOLD}{output_file}{T.RESET}")
+    write_kwargs = {}
+    if icc_profile:
+        write_kwargs["extratags"] = [(34675, "B", len(icc_profile), icc_profile)]
+
+    tifffile.imwrite(output_file, final_array, **write_kwargs)
+
+    try:
+        subprocess.run(
+            [
+                "exiftool",
+                "-TagsFromFile",
+                input_file,
+                "-all:all",
+                "-overwrite_original",
+                output_file,
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        pass  # Silently skip if exiftool is missing during batch
+
+
+# ==========================================
+# Workflow Managers
+# ==========================================
+def process_single(input_path, output_path, args):
+    """Standard verbose single-file processor."""
+    start_time = time.time()
+    print(f"\n{T.BOLD}{T.MAGENTA}=== Alchemy Linear Pipeline (Single) ==={T.RESET}\n")
+    print_step(f"Reading: {T.BOLD}{input_path}{T.RESET}")
+    process_core(input_path, output_path, args)
+    elapsed = time.time() - start_time
+    print(
+        f"\n{T.GREEN}{T.BOLD}SUCCESS:{T.RESET} Process completed in {elapsed:.2f} seconds.\n"
+    )
+
+
+def process_batch(input_dir, output_dir, args):
+    """Quiet, progress-bar driven batch processor."""
+    global QUIET_MODE
+
+    print(f"\n{T.BOLD}{T.MAGENTA}=== Alchemy Linear Pipeline (Batch) ==={T.RESET}\n")
+
+    in_dir = Path(input_dir)
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    files = list(in_dir.glob("*.tif")) + list(in_dir.glob("*.tiff"))
+    if not files:
+        print_warning(f"No TIFF files found in {input_dir}")
+        return
+
+    print(f"Found {T.BOLD}{len(files)}{T.RESET} image(s) to process.\n")
+
+    anchor_density = None
+
+    # Batch Density Balance Prompting
+    if not args.invert_only and (args.rm is None or args.bm is None):
+        print(f"{T.CYAN}Density Balance Selection Method:{T.RESET}")
+        print(
+            "  [1] Anchor Frame (Pick neutral points once, apply math to entire roll)"
+        )
+        print("  [2] Per-Frame    (Picker opens for every image individually)")
+
+        while True:
+            choice = input(f"\nSelect mode (1 or 2): ").strip()
+            if choice in ["1", "2"]:
+                break
+            print("Invalid choice.")
+
+        if choice == "1":
+            print(f"\n{T.DIM}Available Frames:{T.RESET}")
+            for i, f in enumerate(files):
+                print(f"  [{i + 1:02d}] {f.name}")
+
+            while True:
+                try:
+                    idx = int(input(f"\nEnter the number of your Anchor Frame: ")) - 1
+                    if 0 <= idx < len(files):
+                        break
+                except ValueError:
+                    pass
+                print("Invalid index.")
+
+            anchor_file = files[idx]
+            print(f"\n{T.CYAN}Loading Anchor Frame: {anchor_file.name}{T.RESET}")
+
+            # Briefly unmute to load the anchor frame normally
+            QUIET_MODE = False
+            with tifffile.TiffFile(anchor_file) as tif:
+                anchor_array = tif.asarray().astype(np.float32)
+                if anchor_array.max() > 1.0:
+                    anchor_array /= 65535.0
+
+            anchor_density = interactive_density_balance(
+                anchor_array, title_override=f"ANCHOR: {anchor_file.name}"
+            )
+            print(f"{T.GREEN}Anchor density locked. Applying to batch.{T.RESET}\n")
+
+    # --- NEW: Filename Suffix Prompt ---
+    print(f"{T.CYAN}Output Formatting:{T.RESET}")
+    filename_suffix = input(
+        "  Enter a suffix to append to filenames (press Enter to skip): "
+    ).strip()
+    print()  # Add a clean newline before the progress bar starts
+
+    # Start Batch Processing Loop
+    QUIET_MODE = True
+    start_time = time.time()
+
+    for i, f in enumerate(files):
+        progress_bar(i, len(files), prefix=f"Processing {T.BOLD}{f.name:<15}{T.RESET}")
+
+        # --- NEW: Safe Suffix Injection ---
+        if filename_suffix:
+            # f.stem gets the name without extension, f.suffix gets the extension
+            new_filename = f"{f.stem}{filename_suffix}{f.suffix}"
+        else:
+            new_filename = f.name
+
+        out_file = out_dir / new_filename
+
+        # If Per-Frame mode is active, we need to briefly unmute to let Matplotlib render properly
+        if anchor_density is None and not args.invert_only and (args.rm is None):
+            QUIET_MODE = False
+            process_core(str(f), str(out_file), args)
+            QUIET_MODE = True
+        else:
+            process_core(str(f), str(out_file), args, override_density=anchor_density)
+
+    progress_bar(
+        len(files), len(files), prefix=f"Processing {T.BOLD}{'Complete!':<15}{T.RESET}"
+    )
+
+    elapsed = time.time() - start_time
+    QUIET_MODE = False
+    print(
+        f"\n{T.GREEN}{T.BOLD}BATCH SUCCESS:{T.RESET} Processed {len(files)} files in {elapsed:.2f} seconds.\n"
+    )
+
+
+# ==========================================
+# CLI Execution
+# ==========================================
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Invert Linear Film Negatives.")
+    parser.add_argument("input", help="Input TIFF file OR directory of TIFFs")
+    parser.add_argument("output", help="Output TIFF file OR directory")
+
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--invert-only", action="store_true", help="Skip density balance"
+    )
+    mode_group.add_argument(
+        "--density-only", action="store_true", help="Skip inversion"
+    )
+
+    parser.add_argument(
+        "--no-auto-expose",
+        action="store_true",
+        help="Disable the final histogram stretch",
+    )
+    parser.add_argument(
+        "--headroom",
+        type=float,
+        default=0.02,
+        help="Safety buffer for pure white/black (default: 0.02)",
+    )
+
+    parser.add_argument("--rm", type=float, help="Red Exposure Multiplier")
+    parser.add_argument("--bm", type=float, help="Blue Exposure Multiplier")
+    parser.add_argument("--rg", type=float, default=1.0, help="Red Gamma")
+    parser.add_argument("--bg", type=float, default=1.0, help="Blue Gamma")
+
+    args = parser.parse_args()
+
+    in_path = Path(args.input)
+    if in_path.is_dir():
+        process_batch(args.input, args.output, args)
+    elif in_path.is_file():
+        process_single(args.input, args.output, args)
+    else:
+        print_warning(f"Input path not found: {args.input}")
