@@ -2,3 +2,4 @@ numpy
 tifffile
 matplotlib
 opencv-python
+imagecodecs
