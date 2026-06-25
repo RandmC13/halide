@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 import matplotlib.pyplot as plt
+import cv2
 
 
 # ==========================================
@@ -38,7 +39,8 @@ def print_success(msg):
 
 
 def print_warning(msg):
-    print(f"{T.YELLOW}[ ! ]{T.RESET} {msg}")
+    if not QUIET_MODE:
+        print(f"{T.YELLOW}[ ! ]{T.RESET} {msg}")
 
 
 def progress_bar(iteration, total, prefix="", length=40):
@@ -61,7 +63,7 @@ def interactive_density_balance(img_array, title_override=None):
         print(f"      {T.DIM}(Waiting for user input via Matplotlib...){T.RESET}")
 
     display_img = img_array[::4, ::4, :]
-    display_img = np.clip(display_img ** (1 / 2.2), 0, 1)
+    display_img = np.clip(display_img, 0, 1) ** (1 / 2.2)
 
     fig, ax = plt.subplots(figsize=(10, 7))
     ax.imshow(display_img)
@@ -131,6 +133,27 @@ def interactive_density_balance(img_array, title_override=None):
 
 
 # ==========================================
+# Logic: Edge-Preserving Denoise
+# ==========================================
+def denoise_negative(img_array, intensity=3):
+    """
+    Applies a Bilateral Filter to kill scanner noise and film grain
+    while preserving sharp photographic edges.
+    """
+    print_step(f"Applying bilateral noise reduction (Level {intensity})...")
+
+    # OpenCV's bilateral filter works natively on 32-bit floats.
+    # d=0 allows the algorithm to calculate radius based on sigmaSpace
+    # sigmaColor: How much colors can mix (higher = more smoothing)
+    # sigmaSpace: How far pixels can mix (higher = wider blur)
+
+    sigma = intensity / 100.0  # Scales the UI intensity to float math
+    denoised = cv2.bilateralFilter(img_array, d=0, sigmaColor=sigma, sigmaSpace=5)
+
+    return denoised
+
+
+# ==========================================
 # Logic: Auto-Exposure
 # ==========================================
 def global_auto_exposure(img_array, headroom=0.02):
@@ -173,38 +196,53 @@ def process_core(input_file, output_file, args, override_density=None):
     else:
         img_array = raw_array.astype(np.float32)
 
-    # Density Balance
-    if not args.invert_only:
-        if override_density:
-            rm, bm, rg, bg = override_density
-        elif args.rm is not None and args.bm is not None:
-            rm, bm, rg, bg = args.rm, args.bm, args.rg, args.bg
-        else:
-            title = f"Picker: {Path(input_file).name}\n1. Shadow | 2. Highlight"
-            rm, bm, rg, bg = interactive_density_balance(
-                img_array, title_override=title
-            )
+    # --- Apply Denoising ---
+    if args.denoise:
+        img_array = denoise_negative(img_array, intensity=args.denoise_level)
 
-        if not QUIET_MODE:
-            print(f"\n{T.CYAN}    ┌── Density Constants ───────────┐{T.RESET}")
-            print(
-                f"{T.CYAN}    │{T.RESET} R_Mult: {T.BOLD}{rm:6.4f}{T.RESET} {T.CYAN}│{T.RESET} R_Gam: {T.BOLD}{rg:6.4f}{T.RESET} {T.CYAN}│{T.RESET}"
-            )
-            print(
-                f"{T.CYAN}    │{T.RESET} B_Mult: {T.BOLD}{bm:6.4f}{T.RESET} {T.CYAN}│{T.RESET} B_Gam: {T.BOLD}{bg:6.4f}{T.RESET} {T.CYAN}│{T.RESET}"
-            )
-            print(f"{T.CYAN}    └────────────────────────────────┘{T.RESET}\n")
+    # B&W Pre-Processing
+    if args.bw:
+        print_step("Black & White mode active. Applying grayscale to image...")
+        img_gray = np.mean(img_array, axis=2)
+        img_safe = np.maximum(img_gray, 0.0000001)
 
-        print_step("Applying exposure multipliers and gamma curves...")
-        img_array[:, :, 0] *= rm
-        img_array[:, :, 2] *= bm
-
-        img_safe = np.maximum(img_array, 0.0001)
-        img_safe[:, :, 0] = img_safe[:, :, 0] ** (1.0 / rg)
-        img_safe[:, :, 2] = img_safe[:, :, 2] ** (1.0 / bg)
     else:
-        print_step("Skipping Density Balance (--invert-only active).")
-        img_safe = np.maximum(img_array, 0.0001)
+        # Density Balance
+        if not args.invert_only:
+            if override_density:
+                rm, bm, rg, bg = override_density
+            elif args.rm is not None and args.bm is not None:
+                rm, bm, rg, bg = args.rm, args.bm, args.rg, args.bg
+            else:
+                title = f"Picker: {Path(input_file).name}\n1. Shadow | 2. Highlight"
+                rm, bm, rg, bg = interactive_density_balance(
+                    img_array, title_override=title
+                )
+
+            if not QUIET_MODE:
+                print(f"\n{T.CYAN}    ┌── Density Constants ───────────┐{T.RESET}")
+                print(
+                    f"{T.CYAN}    │{T.RESET} R_Mult: {T.BOLD}{rm:6.4f}{T.RESET} {T.CYAN}│{T.RESET} R_Gam: {T.BOLD}{rg:6.4f}{T.RESET} {T.CYAN}│{T.RESET}"
+                )
+                print(
+                    f"{T.CYAN}    │{T.RESET} B_Mult: {T.BOLD}{bm:6.4f}{T.RESET} {T.CYAN}│{T.RESET} B_Gam: {T.BOLD}{bg:6.4f}{T.RESET} {T.CYAN}│{T.RESET}"
+                )
+                print(f"{T.CYAN}    └────────────────────────────────┘{T.RESET}\n")
+
+            print_step("Applying exposure multipliers and gamma curves...")
+            img_array[:, :, 0] *= rm
+            img_array[:, :, 2] *= bm
+
+            img_safe = np.maximum(img_array, 0.0000001)
+
+            img_safe[:, :, 0] = img_safe[:, :, 0] ** (1.0 / rg)
+            img_safe[:, :, 2] = img_safe[:, :, 2] ** (1.0 / bg)
+
+            img_safe = np.maximum(img_array, 0.0000001)
+
+        else:
+            print_step("Skipping Density Balance (--invert-only active).")
+            img_safe = np.maximum(img_array, 0.0000001)
 
     # Inversion
     if not args.density_only:
@@ -219,28 +257,36 @@ def process_core(input_file, output_file, args, override_density=None):
 
     # Save
     print_step(f"Writing to: {T.BOLD}{output_file}{T.RESET}")
-    write_kwargs = {}
-    if icc_profile:
+    write_kwargs = {
+        "compression": "zlib",
+        "compressionargs": {
+            "level": 6
+        },  # Compression level 1-9 (6 is the optimal balance of speed/size)
+        "predictor": 3,
+    }
+    if icc_profile and not args.bw:
         write_kwargs["extratags"] = [(34675, "B", len(icc_profile), icc_profile)]
 
     tifffile.imwrite(output_file, final_array, **write_kwargs)
 
     try:
+        # Dynamically build the ExifTool command
+        exif_cmd = ["exiftool", "-TagsFromFile", input_file, "-all:all"]
+
+        # If B&W, explicitly forbid ExifTool from copying the RGB color space
+        if args.bw:
+            exif_cmd.append("--icc_profile")
+
+        exif_cmd.extend(["-overwrite_original", output_file])
+
         subprocess.run(
-            [
-                "exiftool",
-                "-TagsFromFile",
-                input_file,
-                "-all:all",
-                "-overwrite_original",
-                output_file,
-            ],
+            exif_cmd,
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
     except FileNotFoundError:
-        pass  # Silently skip if exiftool is missing during batch
+        print_warning("ExifTool not found. Metadata skipped.")
 
 
 # ==========================================
@@ -268,7 +314,11 @@ def process_batch(input_dir, output_dir, args):
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    files = list(in_dir.glob("*.tif")) + list(in_dir.glob("*.tiff"))
+    files = [
+        f
+        for f in in_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in [".tif", ".tiff"]
+    ]
     if not files:
         print_warning(f"No TIFF files found in {input_dir}")
         return
@@ -311,16 +361,21 @@ def process_batch(input_dir, output_dir, args):
             # Briefly unmute to load the anchor frame normally
             QUIET_MODE = False
             with tifffile.TiffFile(anchor_file) as tif:
-                anchor_array = tif.asarray().astype(np.float32)
-                if anchor_array.max() > 1.0:
-                    anchor_array /= 65535.0
+                raw_anchor = tif.asarray()
+
+                if raw_anchor.dtype == np.uint16:
+                    anchor_array = raw_anchor.astype(np.float32) / 65535.0
+                elif raw_anchor.dtype == np.uint8:
+                    anchor_array = raw_anchor.astype(np.float32) / 255.0
+                else:
+                    anchor_array = raw_anchor.astype(np.float32)
 
             anchor_density = interactive_density_balance(
                 anchor_array, title_override=f"ANCHOR: {anchor_file.name}"
             )
             print(f"{T.GREEN}Anchor density locked. Applying to batch.{T.RESET}\n")
 
-    # --- NEW: Filename Suffix Prompt ---
+    # --- Filename Suffix Prompt ---
     print(f"{T.CYAN}Output Formatting:{T.RESET}")
     filename_suffix = input(
         "  Enter a suffix to append to filenames (press Enter to skip): "
@@ -334,20 +389,17 @@ def process_batch(input_dir, output_dir, args):
     for i, f in enumerate(files):
         progress_bar(i, len(files), prefix=f"Processing {T.BOLD}{f.name:<15}{T.RESET}")
 
-        # --- NEW: Safe Suffix Injection ---
+        # --- Safe Suffix Injection ---
         if filename_suffix:
-            # f.stem gets the name without extension, f.suffix gets the extension
             new_filename = f"{f.stem}{filename_suffix}{f.suffix}"
         else:
             new_filename = f.name
 
         out_file = out_dir / new_filename
 
-        # If Per-Frame mode is active, we need to briefly unmute to let Matplotlib render properly
+        # If Per-Frame mode is active, Matplotlib will render safely while terminal remains quiet
         if anchor_density is None and not args.invert_only and (args.rm is None):
-            QUIET_MODE = False
             process_core(str(f), str(out_file), args)
-            QUIET_MODE = True
         else:
             process_core(str(f), str(out_file), args, override_density=anchor_density)
 
@@ -378,6 +430,13 @@ if __name__ == "__main__":
         "--density-only", action="store_true", help="Skip inversion"
     )
 
+    # Add black and white flag
+    parser.add_argument(
+        "--bw",
+        action="store_true",
+        help="Black & White mode (collapses channels, skips density balance)",
+    )
+
     parser.add_argument(
         "--no-auto-expose",
         action="store_true",
@@ -388,6 +447,17 @@ if __name__ == "__main__":
         type=float,
         default=0.02,
         help="Safety buffer for pure white/black (default: 0.02)",
+    )
+
+    # Denoise Controls (Now Opt-In)
+    parser.add_argument(
+        "--denoise", action="store_true", help="Enable bilateral noise reduction"
+    )
+    parser.add_argument(
+        "--denoise-level",
+        type=int,
+        default=3,
+        help="Intensity of grain/noise reduction if --denoise is active (1-10, default: 3)",
     )
 
     parser.add_argument("--rm", type=float, help="Red Exposure Multiplier")
