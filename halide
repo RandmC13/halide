@@ -9,6 +9,7 @@ import numpy as np
 import tifffile
 import matplotlib.pyplot as plt
 import cv2
+import concurrent.futures
 
 
 # ==========================================
@@ -158,17 +159,16 @@ def denoise_negative(img_array, intensity=3):
 # ==========================================
 def global_auto_exposure(img_array, headroom=0.02):
     print_step("Calculating global auto-exposure (Histogram Stretch)...")
-    # Dust filtering - removed due to irregularities
     global_min = np.percentile(img_array, 0.05)
     global_max = np.percentile(img_array, 99.95)
-    # global_min = np.min(img_array)
-    # global_max = np.max(img_array)
     new_max = 1 - headroom
     new_min = headroom
 
     if global_max > global_min:
         scale_factor = (new_max - new_min) / (global_max - global_min)
-        img_stretched = ((img_array - global_min) * scale_factor) + new_min
+        img_array -= global_min
+        img_array *= scale_factor
+        img_array += new_min
 
         if not QUIET_MODE:
             print(f"      {T.DIM}-> Black point buffered to {headroom:.3f}{T.RESET}")
@@ -176,7 +176,7 @@ def global_auto_exposure(img_array, headroom=0.02):
                 f"      {T.DIM}-> White point buffered to {1.0 - headroom:.3f}{T.RESET}"
             )
 
-        return np.clip(img_stretched, 0.0, 1.0)
+        return np.clip(img_array, 0.0, 1.0, out=img_array)
 
     print_warning("Could not calculate valid stretch range. Skipping auto-exposure.")
     return img_array
@@ -242,7 +242,7 @@ def process_core(input_file, output_file, args, override_density=None):
             img_safe[:, :, 0] = img_safe[:, :, 0] ** (1.0 / rg)
             img_safe[:, :, 2] = img_safe[:, :, 2] ** (1.0 / bg)
 
-            img_safe = np.maximum(img_array, 0.0000001)
+            img_safe = np.maximum(img_safe, 0.0000001)
 
         else:
             print_step("Skipping Density Balance (--invert-only active).")
@@ -315,9 +315,47 @@ def process_single(input_path, output_path, args):
     )
 
 
+# Worker task for multiprocessing
+def worker_task(
+    file_path,
+    out_directory,
+    suffix,
+    arguments,
+    anchor_density,
+    per_frame_dict,
+    quiet_flag,
+):
+
+    global QUIET_MODE
+    QUIET_MODE = quiet_flag
+
+    if suffix:
+        new_fname = f"{file_path.stem}{suffix}{file_path.suffix}"
+    else:
+        new_fname = file_path.name
+
+    output_file = out_directory / new_fname
+
+    # Determine the correct density to use
+    frame_density = anchor_density
+    if file_path.name in per_frame_dict:
+        frame_density = per_frame_dict[file_path.name]
+
+    # Run the core math
+    process_core(
+        str(file_path), str(output_file), arguments, override_density=frame_density
+    )
+    return file_path.name
+
+
 def process_batch(input_dir, output_dir, args):
     """Quiet, progress-bar driven batch processor."""
     global QUIET_MODE
+
+    # Restrict underlying C libraries to single-threaded mode to prevent thrashing
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
 
     print(f"\n{T.BOLD}{T.MAGENTA}=== Alchemy Linear Pipeline (Batch) ==={T.RESET}\n")
 
@@ -337,9 +375,10 @@ def process_batch(input_dir, output_dir, args):
     print(f"Found {T.BOLD}{len(files)}{T.RESET} image(s) to process.\n")
 
     anchor_density = None
+    per_frame_densities = {}
 
     # Batch Density Balance Prompting
-    if not args.invert_only and (args.rm is None or args.bm is None):
+    if not args.invert_only and (args.rm is None or args.bm is None) and not args.bw:
         print(f"{T.CYAN}Density Balance Selection Method:{T.RESET}")
         print(
             "  [1] Anchor Frame (Pick neutral points once, apply math to entire roll)"
@@ -386,6 +425,25 @@ def process_batch(input_dir, output_dir, args):
             )
             print(f"{T.GREEN}Anchor density locked. Applying to batch.{T.RESET}\n")
 
+        elif choice == "2":
+            print(f"\n{T.CYAN}Entering Per-Frame Picker...{T.RESET}")
+            QUIET_MODE = False
+            for f in files:
+                with tifffile.TiffFile(f) as tif:
+                    raw_img = tif.asarray()
+                    if raw_img.dtype == np.uint16:
+                        img_array = raw_img.astype(np.float32) / 65535.0
+                    elif raw_img.dtype == np.uint8:
+                        img_array = raw_img.astype(np.float32) / 255.0
+                    else:
+                        img_array = raw_img.astype(np.float32)
+
+                # Open window safely in the main thread and save the specific values
+                per_frame_densities[f.name] = interactive_density_balance(
+                    img_array, title_override=f"PICKER: {f.name}"
+                )
+            print(f"{T.GREEN}All densities locked. Applying to batch.{T.RESET}\n")
+
     # --- Filename Suffix Prompt ---
     print(f"{T.CYAN}Output Formatting:{T.RESET}")
     filename_suffix = input(
@@ -397,23 +455,58 @@ def process_batch(input_dir, output_dir, args):
     QUIET_MODE = True
     start_time = time.time()
 
-    for i, f in enumerate(files):
-        progress_bar(i, len(files), prefix=f"Processing {T.BOLD}{f.name:<15}{T.RESET}")
+    safe_ram_workers = 6
+    optimal_workers = min(os.cpu_count() or 1, safe_ram_workers)
 
-        # --- Safe Suffix Injection ---
-        if filename_suffix:
-            new_filename = f"{f.stem}{filename_suffix}{f.suffix}"
-        else:
-            new_filename = f.name
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=optimal_workers
+    ) as executor:
+        futures = {
+            executor.submit(
+                worker_task,
+                f,
+                out_dir,
+                filename_suffix,
+                args,
+                anchor_density,
+                per_frame_densities,
+                QUIET_MODE,
+            ): f
+            for f in files
+        }
 
-        out_file = out_dir / new_filename
+        completed = 0
+        for future in concurrent.futures.as_completed(futures):
+            file_name = future.result()
 
-        # If Per-Frame mode is active, Matplotlib will render safely while terminal remains quiet
-        if anchor_density is None and not args.invert_only and (args.rm is None):
-            process_core(str(f), str(out_file), args)
-        else:
-            process_core(str(f), str(out_file), args, override_density=anchor_density)
+            display_name = file_name[:12] + "..." if len(file_name) > 12 else file_name
+            progress_bar(
+                completed,
+                len(files),
+                prefix=f"Processing {T.BOLD}{display_name:<15}{T.RESET}",
+            )
 
+            completed += 1
+
+    # # Single threaded version
+    # for i, f in enumerate(files):
+    #     progress_bar(i, len(files), prefix=f"Processing {T.BOLD}{f.name:<15}{T.RESET}")
+    #
+    #     # --- Safe Suffix Injection ---
+    #     if filename_suffix:
+    #         new_filename = f"{f.stem}{filename_suffix}{f.suffix}"
+    #     else:
+    #         new_filename = f.name
+    #
+    #     out_file = out_dir / new_filename
+    #
+    #     # If Per-Frame mode is active, Matplotlib will render safely while terminal remains quiet
+    #     # if anchor_density is None and not args.invert_only and (args.rm is None):
+    #     #     process_core(str(f), str(out_file), args)
+    #     # else:
+    #     #     process_core(str(f), str(out_file), args, override_density=anchor_density)
+    #     process_core(str(f), str(out_file), args, override_density=anchor_density)
+    #
     progress_bar(
         len(files), len(files), prefix=f"Processing {T.BOLD}{'Complete!':<15}{T.RESET}"
     )
