@@ -158,13 +158,17 @@ def denoise_negative(img_array, intensity=3):
 # ==========================================
 def global_auto_exposure(img_array, headroom=0.02):
     print_step("Calculating global auto-exposure (Histogram Stretch)...")
+    # Dust filtering - removed due to irregularities
     global_min = np.percentile(img_array, 0.05)
     global_max = np.percentile(img_array, 99.95)
+    # global_min = np.min(img_array)
+    # global_max = np.max(img_array)
+    new_max = 1 - headroom
+    new_min = headroom
 
     if global_max > global_min:
-        stretched = (img_array - global_min) / (global_max - global_min)
-        safe_range = 1.0 - (headroom * 2)
-        buffered = (stretched * safe_range) + headroom
+        scale_factor = (new_max - new_min) / (global_max - global_min)
+        img_stretched = ((img_array - global_min) * scale_factor) + new_min
 
         if not QUIET_MODE:
             print(f"      {T.DIM}-> Black point buffered to {headroom:.3f}{T.RESET}")
@@ -172,7 +176,7 @@ def global_auto_exposure(img_array, headroom=0.02):
                 f"      {T.DIM}-> White point buffered to {1.0 - headroom:.3f}{T.RESET}"
             )
 
-        return np.clip(buffered, 0.0, 1.0)
+        return np.clip(img_stretched, 0.0, 1.0)
 
     print_warning("Could not calculate valid stretch range. Skipping auto-exposure.")
     return img_array
@@ -249,7 +253,7 @@ def process_core(input_file, output_file, args, override_density=None):
         print_step("Executing 0.01/x mathematical inversion...")
         final_array = 0.01 / img_safe
 
-        if not args.no_auto_expose:
+        if not args.no_auto_exposure:
             final_array = global_auto_exposure(final_array, headroom=args.headroom)
     else:
         print_step("Skipping Inversion (--density-only active).")
@@ -271,7 +275,14 @@ def process_core(input_file, output_file, args, override_density=None):
 
     try:
         # Dynamically build the ExifTool command
-        exif_cmd = ["exiftool", "-TagsFromFile", input_file, "-all:all"]
+        exif_cmd = [
+            "exiftool",
+            "-TagsFromFile",
+            input_file,
+            "-all:all",
+            "--ExifImageWidth",  # Drops the redundant 16-bit EXIF width
+            "--ExifImageHeight",  # Drops the redundant 16-bit EXIF height
+        ]
 
         # If B&W, explicitly forbid ExifTool from copying the RGB color space
         if args.bw:
@@ -438,7 +449,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--no-auto-expose",
+        "--no-auto-exposure",
         action="store_true",
         help="Disable the final histogram stretch",
     )
