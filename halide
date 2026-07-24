@@ -10,6 +10,8 @@ import tifffile
 import matplotlib.pyplot as plt
 import cv2
 import concurrent.futures
+from multiprocessing import Manager
+import random
 
 
 # ==========================================
@@ -23,7 +25,23 @@ class T:
     BOLD = "\033[1m"
     DIM = "\033[2m"
     RESET = "\033[0m"
+    CLEAR_LINE = "\033[K"
 
+    @staticmethod
+    def CURSOR_UP(n):
+        return f"\033[{n}A"  # Terminal Variables for batch processing
+
+
+# The visual block character
+BLOCK = "██"
+
+# Dictionary mapping state integer to a colored block
+STATE_COLORS = {
+    0: f"{T.DIM}{BLOCK}{T.RESET}",  # Pending (Dimmed)
+    1: f"{T.CYAN}{BLOCK}{T.RESET}",  # Computing The Maths
+    2: f"{T.MAGENTA}{BLOCK}{T.RESET}",  # Inverting / Compressing (Magenta)
+    3: f"{T.GREEN}{BLOCK}{T.RESET}",  # Complete (Green)
+}
 
 # Global flag to mute verbose output during batch processing
 QUIET_MODE = False
@@ -304,7 +322,14 @@ def global_auto_exposure(img_array, headroom=0.02):
 # ==========================================
 # Core Processing Pipeline
 # ==========================================
-def process_core(input_file, output_file, args, override_density=None):
+def process_core(
+    input_file,
+    output_file,
+    args,
+    override_density=None,
+    file_index=None,
+    shared_grid=None,
+):
     """The central math engine, decoupled from terminal UI prints."""
     with tifffile.TiffFile(input_file) as tif:
         raw_array = tif.asarray()
@@ -370,6 +395,10 @@ def process_core(input_file, output_file, args, override_density=None):
             img_safe = np.maximum(img_array, 0.0000001)
 
     # Inversion
+    # Trigger state 2: Inversion
+    if shared_grid is not None and file_index is not None:
+        shared_grid[file_index] = 2
+
     if not args.density_only:
         print_step("Executing 0.01/x mathematical inversion...")
         final_array = 0.01 / img_safe
@@ -440,6 +469,8 @@ def process_single(input_path, output_path, args):
 
 # Worker task for multiprocessing
 def worker_task(
+    file_index,
+    shared_grid,
     file_path,
     out_directory,
     suffix,
@@ -451,6 +482,10 @@ def worker_task(
 
     global QUIET_MODE
     QUIET_MODE = quiet_flag
+
+    # Trigger State 1: Maths
+    if shared_grid is not None and file_index is not None:
+        shared_grid[file_index] = 1
 
     if suffix:
         new_fname = f"{file_path.stem}{suffix}{file_path.suffix}"
@@ -466,8 +501,18 @@ def worker_task(
 
     # Run the core math
     process_core(
-        str(file_path), str(output_file), arguments, override_density=frame_density
+        str(file_path),
+        str(output_file),
+        arguments,
+        override_density=frame_density,
+        file_index=file_index,
+        shared_grid=shared_grid,
     )
+
+    # Trigger State 3: Done
+    if shared_grid is not None and file_index is not None:
+        shared_grid[file_index] = 3
+
     return file_path.name
 
 
@@ -597,58 +642,79 @@ def process_batch(input_dir, output_dir, args):
     safe_ram_workers = 6
     optimal_workers = min(os.cpu_count() or 1, safe_ram_workers)
 
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=optimal_workers
-    ) as executor:
-        futures = {
-            executor.submit(
-                worker_task,
-                f,
-                out_dir,
-                filename_suffix,
-                args,
-                anchor_density,
-                per_frame_densities,
-                QUIET_MODE,
-            ): f
-            for f in files
-        }
+    # --- GRID MATRIX MATH ---
+    total_files = len(files)
+    columns = 9
+    rows = (total_files + columns - 1) // columns
 
-        completed = 0
-        for future in concurrent.futures.as_completed(futures):
-            file_name = future.result()
+    # Calculate exactly how many lines to jump up for the redraw
+    total_lines_to_draw = (rows * 2) + 1
 
-            display_name = file_name[:12] + "..." if len(file_name) > 12 else file_name
-            progress_bar(
-                completed,
-                len(files),
-                prefix=f"Processing {T.BOLD}{display_name:<15}{T.RESET}",
-            )
+    # Pre-print empty space to ensure the terminal doesn't scroll wildly
+    for _ in range(total_lines_to_draw):
+        print()
 
-            completed += 1
+    with Manager() as manager:
+        # Initialize all blocks to State 0
+        shared_grid = manager.dict({i: 0 for i in range(total_files)})
 
-    # # Single threaded version
-    # for i, f in enumerate(files):
-    #     progress_bar(i, len(files), prefix=f"Processing {T.BOLD}{f.name:<15}{T.RESET}")
-    #
-    #     # --- Safe Suffix Injection ---
-    #     if filename_suffix:
-    #         new_filename = f"{f.stem}{filename_suffix}{f.suffix}"
-    #     else:
-    #         new_filename = f.name
-    #
-    #     out_file = out_dir / new_filename
-    #
-    #     # If Per-Frame mode is active, Matplotlib will render safely while terminal remains quiet
-    #     # if anchor_density is None and not args.invert_only and (args.rm is None):
-    #     #     process_core(str(f), str(out_file), args)
-    #     # else:
-    #     #     process_core(str(f), str(out_file), args, override_density=anchor_density)
-    #     process_core(str(f), str(out_file), args, override_density=anchor_density)
-    #
-    progress_bar(
-        len(files), len(files), prefix=f"Processing {T.BOLD}{'Complete!':<15}{T.RESET}"
-    )
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=optimal_workers
+        ) as executor:
+            futures = []
+
+            # Shuffle the order of the files to make the animation more aesthetic
+            submission_order = list(enumerate(files))
+            random.shuffle(submission_order)
+
+            # Submit all files to the workers
+            for i, f in submission_order:
+                futures.append(
+                    executor.submit(
+                        worker_task,
+                        i,
+                        shared_grid,
+                        f,
+                        out_dir,
+                        filename_suffix,
+                        args,
+                        anchor_density,
+                        per_frame_densities,
+                        QUIET_MODE,
+                    )
+                )
+
+            # THE RENDER LOOP
+            completed = 0
+            while completed < total_files:
+                completed = sum(1 for f in futures if f.done())
+
+                # Snap cursor to the top of our grid space
+                sys.stdout.write(T.CURSOR_UP(total_lines_to_draw))
+
+                # Draw the Matrix
+                for r in range(rows):
+                    row_str = ""
+                    for c in range(columns):
+                        idx = r * columns + c
+                        if idx < total_files:
+                            state = shared_grid[idx]
+                            row_str += STATE_COLORS[state] + " "
+
+                    sys.stdout.write(f"{T.CLEAR_LINE}    {row_str}\n")
+
+                    # Print vertical gap between rows
+                    if r < rows - 1:
+                        sys.stdout.write(f"{T.CLEAR_LINE}\n")
+
+                # Draw Progress Footer
+                sys.stdout.write(f"{T.CLEAR_LINE}\n")
+                sys.stdout.write(
+                    f"{T.CLEAR_LINE}    [ Processed {completed}/{total_files} Frames ]\n"
+                )
+
+                sys.stdout.flush()
+                time.sleep(0.05)  # Refresh at 20fps
 
     elapsed = time.time() - start_time
     QUIET_MODE = False
