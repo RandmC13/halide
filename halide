@@ -141,6 +141,116 @@ def interactive_density_balance(img_array, title_override=None):
     return rm, bm, red_gamma, blue_gamma
 
 
+def auto_density_balance(img_array):
+    if not QUIET_MODE:
+        print_step("Calculating statistical neutral points...")
+
+    # t2 is the film base (Dmin of the negative, highest transmittance)
+    t2_raw = np.percentile(img_array, 99.9, axis=(0, 1))
+
+    # t1 is the densest highlight (Dmax of the negative, lowest transmittance)
+    t1_raw = np.percentile(img_array, 0.1, axis=(0, 1))
+
+    t1_raw = np.maximum(t1_raw, 0.00002)
+    t2_raw = np.maximum(t2_raw, 0.00001)
+
+    r1_raw, g1_raw, b1_raw = t1_raw[0], t1_raw[1], t1_raw[2]
+    r2_raw, g2_raw, b2_raw = t2_raw[0], t2_raw[1], t2_raw[2]
+
+    r1_log, g1_log, b1_log = [np.log10(1 / c) for c in (r1_raw, g1_raw, b1_raw)]
+    r2_log, g2_log, b2_log = [np.log10(1 / c) for c in (r2_raw, g2_raw, b2_raw)]
+
+    rs = 1 / (r2_log - r1_log) if (r2_log - r1_log) != 0 else 1
+    gs = 1 / (g2_log - g1_log) if (g2_log - g1_log) != 0 else 1
+    bs = 1 / (b2_log - b1_log) if (b2_log - b1_log) != 0 else 1
+
+    rs_norm, bs_norm, gs_norm = rs / gs, bs / gs, 1.0
+    rd, bd, md = r1_log * rs_norm, b1_log * bs_norm, g1_log * gs_norm
+
+    ra = (md - rd) / rs_norm if rs_norm != 0 else 0
+    ba = (md - bd) / bs_norm if bs_norm != 0 else 0
+
+    rm, bm = 1 / (10**ra), 1 / (10**ba)
+    red_gamma, blue_gamma = 1 / rs_norm, 1 / bs_norm
+
+    return rm, bm, red_gamma, blue_gamma
+
+
+def roll_analysis_density_balance(files):
+    # 2^20 bins provides extreme precision for 32-bit floating point images
+    # while keeping the histogram array size under 25MB in RAM.
+    NUM_BINS = 1048576
+    global_hist = np.zeros((3, NUM_BINS), dtype=np.int64)
+    total_pixels = 0
+
+    for i, f in enumerate(files):
+        with tifffile.TiffFile(f) as tif:
+            raw_img = tif.asarray()[::8, ::8, :]
+
+            # Expanded read logic to explicitly handle 32-bit formats
+            if raw_img.dtype == np.uint16:
+                img_array = raw_img.astype(np.float32) / 65535.0
+            elif raw_img.dtype == np.uint8:
+                img_array = raw_img.astype(np.float32) / 255.0
+            elif raw_img.dtype == np.uint32:
+                img_array = raw_img.astype(np.float32) / 4294967295.0
+            else:
+                # Assumes np.float32 (often 0.0-1.0 HDRi scans).
+                # Clipped to prevent out-of-bounds histogram binning.
+                img_array = np.clip(raw_img.astype(np.float32), 0.0, 1.0)
+
+            for channel in range(3):
+                hist, _ = np.histogram(
+                    img_array[:, :, channel], bins=NUM_BINS, range=(0.0, 1.0)
+                )
+                global_hist[channel] += hist
+
+            total_pixels += img_array.shape[0] * img_array.shape[1]
+
+            sys.stdout.write(
+                f"\r      {T.DIM}Analyzing frame {i + 1}/{len(files)}...{T.RESET}"
+            )
+            sys.stdout.flush()
+
+    print()
+
+    t1_raw = np.zeros(3)
+    t2_raw = np.zeros(3)
+
+    for channel in range(3):
+        cdf = np.cumsum(global_hist[channel]) / total_pixels
+
+        p001_idx = np.searchsorted(cdf, 0.001)
+        p999_idx = np.searchsorted(cdf, 0.999)
+
+        t1_raw[channel] = p001_idx / float(NUM_BINS - 1)
+        t2_raw[channel] = p999_idx / float(NUM_BINS - 1)
+
+    t1_raw = np.maximum(t1_raw, 0.00002)
+    t2_raw = np.maximum(t2_raw, 0.00001)
+
+    r1_raw, g1_raw, b1_raw = t1_raw[0], t1_raw[1], t1_raw[2]
+    r2_raw, g2_raw, b2_raw = t2_raw[0], t2_raw[1], t2_raw[2]
+
+    r1_log, g1_log, b1_log = [np.log10(1 / c) for c in (r1_raw, g1_raw, b1_raw)]
+    r2_log, g2_log, b2_log = [np.log10(1 / c) for c in (r2_raw, g2_raw, b2_raw)]
+
+    rs = 1 / (r2_log - r1_log) if (r2_log - r1_log) != 0 else 1
+    gs = 1 / (g2_log - g1_log) if (g2_log - g1_log) != 0 else 1
+    bs = 1 / (b2_log - b1_log) if (b2_log - b1_log) != 0 else 1
+
+    rs_norm, bs_norm, gs_norm = rs / gs, bs / gs, 1.0
+    rd, bd, md = r1_log * rs_norm, b1_log * bs_norm, g1_log * gs_norm
+
+    ra = (md - rd) / rs_norm if rs_norm != 0 else 0
+    ba = (md - bd) / bs_norm if bs_norm != 0 else 0
+
+    rm, bm = 1 / (10**ra), 1 / (10**ba)
+    red_gamma, blue_gamma = 1 / rs_norm, 1 / bs_norm
+
+    return rm, bm, red_gamma, blue_gamma
+
+
 # ==========================================
 # Logic: Edge-Preserving Denoise
 # ==========================================
@@ -226,6 +336,8 @@ def process_core(input_file, output_file, args, override_density=None):
                 rm, bm, rg, bg = override_density
             elif args.rm is not None and args.bm is not None:
                 rm, bm, rg, bg = args.rm, args.bm, args.rg, args.bg
+            elif args.auto_density:
+                rm, bm, rg, bg = auto_density_balance(img_array)
             else:
                 title = f"Picker: {Path(input_file).name}\n1. Shadow | 2. Highlight"
                 rm, bm, rg, bg = interactive_density_balance(
@@ -394,11 +506,16 @@ def process_batch(input_dir, output_dir, args):
         print(
             "  [1] Anchor Frame (Pick neutral points once, apply math to entire roll)"
         )
-        print("  [2] Per-Frame    (Picker opens for every image individually)")
+        print(
+            "  [2] Per-Frame    (Density is calculating individually for every image)"
+        )
+        print(
+            "  [3] Roll-Analysis    (Guesses the best neutral points by analysing every image)"
+        )
 
         while True:
-            choice = input(f"\nSelect mode (1 or 2): ").strip()
-            if choice in ["1", "2"]:
+            choice = input(f"\nSelect mode (1-3): ").strip()
+            if choice in ["1", "2", "3"]:
                 break
             print("Invalid choice.")
 
@@ -431,14 +548,17 @@ def process_batch(input_dir, output_dir, args):
                 else:
                     anchor_array = raw_anchor.astype(np.float32)
 
-            anchor_density = interactive_density_balance(
-                anchor_array, title_override=f"ANCHOR: {anchor_file.name}"
-            )
+            if args.auto_density:
+                anchor_density = auto_density_balance(anchor_array)
+            else:
+                anchor_density = interactive_density_balance(
+                    anchor_array, title_override=f"ANCHOR: {anchor_file.name}"
+                )
             print(f"{T.GREEN}Anchor density locked. Applying to batch.{T.RESET}\n")
 
         elif choice == "2":
-            print(f"\n{T.CYAN}Entering Per-Frame Picker...{T.RESET}")
-            QUIET_MODE = False
+            print(f"\n{T.CYAN}Calculating Per-Frame...{T.RESET}")
+            QUIET_MODE = True
             for f in files:
                 with tifffile.TiffFile(f) as tif:
                     raw_img = tif.asarray()
@@ -449,11 +569,19 @@ def process_batch(input_dir, output_dir, args):
                     else:
                         img_array = raw_img.astype(np.float32)
 
-                # Open window safely in the main thread and save the specific values
-                per_frame_densities[f.name] = interactive_density_balance(
-                    img_array, title_override=f"PICKER: {f.name}"
-                )
+                if args.auto_density:
+                    per_frame_densities[f.name] = auto_density_balance(img_array)
+                else:
+                    per_frame_densities[f.name] = interactive_density_balance(
+                        img_array, title_override=f"PICKER: {f.name}"
+                    )
             print(f"{T.GREEN}All densities locked. Applying to batch.{T.RESET}\n")
+
+        elif choice == "3":
+            print(f"\n{T.CYAN}Analysing Roll...{T.RESET}")
+            QUIET_MODE = True
+            anchor_density = roll_analysis_density_balance(files)
+            print(f"{T.GREEN}Roll Analysis Complete. Applying to batch.{T.RESET}\n")
 
     # --- Filename Suffix Prompt ---
     print(f"{T.CYAN}Output Formatting:{T.RESET}")
@@ -556,6 +684,12 @@ if __name__ == "__main__":
         "--auto-expose",
         action="store_true",
         help="Automatically stretches the histogram to the full dynamic range (not recommended for production)",
+    )
+
+    parser.add_argument(
+        "--auto-density",
+        action="store_true",
+        help="Automatically selects neutral points (results vary in quality depending on the image)",
     )
 
     # Denoise Controls (Now Opt-In)
