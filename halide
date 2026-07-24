@@ -64,6 +64,14 @@ def interactive_density_balance(img_array, title_override=None):
         print(f"      {T.DIM}(Waiting for user input via Matplotlib...){T.RESET}")
 
     display_img = img_array[::4, ::4, :]
+    display_img = np.maximum(display_img, 0.0001)  # Avoid division by 0
+
+    display_img = 0.01 / display_img
+
+    # Normalize back to 0-1 range for the plot
+    d_min, d_max = display_img.min(), display_img.max()
+    display_img = (display_img - d_min) / (d_max - d_min)
+
     display_img = np.clip(display_img, 0, 1) ** (1 / 2.2)
 
     fig, ax = plt.subplots(figsize=(10, 7))
