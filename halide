@@ -63,7 +63,7 @@ def interactive_density_balance(img_array, title_override=None):
         print_step("Opening interactive picker...")
         print(f"      {T.DIM}(Waiting for user input via Matplotlib...){T.RESET}")
 
-    display_img = img_array[::4, ::4, :]
+    display_img = img_array[::4, ::4, :].copy()
     display_img = np.maximum(display_img, 0.0001)  # Avoid division by 0
 
     display_img = 0.01 / display_img
@@ -169,6 +169,7 @@ def global_auto_exposure(img_array, headroom=0.02):
     print_step("Calculating global auto-exposure (Histogram Stretch)...")
     global_min = np.percentile(img_array, 0.05)
     global_max = np.percentile(img_array, 99.95)
+
     new_max = 1 - headroom
     new_min = headroom
 
@@ -179,9 +180,9 @@ def global_auto_exposure(img_array, headroom=0.02):
         img_array += new_min
 
         if not QUIET_MODE:
-            print(f"      {T.DIM}-> Black point buffered to {headroom:.3f}{T.RESET}")
+            print(f"      {T.DIM}-> Black point stretched to {headroom:.3f}{T.RESET}")
             print(
-                f"      {T.DIM}-> White point buffered to {1.0 - headroom:.3f}{T.RESET}"
+                f"      {T.DIM}-> White point stretched to {1.0 - headroom:.3f}{T.RESET}"
             )
 
         return np.clip(img_array, 0.0, 1.0, out=img_array)
@@ -260,9 +261,11 @@ def process_core(input_file, output_file, args, override_density=None):
     if not args.density_only:
         print_step("Executing 0.01/x mathematical inversion...")
         final_array = 0.01 / img_safe
+        # Prevent the small pixel values from leading to impossible luminances
+        final_array = np.clip(final_array, 0.0, 1.0)
 
-        if not args.no_auto_exposure:
-            final_array = global_auto_exposure(final_array, headroom=args.headroom)
+        if args.auto_expose:
+            final_array = global_auto_exposure(final_array)
     else:
         print_step("Skipping Inversion (--density-only active).")
         final_array = img_safe
@@ -550,15 +553,9 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--no-auto-exposure",
+        "--auto-expose",
         action="store_true",
-        help="Disable the final histogram stretch",
-    )
-    parser.add_argument(
-        "--headroom",
-        type=float,
-        default=0.02,
-        help="Safety buffer for pure white/black (default: 0.02)",
+        help="Automatically stretches the histogram to the full dynamic range (not recommended for production)",
     )
 
     # Denoise Controls (Now Opt-In)
