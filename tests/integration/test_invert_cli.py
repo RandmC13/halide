@@ -45,7 +45,10 @@ def test_invert_with_saved_profile(negative_tiff, tmp_path):
     assert exit_code == 0
 
 
-def test_linear_output_is_unbounded(negative_tiff, tmp_path):
+def test_linear_output_is_viewable_not_solid_white(negative_tiff, tmp_path):
+    # Regression test for a real bug: the bare unbounded invert() output (typically tens in linear
+    # value) is unusable directly — almost every pixel lands above 1.0 and a standard viewer (e.g.
+    # darktable) shows solid white. --linear-output must scale into a viewable range.
     output = tmp_path / "positive_linear.tiff"
     main(
         [
@@ -55,7 +58,8 @@ def test_linear_output_is_unbounded(negative_tiff, tmp_path):
         ]
     )
     result = read_tiff(output)
-    assert result.image.max() > 1.0
+    assert result.image.max() <= 1.0 + 1e-6
+    assert (result.image >= 1.0).mean() < 0.01
 
 
 def test_invert_with_auto_density(tmp_path):
