@@ -1,0 +1,31 @@
+[project]
+name = "halide"
+version = "0.1.0"
+description = "Colorimetrically accurate inversion of digital scans of color negative film."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "tifffile",
+    "imagecodecs",
+    "colour-science",
+    "scipy",
+    "dearpygui",
+    "pillow",  # delivery-format export only (8-bit PNG/JPEG writing + a synthesized sRGB ICC
+               # profile) — NOT used for the ICC-parsing in io/icc.py, see its module docstring
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+halide = "halide.cli.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
