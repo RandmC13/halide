@@ -21,7 +21,9 @@ def add_stage_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def add_calibration_arguments(parser: argparse.ArgumentParser, *, allow_auto: bool = True) -> None:
+def add_calibration_arguments(
+    parser: argparse.ArgumentParser, *, allow_auto: bool = True, allow_pick: bool = False
+) -> None:
     parser.add_argument(
         "--profile", help="A saved calibration profile — either a file path or a saved profile's name"
     )
@@ -40,11 +42,19 @@ def add_calibration_arguments(parser: argparse.ArgumentParser, *, allow_auto: bo
             help="Automatically estimate density balance from the image itself (approximate — "
             "prefer a saved --profile from a real calibration when you have one)",
         )
+    if allow_pick:
+        parser.add_argument(
+            "--pick",
+            action="store_true",
+            help="Interactively pick shadow/highlight neutral points in a small GUI window, then "
+            "use that calibration for this run only (combine with --save-profile-as to also keep "
+            "it for later)",
+        )
     parser.add_argument(
         "--save-profile-as",
         metavar="NAME",
         help="Save the calibration profile used for this run (however it was obtained — manual, "
-        "loaded, or automatic) under NAME for reuse via --profile NAME next time",
+        "loaded, automatic, or picked) under NAME for reuse via --profile NAME next time",
     )
 
 
@@ -90,10 +100,12 @@ def resolve_density_profile(args: argparse.Namespace) -> DensityProfile | None:
     stage actually needs a density profile at all (i.e. not Stage.INVERT_ONLY)."""
     manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
     auto_given = getattr(args, "auto_density", False)
+    pick_given = getattr(args, "pick", False)
 
-    if sum([bool(args.profile), manual_given, auto_given]) > 1:
+    if sum([bool(args.profile), manual_given, auto_given, pick_given]) > 1:
         raise SystemExit(
-            "--profile, manual overrides (--rm/--bm/--rs/--bs), and --auto-density are mutually exclusive"
+            "--profile, manual overrides (--rm/--bm/--rs/--bs), --auto-density, and --pick are "
+            "mutually exclusive"
         )
 
     if args.profile:
@@ -106,9 +118,23 @@ def resolve_density_profile(args: argparse.Namespace) -> DensityProfile | None:
         )
     if auto_given:
         return None
+    if pick_given:
+        # Deferred import: the rest of the CLI must not require dearpygui/a display (see
+        # cli/commands/calibrate_cmd.py's own deferred import for the same reason). --pick is
+        # currently invert-only (add_calibration_arguments(allow_pick=...) gates this), so
+        # args.input is always present whenever pick_given is True.
+        from halide.gui.quick_pick import run_quick_pick
+
+        profile = run_quick_pick(args.input)
+        if profile is None:
+            raise SystemExit("no calibration picked — closed without using a calibration")
+        return profile
+    pick_hint = " --pick to choose interactively," if hasattr(args, "pick") else ""
     raise SystemExit(
-        "density balance requires a calibration source: --profile <path>, manual overrides "
-        "(--rm/--bm/--rs/--bs), --auto-density, or --invert-only to skip density balance entirely"
+        "density balance requires a calibration source: --profile <name-or-path> (see `halide "
+        "calibrate --save-profile-as NAME` to create one), manual overrides "
+        f"(--rm/--bm/--rs/--bs), --auto-density for a quick approximate guess,{pick_hint} or "
+        "--invert-only to skip density balance entirely"
     )
 
 

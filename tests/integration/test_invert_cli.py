@@ -93,6 +93,43 @@ def test_missing_calibration_source_errors(negative_tiff, tmp_path):
         main(["invert", str(negative_tiff), str(output)])
 
 
+def test_missing_calibration_source_error_mentions_calibrate_and_pick(negative_tiff, tmp_path):
+    # Real workflow gap found via use: nothing pointed a user toward `halide calibrate` or --pick
+    # when they hit this error cold — the fix is specifically in the wording, so pin it.
+    output = tmp_path / "positive.tiff"
+    with pytest.raises(SystemExit, match=r"halide calibrate --save-profile-as NAME") as exc_info:
+        main(["invert", str(negative_tiff), str(output)])
+    assert "--pick" in str(exc_info.value)
+
+
+def test_pick_uses_the_interactively_chosen_profile(negative_tiff, tmp_path, monkeypatch):
+    picked = DensityProfile(white_balance=(1.5, 1.0, 0.7), density_scale=(1.1, 1.0, 0.9), source="anchor")
+    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: picked)
+
+    output = tmp_path / "positive.tiff"
+    exit_code = main(["invert", str(negative_tiff), str(output), "--pick"])
+    assert exit_code == 0
+    result = read_tiff(output)
+    assert np.all(np.isfinite(result.image))
+
+
+def test_pick_cancelled_without_choosing_errors(negative_tiff, tmp_path, monkeypatch):
+    # Closing the picker window without clicking "Use these values" returns None from
+    # run_quick_pick — must fail clearly, not silently proceed with no calibration.
+    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: None)
+
+    output = tmp_path / "positive.tiff"
+    with pytest.raises(SystemExit, match="no calibration picked"):
+        main(["invert", str(negative_tiff), str(output), "--pick"])
+
+
+def test_pick_conflicts_with_other_calibration_sources(negative_tiff, tmp_path, monkeypatch):
+    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: None)
+    output = tmp_path / "positive.tiff"
+    with pytest.raises(SystemExit, match="mutually exclusive"):
+        main(["invert", str(negative_tiff), str(output), "--pick", "--auto-density"])
+
+
 def test_profile_and_manual_override_conflict_errors(negative_tiff, tmp_path):
     profile_path = tmp_path / "profile.json"
     save_profile(DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0)), profile_path)
