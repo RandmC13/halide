@@ -92,12 +92,19 @@ def estimate_roll_density_profile(input_paths: list[str | Path], stride: int = 8
     estimate any more than it aborts the rest of the batch. Unreadable files are skipped with a
     warning; the actual per-file error still surfaces normally when that file is processed for
     real in the worker pool.
+
+    Catches broad `Exception`, not just `ScanColorError` — found via testing with a genuinely
+    corrupt file (not just one missing/unsupported ICC data): `read_tiff` can raise straight from
+    `tifffile` (e.g. `TiffFileError` on a truncated or non-TIFF file), which isn't a
+    `ScanColorError` and was crashing the whole roll estimate before a single frame was even
+    color-managed. `batch.orchestrator._worker` already catches broadly for the same reason — a
+    corrupt file is exactly the kind of one-bad-frame case this function exists to tolerate.
     """
     images = []
     for path in input_paths:
         try:
             images.append(load_working_space_image(path)[::stride, ::stride, :])
-        except ScanColorError as exc:
+        except Exception as exc:  # noqa: BLE001 — one corrupt frame must not abort the roll estimate
             print(f"Warning: skipping {path} while estimating roll density balance ({exc})")
     if not images:
         raise ScanColorError("no readable frames found to estimate a roll density-balance profile from")

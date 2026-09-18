@@ -58,16 +58,28 @@ def _saturation(pixels: np.ndarray) -> np.ndarray:
     )
 
 
+def _neutral_candidates(image: np.ndarray, neutral_fraction: float) -> np.ndarray:
+    """The least-saturated `neutral_fraction` of a single image's own pixels — saturation judged
+    relative to *that image's own* per-channel median (see `_saturation`).
+
+    Deliberately scoped to one image at a time. Normalizing against a frame's own median is what
+    makes `_saturation` measure "how neutral is this pixel relative to the film's systematic
+    per-channel imbalance" rather than "relative to this pixel's absolute color" — that only holds
+    when the median is computed from pixels that share the same systematic imbalance, i.e. one
+    frame. See `roll_auto_density_balance` for why this must run *before* pooling across frames,
+    not after.
+    """
+    flat = image.reshape(-1, 3)
+    saturation = _saturation(flat)
+    threshold = np.percentile(saturation, neutral_fraction * 100)
+    return flat[saturation <= threshold]
+
+
 def _shadow_and_highlight_from_candidates(
-    pixels: np.ndarray,
-    neutral_fraction: float,
+    candidates: np.ndarray,
     shadow_percentile: float,
     highlight_percentile: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    flat = pixels.reshape(-1, 3)
-    saturation = _saturation(flat)
-    threshold = np.percentile(saturation, neutral_fraction * 100)
-    candidates = flat[saturation <= threshold]
     if len(candidates) < 2:
         raise ValueError(
             "not enough near-neutral pixels found to estimate density balance automatically "
@@ -85,8 +97,9 @@ def auto_density_balance(
     highlight_percentile: float = DEFAULT_HIGHLIGHT_PERCENTILE,
 ) -> DensityProfile:
     """Estimate a density-balance profile from a single frame (working-space image)."""
+    candidates = _neutral_candidates(image, neutral_fraction)
     shadow_rgb, highlight_rgb = _shadow_and_highlight_from_candidates(
-        image, neutral_fraction, shadow_percentile, highlight_percentile
+        candidates, shadow_percentile, highlight_percentile
     )
     profile = solve_density_balance(tuple(shadow_rgb), tuple(highlight_rgb))
     return DensityProfile(
@@ -103,10 +116,25 @@ def roll_auto_density_balance(
     """Estimate one shared density-balance profile from several frames of the same roll —
     generally more robust than per-frame estimation, since a single shared film-base (shadow) and
     typical highlight density are measured across many frames' worth of candidate pixels rather
-    than one frame's, at the cost of not adapting to a given frame's individual content."""
-    combined = np.concatenate([img.reshape(-1, 3) for img in images], axis=0)
+    than one frame's, at the cost of not adapting to a given frame's individual content.
+
+    Selects neutral candidates *per frame first* (each judged against its own per-channel median),
+    then pools only the resulting candidate pixels before the final shadow/highlight percentiles —
+    not the other way around. Concatenating raw pixels from every frame before computing one
+    shared median (the original implementation) was a real bug, found via testing on two real
+    scans of genuinely different scenes (a warm-toned portrait and a daylight street scene): the
+    combined median ends up a blend of both frames' average *scene color*, not just the film's
+    systematic dye imbalance the normalization is meant to isolate (see `_saturation`), because
+    that blend is not actually shared across frames the way the film-base imbalance is. That
+    mis-selected candidates for whichever frame differed most from the blended average, producing
+    a visible color cast (confirmed: the affected frame's neutral objects, e.g. a white car,
+    rendered visibly blue). Selecting per-frame first keeps each frame's candidate selection
+    correct on its own terms; only the final shadow/highlight measurement is roll-wide.
+    """
+    per_frame_candidates = [_neutral_candidates(image, neutral_fraction) for image in images]
+    combined_candidates = np.concatenate(per_frame_candidates, axis=0)
     shadow_rgb, highlight_rgb = _shadow_and_highlight_from_candidates(
-        combined, neutral_fraction, shadow_percentile, highlight_percentile
+        combined_candidates, shadow_percentile, highlight_percentile
     )
     profile = solve_density_balance(tuple(shadow_rgb), tuple(highlight_rgb))
     return DensityProfile(

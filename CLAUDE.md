@@ -117,6 +117,34 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   clamp, ~10,000,000) to a target with headroom, so linear output stays genuinely flat/uncurved but
   is actually usable as a starting point for external grading, per the user's explicit priority:
   "avoid clipping ... don't want to lose data" over a perfectly-exposed flat output.
+- **`batch.orchestrator.run_batch` treats a crashed worker process as a per-job failure, not a
+  fatal error.** Found via real testing: full-resolution scans are memory-heavy (a single frame's
+  pipeline run can peak around 4GB RSS — `core/pipeline.py`'s chain of elementwise numpy ops
+  allocates a fresh float64 array at nearly every stage, not a leak), so enough parallel `--workers`
+  on a memory-constrained machine can get a worker OOM-killed. Without handling, that breaks the
+  whole `ProcessPoolExecutor` and every other pending future raises `BrokenProcessPool` too —
+  discarding every already-completed result and surfacing a bare traceback. Each crashed future is
+  now recorded as its own `BatchResult` with an actionable message instead. `estimate_roll_density_profile`
+  similarly needed to catch broad `Exception`, not just `ScanColorError` — a genuinely corrupt (not
+  just unsupported-ICC) file raises straight from `tifffile` and was aborting the whole roll estimate.
+- **`--auto-density-roll` selects neutral candidates per frame, then pools candidates — never pools
+  raw pixels across frames first.** The per-channel median used to judge "how neutral is this
+  pixel" (`calibration/auto.py::_saturation`) is only a valid proxy for the film's own systematic
+  imbalance when computed from one frame's own pixels; computed from pixels pooled across frames
+  with different scene content, it blends in each frame's own scene-color average too, which isn't
+  shared across a roll the way the film base is. This was a real bug (found via testing on two real
+  same-roll scans), now fixed — but did not fully resolve a residual color cast, see the limitation
+  noted below.
+- **Known limitation, not further chased this session**: `--auto-density`/`--auto-density-roll` can
+  still be fooled by a single frame whose *scene content itself* has a strong, consistent color cast
+  (confirmed on a real test frame — a street scene with enough consistent warm coloration across
+  most of the frame to skew its own per-frame median). The candidate-selection heuristic
+  (`_saturation`) normalizes by a frame's own median and assumes that approximates neutral
+  (gray-world-like); it cannot distinguish a genuine, consistent scene cast from the film's own
+  systematic imbalance — the same class of failure real camera auto-white-balance is known for.
+  This is inherent to the statistical fallback tier, not a bug to chase without a fundamentally
+  different (non-heuristic) signal — e.g. ColorChecker or anchor-frame manual calibration (already
+  built) are the accurate options for a roll with a tricky frame like this.
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 
