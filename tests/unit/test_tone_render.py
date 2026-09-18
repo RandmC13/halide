@@ -6,18 +6,55 @@ from halide.core.tone_render import (
     _DEFAULT_CURVE_PATH,
     _load_curve,
     estimate_exposure,
+    estimate_linear_scale,
     linear_passthrough,
     tone_render,
 )
 from halide.core.types import ToneCurveParams
 
 
-def test_linear_mode_is_identity():
+def test_linear_passthrough_itself_is_identity():
+    # The scaling happens in tone_render before calling this — the function itself stays a pure
+    # passthrough, so it's still meaningfully named and testable in isolation.
+    x = np.array([0.1, 1.0, 50.0, 1000.0])
+    assert np.array_equal(linear_passthrough(x), x)
+
+
+def test_linear_mode_is_a_pure_proportional_scale_not_a_curve():
+    # Unlike "paper" mode, linear mode must not reshape the tonal relationship between pixels —
+    # only rescale by a single constant, so ratios between values are preserved exactly.
     x = np.array([0.1, 1.0, 50.0, 1000.0])
     result = tone_render(x, ToneCurveParams(mode="linear"))
-    assert result == pytest.approx(x)
-    assert result is not None
-    assert np.array_equal(linear_passthrough(x), x)
+    ratios = result / x
+    assert np.all(np.isclose(ratios, ratios[0]))
+
+
+def test_linear_mode_brings_typical_scan_values_into_a_viewable_range():
+    # The bug this fixes: a real scan's bare invert() output is typically in the tens (e.g. ~10 for
+    # a density-balanced transmittance around 10%), so a naive identity passthrough put ~100% of
+    # pixels above 1.0 — solid white in any standard viewer. Simulate that with a realistic spread.
+    x = np.geomspace(0.5, 150.0, num=1000)  # spans a realistic scan's dynamic range
+    result = tone_render(x, ToneCurveParams(mode="linear"))
+    assert result.max() <= 1.0 + 1e-9
+    assert (result <= 1.0).mean() > 0.99  # only the thin extreme tail may still exceed 1.0
+
+
+def test_estimate_linear_scale_positions_highlight_percentile_at_target():
+    x = np.geomspace(0.5, 150.0, num=1000)
+    scale = estimate_linear_scale(x, highlight_percentile=99.9, target_value=0.8)
+    positioned = np.percentile(x, 99.9) * scale
+    assert positioned == pytest.approx(0.8, abs=1e-6)
+
+
+def test_estimate_linear_scale_is_robust_to_a_single_extreme_outlier():
+    # A single pathological pixel (e.g. the MIN_TRANSMITTANCE floor clamp on a near-zero pixel)
+    # must not crush the rest of the image to near-black to accommodate it. A realistically large
+    # sample (real images are ~10M+ pixels) so one outlier is a comparably tiny fraction of the
+    # data, matching what was observed on the real test scans (a single 1e7 pixel out of ~15.8M).
+    x = np.concatenate([np.geomspace(0.5, 100.0, num=99_999), [1e7]])
+    scale = estimate_linear_scale(x)
+    typical_pixel_after_scale = 10.0 * scale  # a representative mid-range value
+    assert typical_pixel_after_scale > 0.01  # nowhere near crushed to black
 
 
 def test_paper_mode_is_monotonic_increasing_and_bounded():

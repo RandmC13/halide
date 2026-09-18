@@ -109,6 +109,14 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   `core/tone_render.py::estimate_exposure`) both exist because of real bugs found by testing
   against actual scans, not speculative options — see their docstrings for the specific failure
   each one fixes. Don't "simplify" them back to fixed constants.
+- **`mode="linear"` output is scaled, not a bare unbounded passthrough** (`estimate_linear_scale`
+  in `core/tone_render.py`). Found via real use: a real scan's raw `invert()` reciprocal is
+  typically in the tens, so an unscaled passthrough put ~100% of pixels above 1.0 — solid white in
+  darktable or any standard viewer. Scaled via a robust highlight percentile (not the true max,
+  which on both real test scans was an out-of-range artifact from the `MIN_TRANSMITTANCE` floor
+  clamp, ~10,000,000) to a target with headroom, so linear output stays genuinely flat/uncurved but
+  is actually usable as a starting point for external grading, per the user's explicit priority:
+  "avoid clipping ... don't want to lose data" over a perfectly-exposed flat output.
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 

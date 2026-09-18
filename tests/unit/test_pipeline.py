@@ -35,7 +35,11 @@ def test_run_pipeline_calibration_points_become_neutral_after_full_pipeline():
     assert shadow_out[1] < highlight_out[1]
 
 
-def test_run_pipeline_linear_output_is_unbounded():
+def test_run_pipeline_linear_output_is_not_curve_shaped():
+    # "linear" output is scaled into a viewable range (see core/tone_render.py's
+    # estimate_linear_scale) but must still be a flat proportional rescale, not run through the
+    # "paper" tone curve's nonlinear shape.
     profile = solve_density_balance(SHADOW_RGB, HIGHLIGHT_RGB)
     result = run_pipeline(_synthetic_negative(), profile, ToneCurveParams(mode="linear"))
-    assert result.max() > 1.0
+    assert np.all(result >= 0.0)
+    assert result.max() <= 1.0 + 1e-9

@@ -7,8 +7,12 @@ characteristic response (Kodak Endura), including its natural toe/shoulder compr
 deliberately *not* an invented/hand-tuned analytic curve: photographic paper response is measured,
 published photographic knowledge, which fits the goal of faithfulness over subjective looks.
 
-mode="linear" is the escape hatch: identity passthrough of the unbounded invert() output, for
-users who want to grade fully in an external tool.
+mode="linear" is the escape hatch for users who want to grade fully in an external tool — flat
+(no tone-curve compression/contrast shape), but still scaled into a viewable, headroom-preserving
+range (see estimate_linear_scale) rather than the bare unbounded invert() output, which is
+unusable directly: a real scan's reciprocal values are typically in the tens (e.g. a density-
+balanced transmittance around 10% inverts to 10), so almost every pixel lands above 1.0 and a
+standard viewer shows solid white.
 """
 
 from __future__ import annotations
@@ -75,9 +79,39 @@ def estimate_exposure(
     return target_density - shadow_density
 
 
+_LINEAR_HIGHLIGHT_PERCENTILE = 99.9
+_LINEAR_HEADROOM_TARGET = 0.8  # leaves margin below 1.0 for the thin tail above this percentile
+
+
+def estimate_linear_scale(
+    positive_linear: np.ndarray,
+    highlight_percentile: float = _LINEAR_HIGHLIGHT_PERCENTILE,
+    target_value: float = _LINEAR_HEADROOM_TARGET,
+) -> float:
+    """A multiplicative scale (not a curve — preserves "flat") so a robust highlight reference
+    lands at `target_value`, leaving headroom below 1.0, rather than writing the bare unbounded
+    reciprocal with no inherent brightness reference at all.
+
+    Uses a percentile, not the true maximum, for the same reason calibration/auto.py and
+    estimate_exposure do: a handful of degenerate pixels (dust, or the MIN_TRANSMITTANCE floor
+    clamp on a near-zero-transmittance pixel) can be many orders of magnitude brighter than any
+    real image content — on both real test scans used during development, the true maximum was
+    exactly 1/MIN_TRANSMITTANCE (10,000,000) while the 99.9th percentile was under 100, confirming
+    the tail past that point is clamp artifacts, not photographed detail. Scaling to the true max
+    would crush the entire rest of the image to near-black to accommodate one pathological pixel.
+    This leaves a small fraction of the extreme tail (typically <0.05% of pixels on the scans
+    tested) still above 1.0 after scaling — a deliberate trade-off, not an oversight: avoiding
+    real highlight detail loss matters far more than a few dust-speck pixels.
+    """
+    highlight = np.percentile(positive_linear, highlight_percentile)
+    if highlight <= 0:
+        return 1.0
+    return target_value / highlight
+
+
 def tone_render(positive_linear: np.ndarray, params: ToneCurveParams) -> np.ndarray:
     if params.mode == "linear":
-        return linear_passthrough(positive_linear)
+        return linear_passthrough(positive_linear * estimate_linear_scale(positive_linear))
 
     curve = _load_curve(params.curve_path or str(_DEFAULT_CURVE_PATH))
     safe = np.maximum(positive_linear, MIN_TRANSMITTANCE)
