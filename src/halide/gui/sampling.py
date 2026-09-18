@@ -61,11 +61,68 @@ def downsample_for_display(
     return image[::stride, ::stride], stride
 
 
-def preview_stretch(image: np.ndarray, low_percentile: float = 1.0, high_percentile: float = 99.0) -> np.ndarray:
-    """A simple percentile-stretch + gamma for viewing a raw (un-inverted) negative on screen —
-    purely a display convenience, not part of the color pipeline. Returns float32 in [0, 1]."""
+def compute_stretch_bounds(
+    image: np.ndarray, low_percentile: float = 1.0, high_percentile: float = 99.0
+) -> tuple[float, float]:
+    """The percentile computation half of preview_stretch, split out so the calibration picker's
+    hover magnifier can reuse bounds computed ONCE from the full downsampled preview rather than
+    recomputing percentiles from its own tiny (~25x25) patch on every hover event — a patch-local
+    percentile would make the magnifier's brightness flicker/jump as the mouse moves, since a
+    small patch's own percentiles are unstable from one hover position to the next."""
     lo, hi = np.percentile(image, [low_percentile, high_percentile])
+    return float(lo), float(hi)
+
+
+def apply_stretch(image: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """The clip+gamma half of preview_stretch, taking precomputed bounds (see
+    compute_stretch_bounds) instead of computing them from `image` itself."""
     if hi <= lo:
         return np.zeros_like(image, dtype=np.float32)
     stretched = np.clip((image - lo) / (hi - lo), 0.0, 1.0)
     return (stretched ** (1.0 / 2.2)).astype(np.float32)
+
+
+def preview_stretch(image: np.ndarray, low_percentile: float = 1.0, high_percentile: float = 99.0) -> np.ndarray:
+    """A simple percentile-stretch + gamma for viewing a raw (un-inverted) negative on screen —
+    purely a display convenience, not part of the color pipeline. Returns float32 in [0, 1]."""
+    lo, hi = compute_stretch_bounds(image, low_percentile, high_percentile)
+    return apply_stretch(image, lo, hi)
+
+
+def display_to_full_res_coords(
+    display_x: int, display_y: int, stride: int, image_width: int, image_height: int
+) -> tuple[int, int]:
+    """Map a click/hover position on the downsampled display back to clamped full-resolution
+    pixel coordinates. Extracted from calibrate_screen.on_image_click's inline math so the hover
+    handler can reuse the exact same, tested mapping instead of duplicating it."""
+    full_x = max(0, min(image_width - 1, display_x * stride))
+    full_y = max(0, min(image_height - 1, display_y * stride))
+    return full_x, full_y
+
+
+def full_res_to_display_coords(full_x: int, full_y: int, stride: int) -> tuple[int, int]:
+    """The inverse of display_to_full_res_coords — where a full-res point (e.g. a picked shadow/
+    highlight point) lands on the downsampled display, for drawing a marker at the right spot."""
+    return full_x // stride, full_y // stride
+
+
+def extract_magnifier_patch(image: np.ndarray, x: int, y: int, radius: int = 12) -> np.ndarray:
+    """Crop a fixed-size (2*radius+1, 2*radius+1, 3) patch from `image` centered at (x, y),
+    edge-padding near the image border rather than shrinking — the caller uploads this into a
+    FIXED-SIZE dpg dynamic texture on every hover event, so the output shape must never change or
+    the update degrades into a full texture recreate."""
+    h, w = image.shape[:2]
+    y0, y1 = y - radius, y + radius + 1
+    x0, x1 = x - radius, x + radius + 1
+    pad_top, pad_bottom = max(0, -y0), max(0, y1 - h)
+    pad_left, pad_right = max(0, -x0), max(0, x1 - w)
+    cropped = image[max(0, y0) : min(h, y1), max(0, x0) : min(w, x1)]
+    if pad_top or pad_bottom or pad_left or pad_right:
+        cropped = np.pad(cropped, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode="edge")
+    return cropped
+
+
+def magnify_patch(patch: np.ndarray, zoom: int = 8) -> np.ndarray:
+    """Nearest-neighbor upscale via np.repeat on both axes — deliberately blocky, not smoothed, so
+    individual source pixels stay identifiable for precise picking."""
+    return np.repeat(np.repeat(patch, zoom, axis=0), zoom, axis=1)
