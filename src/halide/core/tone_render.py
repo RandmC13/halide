@@ -36,7 +36,7 @@ def _load_curve(path: str) -> Cube1D:
 
 
 _AUTO_EXPOSURE_SHADOW_PERCENTILE = 1.0
-_AUTO_EXPOSURE_TARGET_DENSITY = 1.0  # where the reference curve's toe starts to meaningfully rise
+_AUTO_EXPOSURE_TARGET_DENSITY = 0.85  # see estimate_exposure's docstring for how this was chosen
 
 
 def estimate_exposure(
@@ -56,6 +56,19 @@ def estimate_exposure(
     fits every negative. Directly analogous to a darkroom printer determining enlarger exposure
     time from a test strip per negative rather than reusing one fixed time for a whole box of
     paper.
+
+    `target_density` is itself a fixed constant, and was initially set to 1.0 (roughly where the
+    reference curve's toe starts to meaningfully rise) from testing against two real scans — which
+    turned out to be the *same* mistake this function exists to fix, just one level up: 1.0 was too
+    bright specifically for an image whose darkest 1% is a small, distinct cluster (e.g. a subject
+    wearing dark clothing against a much larger bright majority of frame), because it says nothing
+    about where the rest of the tonal range lands, only the extreme shadow point. Lowered to 0.85
+    after re-testing against the same two scans, which holds up better on both — but this is still
+    a single global constant standing in for "how much of the curve's toe compression to use,"
+    which is inherently a scene-dependent judgment (classic camera metering has the same limit).
+    Don't tune this further without rendering and *looking at* more than one or two real images —
+    see the project's memory/feedback notes on verifying against real data before calling a fix
+    correct.
     """
     density = np.log10(np.maximum(positive_linear, MIN_TRANSMITTANCE))
     shadow_density = np.percentile(density, shadow_percentile)
