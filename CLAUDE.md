@@ -45,7 +45,7 @@ without being asked.
 
 CLI (installed as the `halide` console script, or run via `.venv/bin/python -m halide.cli.main`):
 ```bash
-halide invert <negative.tif> <positive.tif> [--profile NAME | --rm/--bm/--rs/--bs | --auto-density]
+halide invert <negative.tif> <positive.tif> [--profile NAME | --rm/--bm/--rs/--bs | --auto-density | --pick]
 halide batch <in_dir> <out_dir> [--auto-density-roll] [--save-profile-as NAME]
 halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sRGB PNG/JPEG
 halide profile list|show|rename|delete
@@ -227,6 +227,34 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   delete+recreates, but only from `load_image` — a new image can be a different size, so that one
   case genuinely needs it. Don't reintroduce delete+recreate on a path that fires from routine
   interaction (a checkbox, a click) rather than a new file being loaded.
+- **`halide invert --pick` opens a standalone calibration picker inline for a single, one-shot
+  run** (`gui/quick_pick.py::run_quick_pick`, wired into `cli/_calibration_args.py::
+  resolve_density_profile` as a fourth mutually-exclusive calibration source alongside
+  `--profile`/manual/`--auto-density`). Addresses a real workflow gap: nothing connected a
+  first-time user to `halide calibrate`, and a user who just wanted to manually pick values for
+  one image had to go through the full profile-naming app. Reuses `calibrate_screen.build`/
+  `CalibrateScreen` as-is (`build(show_path_input=False)` hides the now-redundant TIFF-path field
+  since the path is already known from the CLI arg) — the only new code is the blocking entry
+  point itself, which runs a manual `dpg.render_dearpygui_frame()` loop instead of
+  `dpg.start_dearpygui()` so it can return the picked `DensityProfile` (or `None` if the window
+  was closed without picking) to its caller instead of running until the process exits. This is
+  new territory for this codebase's GUI code (every other entry point runs the full event loop
+  and exits the process) — verified via real interactive testing, not just code review. Saving a
+  named profile (`--save-profile-as`) still works unmodified in combination with `--pick` — using
+  a calibration for this run and persisting it for later remain orthogonal, as everywhere else in
+  this project.
+- **The "no calibration source" error names the actual missing step** instead of just listing
+  flags: it now says to run `halide calibrate --save-profile-as NAME` to produce a `--profile`
+  source, and (only on `invert`, where it's wired up) mentions `--pick` as the immediate one-shot
+  alternative. `batch`'s version of the same error deliberately doesn't mention `--pick` — see
+  below, it isn't implemented there yet.
+- **`--pick` is invert-only for now, not implemented on `batch`, deliberately.** `add_calibration_
+  arguments(parser, allow_pick=...)` defaults to `False`; only `invert_cmd.py` passes `True`. A
+  real `batch --pick` needs more than a straight port: unlike `invert`, `batch` has no single input
+  image to pre-load a picker with — a roll's worth of frames — so it will likely need a GUI
+  frame-picker (choose which image in the roll to calibrate against) before the existing
+  shadow/highlight picker makes sense to open at all. Don't wire up `--pick` on `batch` without
+  designing that piece first.
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 

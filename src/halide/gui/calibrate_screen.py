@@ -338,10 +338,14 @@ class CalibrateScreen:
         self._status(f"Saved profile {name!r} to {path}")
 
 
-def build(screen: CalibrateScreen | None = None) -> CalibrateScreen:
+def build(screen: CalibrateScreen | None = None, *, show_path_input: bool = True) -> CalibrateScreen:
     """Adds this screen's widgets to whatever DPG container is currently open (call from within a
     `with dpg.tab(...):`/`with dpg.window(...):` block — relies on DPG's implicit container
-    stack rather than an explicit parent tag, so it composes correctly when nested in tabs)."""
+    stack rather than an explicit parent tag, so it composes correctly when nested in tabs).
+
+    `show_path_input=False` hides the TIFF path field and Load button — for a caller (e.g.
+    `gui/quick_pick.py`) that already knows the path and calls `screen.load_image(path)` itself;
+    showing an empty, pre-irrelevant text field there would just be confusing."""
     screen = screen or CalibrateScreen()
 
     dpg.add_texture_registry(tag="texture_registry")
@@ -365,8 +369,9 @@ def build(screen: CalibrateScreen | None = None) -> CalibrateScreen:
             wrap=700,
             color=(230, 180, 80),
         )
-        dpg.add_input_text(label="TIFF path", tag="path_input")
-        dpg.add_button(label="Load", callback=lambda s, a: screen.load_image(dpg.get_value("path_input")))
+        if show_path_input:
+            dpg.add_input_text(label="TIFF path", tag="path_input")
+            dpg.add_button(label="Load", callback=lambda s, a: screen.load_image(dpg.get_value("path_input")))
         dpg.add_radio_button([_SHADOW_MODE, _HIGHLIGHT_MODE], tag="pick_mode", default_value=_SHADOW_MODE)
 
         with dpg.group(horizontal=True):

@@ -20,7 +20,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("input", help="Input linear TIFF scan of a negative")
     parser.add_argument("output", help="Output TIFF path")
     add_stage_arguments(parser)
-    add_calibration_arguments(parser)
+    add_calibration_arguments(parser, allow_pick=True)
     add_tone_arguments(parser)
 
 
