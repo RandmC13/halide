@@ -70,3 +70,37 @@ def test_roll_auto_density_balance_combines_multiple_frames():
     result = roll_auto_density_balance(frames)
     assert result.white_balance == pytest.approx(expected.white_balance, rel=1e-6)
     assert result.density_scale == pytest.approx(expected.density_scale, rel=1e-6)
+
+
+def test_roll_auto_density_balance_selects_neutral_candidates_per_frame_not_from_pooled_pixels(
+    monkeypatch,
+):
+    # Real bug found via testing on two real scans (a warm-toned portrait and a daylight street
+    # scene, --auto-density-roll): the original implementation concatenated raw pixels from every
+    # frame *before* computing the per-channel median used to judge "how neutral is this pixel"
+    # (see `_saturation`) — that median is only a valid proxy for the film's own systematic
+    # per-channel imbalance when it's computed from one frame's own pixels; pooled across frames
+    # with different scene content, it instead blends in each frame's *scene-color average*, which
+    # is not shared across a roll the way the film base is. That skewed which pixels were selected
+    # as "neutral" for whichever frame differed most from the blend — confirmed on the real photos
+    # as a visible blue cast on a frame whose own calibration (per-frame --auto-density) was
+    # correct. This pins the actual mechanism of the fix: candidate selection must happen once per
+    # input image, on that image's own pixels, never on pixels pooled across images.
+    calls = []
+    from halide.calibration import auto as auto_module
+
+    real_neutral_candidates = auto_module._neutral_candidates
+
+    def spy(image, neutral_fraction):
+        calls.append(image)
+        return real_neutral_candidates(image, neutral_fraction)
+
+    monkeypatch.setattr(auto_module, "_neutral_candidates", spy)
+
+    frame_a = np.tile(SHADOW_RGB, (100, 1)).reshape(-1, 1, 3)
+    frame_b = np.tile(HIGHLIGHT_RGB, (100, 1)).reshape(-1, 1, 3)
+    auto_module.roll_auto_density_balance([frame_a, frame_b])
+
+    assert len(calls) == 2  # called once per frame, never once on pooled/concatenated pixels
+    assert calls[0] is frame_a
+    assert calls[1] is frame_b

@@ -33,6 +33,25 @@ def test_estimate_roll_density_profile_skips_unreadable_files(tmp_path, capsys):
     assert "skipping" in capsys.readouterr().out
 
 
+def test_estimate_roll_density_profile_skips_a_genuinely_corrupt_file(tmp_path, capsys):
+    # A missing-ICC file (above) raises ScanColorError, a clean/expected error. A genuinely
+    # corrupt file (e.g. truncated during a scanner hiccup) raises straight from `tifffile`
+    # instead — a real bug found by testing with an actual non-TIFF file, not just a synthetic
+    # ScanColorError case. Must be tolerated the same way.
+    good_paths = []
+    for i in range(3):
+        path = tmp_path / f"good_{i}.tiff"
+        _write_negative(path, seed=i)
+        good_paths.append(path)
+
+    corrupt_path = tmp_path / "corrupt.tiff"
+    corrupt_path.write_bytes(b"not a tiff file")
+
+    profile = estimate_roll_density_profile(good_paths + [corrupt_path])
+    assert profile.source == "auto"
+    assert "skipping" in capsys.readouterr().out
+
+
 def test_estimate_roll_density_profile_raises_when_all_files_unreadable(tmp_path):
     bad_paths = []
     for i in range(2):
