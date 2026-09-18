@@ -49,7 +49,8 @@ halide invert <negative.tif> <positive.tif> [--profile NAME | --rm/--bm/--rs/--b
 halide batch <in_dir> <out_dir> [--auto-density-roll] [--save-profile-as NAME]
 halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sRGB PNG/JPEG
 halide profile list|show|rename|delete
-halide calibrate                               # Dear PyGui: anchor-frame picker + live preview
+halide calibrate [negative.tif]                # Dear PyGui: anchor-frame picker + live preview;
+                                                # auto-loads the given TIFF if a path is passed
 ```
 Input TIFFs must be linear (not display/gamma-encoded) with an embedded ICC profile — the tool
 validates this itself and rejects anything else with a specific error (see `io/icc.py`). The
@@ -135,18 +136,123 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   shared across a roll the way the film base is. This was a real bug (found via testing on two real
   same-roll scans), now fixed — but did not fully resolve a residual color cast, see the limitation
   noted below.
-- **Known limitation, not further chased this session**: `--auto-density`/`--auto-density-roll` can
-  still be fooled by a single frame whose *scene content itself* has a strong, consistent color cast
-  (confirmed on a real test frame — a street scene with enough consistent warm coloration across
-  most of the frame to skew its own per-frame median). The candidate-selection heuristic
-  (`_saturation`) normalizes by a frame's own median and assumes that approximates neutral
-  (gray-world-like); it cannot distinguish a genuine, consistent scene cast from the film's own
-  systematic imbalance — the same class of failure real camera auto-white-balance is known for.
-  This is inherent to the statistical fallback tier, not a bug to chase without a fundamentally
-  different (non-heuristic) signal — e.g. ColorChecker or anchor-frame manual calibration (already
-  built) are the accurate options for a roll with a tricky frame like this.
+- **`calibration/auto.py::_saturation` judges neutrality against a density-local reference
+  (`_density_reference`), not one frame-wide median.** A single global median is only a valid stand-
+  in for the film's systematic per-channel imbalance at the ONE density level it happens to sit at —
+  it is not a fixed ratio across the whole tonal range, because the three dye layers have different
+  characteristic-curve shapes. This was a real, structural bug, not just an occasional gray-world
+  failure, confirmed with real numbers on `IMG_0151.tif`: a genuinely neutral black traffic light
+  and a random head of (non-neutral) dark hair had near-identical raw RGB and both passed the old
+  global-median filter, while a genuinely neutral, properly-exposed white sign scored far outside
+  the threshold and was excluded. Mechanism: color negative film's characteristic curve has a
+  compressed "toe" at the underexposed end — near-black content of *any* real hue converges toward
+  nearly the same raw color there, because little image-forming density is left to differentiate
+  it, so deep-shadow content passes a ratio test almost regardless of whether it's truly neutral,
+  while properly-exposed content (which preserves real hue differences) is comparatively
+  under-selected even when it genuinely is neutral. `_density_reference` fixes this half of the
+  problem by comparing each pixel only against others at a similar density (verified: the old
+  bimodal-fraction test, `neutral_fraction=0.25` failing to recover a known profile, is now fixed
+  even down to `neutral_fraction=0.01`; a direct synthetic reproduction of the traffic-light/hair/
+  sign numbers is a permanent regression test).
+- **What that fix does *not* solve, confirmed via the same investigation — don't re-attempt without
+  new evidence**:
+  - `_shadow_and_highlight_from_candidates` still extracts the 99.9th/0.1th percentile of whatever
+    candidates survive — which assumes a photo's best real neutral references sit at its tonal
+    extremes. On `IMG_0151.tif`, the user's own confirmed-good manual picks sat at the 56th and 82nd
+    percentile of the frame's own luminance range — nowhere near the true extremes. No amount of
+    fixing the *classification* step changes what the *extraction* step reaches for.
+  - Even the density-local reference can fail on a real (not synthetic) photo: a pixel's own density
+    bin can itself be dominated by *other*, non-neutral real content (e.g. building facades at a
+    similar exposure to a genuinely-neutral sign) — the local gray-world assumption isn't guaranteed
+    to hold locally any more than it's guaranteed to hold globally. Confirmed: after this fix, the
+    `IMG_0151.tif` sign still isn't classified as a candidate, even though the overlay's overall
+    coverage is visibly more sensible (correctly includes plausible neutral building material, not
+    just toe-compressed hair/dark objects).
+  - A "consensus" idea was tried and rejected: instead of trusting any reference ratio, search over
+    candidate (shadow, highlight) pairs and score each by how much of the whole frame becomes
+    neutral after applying it. This backfires — the same toe-convergence effect makes a large,
+    homogeneous mass of underexposed pixels trivially "agree" with each other under almost any
+    correction that treats them consistently, so the search kept preferring a wrong-but-
+    self-consistent profile (drawn from two barely-separated shadow-region points) that scored
+    *higher* than the real, manually-verified ground truth (0.31 vs. 0.12 on a "fraction of frame
+    now neutral" metric). Do not resurrect this approach without a fundamentally different, more
+    robust scoring signal.
+  - A cheap, narrow safety net was added: `auto_density_balance`/`roll_auto_density_balance` now
+    warn (not raise) when the solved shadow/highlight candidates are suspiciously close in density
+    (`_check_density_separation`). This only catches a near-degenerate near-zero-span pair — it does
+    NOT catch a wrong-but-well-separated pair, which is exactly the `IMG_0151.tif` failure mode. Be
+    explicit about that limit; it is not a general correctness guarantee.
+  - **Bottom line, now backed by concrete evidence rather than a vague caveat**: `--auto-density`'s
+    shadow estimate is structurally more trustworthy than its highlight estimate (shadow-end
+    convergence means almost any selected shadow candidate lands close to the true film base
+    anyway). For a photo whose best neutral references aren't at the tonal extremes — which is
+    common, not an edge case — anchor-frame manual calibration (`gui/calibrate_screen.py`, and its
+    auto-detected-candidate overlay is now a meaningfully better, though still imperfect, sanity
+    check) or a ColorChecker are the reliable options, not further heuristic tuning of the auto tier.
+- **The Calibrate picker's point-picking labels state explicitly which way brightness is
+  inverted, not just "dark"/"bright."** The screen displays the RAW, uninverted negative
+  (`gui/sampling.py::preview_stretch`) — on a raw negative, brightness is backwards from the real
+  scene: a real highlight (bright in life) is a dense, DARK area on the raw negative, and a real
+  shadow (dark in life) is a thin, LIGHT area. The old labels ("Shadow (dark neutral)" / "Highlight
+  (bright neutral)") didn't say which brightness they meant, and a user hunting for a dark-looking
+  spot on the displayed raw negative would click a real highlight instead — a plausible source of
+  genuinely wrong calibration, not just confusing wording. Fixed by stating both framings explicitly
+  in the radio labels and instructional text. Don't revert to shorter/vaguer labels for aesthetics.
+- **The Calibrate picker now solves and renders a live preview automatically once both points are
+  picked** (`CalibrateScreen._maybe_render_live_preview`/`_render_preview` in
+  `gui/calibrate_screen.py`), instead of requiring a profile name + "Solve & Save" click before
+  showing anything. Saving to a named, reusable profile is now a fully separate, optional action —
+  per the user's real use case: sometimes you just want to invert one image with clearly visible
+  neutrals to see how it looks, not build a reusable profile. The screen also shows a hover
+  magnifier (a fixed-size `dpg.add_dynamic_texture` updated via `dpg.set_value` in place, not
+  delete+recreate — the click-driven main image and preview textures stay on delete+recreate since
+  they only change on discrete events, not every mouse-move) and draws picked-point markers on a
+  `dpg.drawlist` overlay, plus an optional toggle to visualize `calibration/auto.py`'s own
+  neutral-candidate selection (`_neutral_candidate_mask`) so a manual pick can be cross-checked
+  against the independent statistical method. All verified working via real interactive testing
+  (Xvfb + xdotool, see "Interactive GUI testing" below), not just code review — this was new DPG
+  territory for this codebase (no prior drawlist/hover-handler/dynamic-texture usage existed).
+- **`calibrate_screen.py` never deletes+recreates a GPU texture except when a genuinely new,
+  differently-sized image is loaded — everything else updates an existing texture's pixels via
+  `dpg.set_value` in place.** Found via a real segfault (`segmentation fault (core dumped)`) on the
+  user's actual machine, in two spots: toggling the auto-candidate overlay checkbox, and clicking
+  around the image to re-pick points. Both used to call `dpg.delete_item`+`dpg.add_raw_texture` on
+  every single interaction, not just on image load — repeatedly destroying and recreating a
+  GPU-backed texture from Python is a known class of instability in this dearpygui version
+  (couldn't reproduce it under Xvfb's software rendering even with heavy stress-testing, which
+  points at the real GPU/driver-backed rendering path specifically). Fixed: `toggle_auto_overlay`
+  now calls `_refresh_main_image` (`set_value` only) instead of `_upload_main_image`
+  (delete+recreate); `_render_preview` creates its texture once on the first successful pick pair
+  and `set_value`s it on every re-pick after that. `_upload_main_image` itself still legitimately
+  delete+recreates, but only from `load_image` — a new image can be a different size, so that one
+  case genuinely needs it. Don't reintroduce delete+recreate on a path that fires from routine
+  interaction (a checkbox, a click) rather than a new file being loaded.
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
+
+## Interactive GUI testing
+
+The GUI has no automated test coverage for actual rendering/interaction (only `gui/sampling.py`'s
+pure logic is unit-tested) — verify real interaction changes with a virtual display and synthetic
+mouse input rather than trusting code review alone, especially for anything DPG-specific
+(drawlists, hover handlers, dynamic textures) that has no prior precedent to compare against.
+`Xvfb`, `xdotool`, and `import` (screenshot capture) are installed in this environment:
+
+```bash
+Xvfb :99 -screen 0 1280x1024x24 &
+DISPLAY=:99 .venv/bin/python -m halide.cli.main calibrate <test.tif> &
+# find/activate the window, then drive it:
+xdotool search --name halide windowactivate
+xdotool mousemove --window <id> <x> <y>
+xdotool click 1
+# capture and actually look at the result (don't just check "no crash"):
+import -window <id> /tmp/check.png    # or -root for the whole virtual screen
+```
+
+Always tear down both the app process and the `Xvfb` process afterward — neither self-terminates.
+This is naturally background/forked-subagent work given the volume of trial-and-error interaction
+involved; keep the raw tool-call trace out of the main conversation and report back a tight
+pass/fail summary instead.
 
 ## Working with the user
 

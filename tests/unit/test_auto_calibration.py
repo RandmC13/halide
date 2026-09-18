@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from halide.calibration.auto import auto_density_balance, roll_auto_density_balance
+from halide.calibration.auto import (
+    _neutral_candidate_mask,
+    _neutral_candidates,
+    _saturation,
+    auto_density_balance,
+    roll_auto_density_balance,
+)
 from halide.core.density import solve_density_balance
 
 SHADOW_RGB = (0.094, 0.131, 0.050)
@@ -41,14 +47,29 @@ def test_auto_density_balance_recovers_true_profile_despite_decoys():
     assert result.source == "auto"
 
 
-def test_auto_density_balance_too_narrow_a_fraction_fails_on_bimodal_content():
-    # Documents *why* the default is generous (0.5, not something smaller): a too-narrow fraction
-    # can capture only one of the two genuinely-neutral clusters (they don't share identical
-    # residual "saturation" after the simple per-channel-median normalization — see auto.py's
-    # docstring), which here leaves only one real density level as a candidate.
+def test_auto_density_balance_recovers_true_profile_even_with_a_narrow_fraction():
+    # Used to fail here (a too-narrow fraction captured only one of the two genuinely-neutral
+    # clusters, since they didn't share identical residual "saturation" against a single
+    # frame-wide median). Fixed by _density_reference's density-local reference — each cluster is
+    # now judged against its own nearby density, not a frame-wide reference that could favor one
+    # cluster over the other. Regression test for that fix: recovery now holds even far below the
+    # generous DEFAULT_NEUTRAL_FRACTION default.
     image = _synthetic_image_with_decoys()
-    with pytest.raises(ValueError, match="must differ in density"):
-        auto_density_balance(image, neutral_fraction=0.25)
+    expected = solve_density_balance(SHADOW_RGB, HIGHLIGHT_RGB)
+    result = auto_density_balance(image, neutral_fraction=0.01)
+    assert result.white_balance == pytest.approx(expected.white_balance, rel=1e-6)
+    assert result.density_scale == pytest.approx(expected.density_scale, rel=1e-6)
+
+
+def test_neutral_candidate_mask_matches_neutral_candidates():
+    # The mask is the spatial counterpart to _neutral_candidates' flat array (used by the GUI
+    # picker to overlay which regions the statistical method considers plausible) — it must select
+    # exactly the same pixels, just without discarding their location.
+    image = _synthetic_image_with_decoys()
+    mask = _neutral_candidate_mask(image, neutral_fraction=0.5)
+    candidates = _neutral_candidates(image, neutral_fraction=0.5)
+    assert mask.shape == image.shape[:2]
+    assert mask.sum() == len(candidates)
 
 
 def test_auto_density_balance_raises_with_too_few_candidates():
@@ -70,6 +91,61 @@ def test_roll_auto_density_balance_combines_multiple_frames():
     result = roll_auto_density_balance(frames)
     assert result.white_balance == pytest.approx(expected.white_balance, rel=1e-6)
     assert result.density_scale == pytest.approx(expected.density_scale, rel=1e-6)
+
+
+def test_neutral_candidate_mask_is_not_fooled_by_film_toe_compression():
+    # Real bug found via testing on a real scan (IMG_0151.tif): color negative film's toe (the
+    # compressed underexposed end of its characteristic curve) makes near-black real-world content
+    # of ANY hue converge toward nearly the same raw color, almost regardless of whether it's
+    # genuinely neutral — confirmed on the real photo, a black traffic light (genuinely neutral)
+    # and a head of dark hair (not neutral) had near-identical raw RGB. Against a single frame-wide
+    # median (the old approach), that toe-converged majority sets the reference, and a properly-
+    # exposed, genuinely neutral object at a different (moderate) density — the real photo's white
+    # sign — scores as spuriously "saturated" and gets excluded, purely because it's being judged
+    # against a reference from a completely different, unrelated density level. Mirrors the real
+    # measured values (toe ~(0.29,0.17,0.09), moderate neutral ~(0.185,0.146,0.082)).
+    TOE_RGB = (0.29, 0.17, 0.09)
+    MODERATE_NEUTRAL_RGB = (0.185, 0.146, 0.082)
+    toe = np.tile(TOE_RGB, (3000, 1))
+    moderate = np.tile(MODERATE_NEUTRAL_RGB, (300, 1))
+    image = np.concatenate([toe, moderate], axis=0).reshape(-1, 1, 3)
+
+    # Document what the old single-global-median _saturation call would have scored: high enough
+    # to be excluded by any reasonable neutral_fraction threshold, since the toe population (10x
+    # more numerous) dominates the median and the moderate point sits far from it in ratio terms.
+    old_style_saturation = _saturation(image.reshape(-1, 3), reference=None)
+    assert old_style_saturation[3000] > 0.25  # the moderate-neutral point, judged against the (toe-dominated) global median
+
+    # The actual (density-local) candidate mask must recover most of the moderate-neutral
+    # population despite being a small minority overwhelmed by toe-converged content.
+    mask = _neutral_candidate_mask(image, neutral_fraction=0.5).reshape(-1)
+    assert mask[3000:].mean() > 0.5  # a healthy majority of the moderate-neutral pixels included
+
+
+def test_auto_density_balance_warns_on_low_density_separation():
+    # A cheap, narrow safety net (see _check_density_separation's docstring: it does NOT catch the
+    # toe-compression bug above, only a near-degenerate near-zero-span pair) — verify it actually
+    # fires rather than silently returning an unreliable profile.
+    close_shadow = (0.10, 0.13, 0.05)
+    close_highlight = (0.099, 0.129, 0.0498)  # deliberately almost identical density to close_shadow
+    image = np.concatenate(
+        [np.tile(close_shadow, (200, 1)), np.tile(close_highlight, (200, 1))], axis=0
+    ).reshape(-1, 1, 3)
+    with pytest.warns(UserWarning, match="unusually close in density"):
+        auto_density_balance(image, neutral_fraction=0.9)
+
+
+def test_check_density_separation_does_not_warn_on_the_reference_patches():
+    # The existing, known-good reference shadow/highlight patches used throughout this test suite
+    # must not trip the new warning — it's meant to catch genuinely degenerate cases, not flag
+    # normal, legitimate calibration pairs.
+    import warnings as warnings_module
+
+    from halide.calibration.auto import _check_density_separation
+
+    with warnings_module.catch_warnings():
+        warnings_module.simplefilter("error")
+        _check_density_separation(np.array(SHADOW_RGB), np.array(HIGHLIGHT_RGB))
 
 
 def test_roll_auto_density_balance_selects_neutral_candidates_per_frame_not_from_pooled_pixels(
