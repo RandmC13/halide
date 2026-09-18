@@ -1,0 +1,111 @@
+"""Persist a DensityProfile as JSON so a film-stock/process/scanner calibration can be reused
+across a whole roll (and across sessions) instead of re-solved per image — this is the mechanism
+behind "calibrate once per stock, not per image."
+
+Profiles can be referenced either by a full file path or by a bare name, resolved against a
+default directory (`~/.config/halide/profiles/`, or `$XDG_CONFIG_HOME/halide/profiles/` if set).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
+from pathlib import Path
+
+from halide.core.types import DensityProfile
+
+
+def default_profiles_dir() -> Path:
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(config_home) if config_home else Path.home() / ".config"
+    return base / "halide" / "profiles"
+
+
+def save_profile(profile: DensityProfile, path: str | Path) -> None:
+    Path(path).write_text(json.dumps(asdict(profile), indent=2) + "\n")
+
+
+def load_profile(path: str | Path) -> DensityProfile:
+    path = Path(path)
+    data = json.loads(path.read_text())
+    try:
+        return DensityProfile(
+            white_balance=tuple(data["white_balance"]),
+            density_scale=tuple(data["density_scale"]),
+            name=data.get("name"),
+            film_stock=data.get("film_stock"),
+            process=data.get("process"),
+            scanner=data.get("scanner"),
+            created_at=data.get("created_at"),
+            source=data.get("source", "manual"),
+        )
+    except KeyError as exc:
+        raise ValueError(f"{path}: missing required field {exc}") from exc
+
+
+def resolve_profile_path(name_or_path: str | Path, profiles_dir: Path | None = None) -> Path:
+    """Accept either an existing file path or a bare profile name, looked up in the profiles
+    directory as "<name>.json"."""
+    candidate = Path(name_or_path)
+    if candidate.exists():
+        return candidate
+
+    directory = profiles_dir or default_profiles_dir()
+    named = directory / (candidate.name if candidate.suffix == ".json" else f"{candidate.name}.json")
+    if named.exists():
+        return named
+
+    raise FileNotFoundError(
+        f"no such profile file {str(name_or_path)!r}, and no saved profile named "
+        f"{candidate.stem!r} found in {directory}"
+    )
+
+
+def save_named_profile(profile: DensityProfile, name: str, profiles_dir: Path | None = None) -> Path:
+    """Save `profile` under `name` in the profiles directory, stamping its name and creation time."""
+    directory = profiles_dir or default_profiles_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    stamped = replace(profile, name=name, created_at=datetime.now(timezone.utc).isoformat())
+    path = directory / f"{name}.json"
+    save_profile(stamped, path)
+    return path
+
+
+def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityProfile]]:
+    """(filename stem, profile) pairs for every valid saved profile, sorted by name. A single
+    unreadable file is skipped with a warning rather than making every other profile inaccessible."""
+    directory = profiles_dir or default_profiles_dir()
+    if not directory.exists():
+        return []
+    results = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            results.append((path.stem, load_profile(path)))
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"Warning: skipping unreadable profile {path}: {exc}")
+    return results
+
+
+def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = None) -> Path:
+    directory = profiles_dir or default_profiles_dir()
+    old_path = directory / f"{old_name}.json"
+    if not old_path.exists():
+        raise FileNotFoundError(f"no saved profile named {old_name!r} in {directory}")
+    new_path = directory / f"{new_name}.json"
+    if new_path.exists():
+        raise FileExistsError(f"a profile named {new_name!r} already exists in {directory}")
+
+    stamped = replace(load_profile(old_path), name=new_name)
+    save_profile(stamped, new_path)
+    old_path.unlink()
+    return new_path
+
+
+def delete_profile(name: str, profiles_dir: Path | None = None) -> None:
+    directory = profiles_dir or default_profiles_dir()
+    path = directory / f"{name}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"no saved profile named {name!r} in {directory}")
+    path.unlink()
