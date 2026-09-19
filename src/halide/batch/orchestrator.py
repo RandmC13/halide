@@ -16,10 +16,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import tifffile
+
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.processing import Stage, process_scan
 
 TIFF_SUFFIXES = (".tif", ".tiff")
+
+# Empirically measured (two real scans + one small synthetic image, all run through the real CLI
+# with peak RSS sampled from /proc/<pid>/status's VmHWM): peak worker RSS fits closely to
+# `baseline + K * decoded_pixel_bytes`, K ~= 23, baseline ~= 110 MiB. core/pipeline.py's chain of
+# elementwise numpy ops holds many float64-sized copies of the same pixel grid alive at once rather
+# than freeing intermediates eagerly, which is why K is so much larger than the naive "one copy of
+# the array" guess of ~2 (float32 -> float64). Both constants below are rounded up from the fit for
+# safety margin — see CLAUDE.md.
+_PEAK_RSS_MULTIPLIER = 24
+_BASELINE_PROCESS_OVERHEAD_BYTES = 150 * 1024 * 1024
+_FALLBACK_PER_WORKER_BYTES = 5 * 1024**3  # used only if a file's header can't be read at all
 
 
 @dataclass(frozen=True)
@@ -45,6 +58,75 @@ def discover_jobs(input_dir: str | Path, output_dir: str | Path, suffix: str = "
         name = f"{f.stem}{suffix}{f.suffix}" if suffix else f.name
         jobs.append(BatchJob(input_path=f, output_path=output_dir / name))
     return jobs
+
+
+def _decoded_pixel_bytes(path: Path) -> int | None:
+    """Cheaply estimate a TIFF's decoded in-memory size from its header alone (page shape/dtype),
+    without reading any pixel data — used to size the worker pool before processing starts. Returns
+    None if the header can't be read (caller falls back to a conservative default)."""
+    try:
+        with tifffile.TiffFile(path) as tf:
+            page = tf.pages[0]
+            shape = page.shape
+            itemsize = page.dtype.itemsize
+    except Exception:  # noqa: BLE001 — a bad header here must not abort worker-count sizing
+        return None
+    size = itemsize
+    for dim in shape:
+        size *= dim
+    return size
+
+
+def estimate_worker_memory_bytes(jobs: list[BatchJob]) -> int:
+    """Estimate the peak RSS a single worker needs to process the largest job in this batch (see
+    the module-level constants' docstring for how the estimate itself was derived)."""
+    sizes = [b for b in (_decoded_pixel_bytes(job.input_path) for job in jobs) if b is not None]
+    if not sizes:
+        return _FALLBACK_PER_WORKER_BYTES
+    return _BASELINE_PROCESS_OVERHEAD_BYTES + max(sizes) * _PEAK_RSS_MULTIPLIER
+
+
+def default_worker_count(jobs: list[BatchJob]) -> int:
+    """Auto-select a worker count that respects available RAM, not just CPU count. Found via real
+    testing: full-resolution scans are memory-heavy enough (a single frame's pipeline run can peak
+    around 4GB RSS) that on a typical machine, available memory — not CPU thread count — is the
+    actual limiting factor; running out of --workers-only-capped processes was still enough to get
+    a worker OOM-killed. Falls back to the old CPU-only heuristic if `psutil` can't report available
+    memory, or if none of the batch's files' headers could be read at all."""
+    cpu_cap = min(os.cpu_count() or 1, 6)
+    if not jobs:
+        return cpu_cap
+    try:
+        import psutil
+
+        available = psutil.virtual_memory().available
+    except Exception:  # noqa: BLE001 — an unsupported platform must not break batch processing
+        return cpu_cap
+    per_worker = estimate_worker_memory_bytes(jobs)
+    memory_cap = max(1, available // per_worker)
+    return max(1, min(cpu_cap, memory_cap, len(jobs)))
+
+
+def memory_budget_warning(jobs: list[BatchJob], requested_workers: int) -> str | None:
+    """Returns a human-readable warning if an explicitly-requested worker count looks likely to
+    exceed available memory, or None if it looks safe (or memory couldn't be checked at all). Pure
+    computation only, matching this module's no-UI-concerns design (see module docstring) — the
+    caller decides whether/how to display it."""
+    try:
+        import psutil
+
+        available = psutil.virtual_memory().available
+    except Exception:  # noqa: BLE001 — an unsupported platform must not break batch processing
+        return None
+    per_worker = estimate_worker_memory_bytes(jobs)
+    safe_workers = max(1, available // per_worker)
+    if requested_workers <= safe_workers:
+        return None
+    return (
+        f"Warning: --workers {requested_workers} may exceed available memory (~{per_worker / 1024**3:.1f} "
+        f"GB estimated per worker vs. ~{available / 1024**3:.1f} GB available suggests {safe_workers} "
+        f"worker(s) is safer) — continuing with {requested_workers} since it was explicitly requested."
+    )
 
 
 def _worker(
@@ -84,6 +166,9 @@ def run_batch(
     what happened or which file was involved. Instead, each future that raises BrokenProcessPool is
     recorded as its own failed BatchResult with an actionable message, exactly like a per-file
     processing error — the rest of the batch's real results are preserved either way."""
+    if max_workers is not None and max_workers < 1:
+        raise ValueError(f"max_workers must be at least 1, got {max_workers}")
+
     # Restrict underlying BLAS/OpenMP threading per worker process to avoid CPU oversubscription
     # when running several worker *processes* in parallel, each of which would otherwise also try
     # to multithread its own numpy/colour-science operations.
@@ -91,7 +176,7 @@ def run_batch(
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
 
-    workers = max_workers or min(os.cpu_count() or 1, 6)
+    workers = max_workers if max_workers is not None else default_worker_count(jobs)
     results: list[BatchResult] = []
 
     with ProcessPoolExecutor(max_workers=workers) as executor:

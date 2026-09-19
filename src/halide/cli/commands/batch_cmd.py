@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from halide.batch.orchestrator import discover_jobs, run_batch
+from halide.batch.orchestrator import default_worker_count, discover_jobs, memory_budget_warning, run_batch
 from halide.batch.progress import GridProgressRenderer
 from halide.cli._calibration_args import (
     add_calibration_arguments,
@@ -35,7 +35,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     add_tone_arguments(parser)
 
-    parser.add_argument("--workers", type=int, help="Number of parallel worker processes (default: auto)")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        help="Number of parallel worker processes (default: auto-selected from available memory "
+        "and CPU count — full-resolution scans are memory-heavy enough that RAM, not CPU threads, "
+        "is usually the real limit; pass this to override the auto-selected count)",
+    )
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
 
 
@@ -72,6 +78,17 @@ def run(args: argparse.Namespace) -> int:
     maybe_save_profile(args, density_profile)
     tone_params = resolve_tone_params(args)
 
+    if args.workers is not None:
+        workers = args.workers
+        warning = memory_budget_warning(jobs, workers)
+        if warning and not args.quiet:
+            print(warning)
+    else:
+        workers = default_worker_count(jobs)
+        if not args.quiet:
+            print(f"Auto-selected {workers} worker process(es) based on available memory and CPU count "
+                  "(pass --workers N to override)")
+
     renderer = None if args.quiet else GridProgressRenderer(total=len(jobs))
     job_index = {job: i for i, job in enumerate(jobs)}
 
@@ -83,7 +100,7 @@ def run(args: argparse.Namespace) -> int:
         renderer.start()
 
     results = run_batch(
-        jobs, stage, density_profile, tone_params, max_workers=args.workers, on_result=on_result
+        jobs, stage, density_profile, tone_params, max_workers=workers, on_result=on_result
     )
 
     if renderer:

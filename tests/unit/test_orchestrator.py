@@ -3,10 +3,22 @@ process pool crash can be simulated deterministically rather than relying on an 
 
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from halide.batch.orchestrator import BatchJob, BatchResult, run_batch
+import numpy as np
+
+from halide.batch.orchestrator import (
+    BatchJob,
+    BatchResult,
+    _FALLBACK_PER_WORKER_BYTES,
+    default_worker_count,
+    estimate_worker_memory_bytes,
+    memory_budget_warning,
+    run_batch,
+)
 from halide.core.types import ToneCurveParams
+from halide.io.tiff import write_tiff
 from halide.processing import Stage
 
 
@@ -65,3 +77,88 @@ def test_run_batch_records_a_broken_pool_as_a_failed_result_per_job_not_a_raised
     assert "--workers" in by_job[jobs[1]].error  # actionable, not a bare exception message
     assert "crashed" in by_job[jobs[2]].error
     assert len(reported) == 3  # progress callback still fires for the crashed jobs too
+
+
+def _job_with_image(tmp_path, name, shape):
+    path = tmp_path / name
+    write_tiff(path, np.zeros(shape, dtype=np.float32))
+    return BatchJob(input_path=path, output_path=tmp_path / f"out_{name}")
+
+
+def test_estimate_worker_memory_bytes_scales_with_decoded_image_size(tmp_path):
+    # Regression test for the real crash this sizing exists to prevent: a fixed worker-count
+    # default ignored that full-resolution scans are memory-heavy (~4GB peak RSS measured on a
+    # real 3276x4849 scan) — the estimate must actually grow with the image's pixel count, not
+    # just be a flat constant.
+    small = [_job_with_image(tmp_path, "small.tiff", (64, 64, 3))]
+    large = [_job_with_image(tmp_path, "large.tiff", (2000, 3000, 3))]
+    assert estimate_worker_memory_bytes(large) > estimate_worker_memory_bytes(small)
+
+
+def test_estimate_worker_memory_bytes_uses_the_largest_job_in_the_batch(tmp_path):
+    small = _job_with_image(tmp_path, "small.tiff", (64, 64, 3))
+    large = _job_with_image(tmp_path, "large.tiff", (2000, 3000, 3))
+    assert estimate_worker_memory_bytes([small, large]) == estimate_worker_memory_bytes([large])
+
+
+def test_estimate_worker_memory_bytes_falls_back_when_header_unreadable(tmp_path):
+    # A job whose input file doesn't exist (or is unreadable) must not crash worker-count sizing —
+    # it should fall back to a conservative fixed estimate instead.
+    missing = BatchJob(input_path=tmp_path / "does_not_exist.tiff", output_path=tmp_path / "out.tiff")
+    assert estimate_worker_memory_bytes([missing]) == _FALLBACK_PER_WORKER_BYTES
+
+
+def test_default_worker_count_is_capped_by_available_memory(tmp_path):
+    # Real bug this fixes: a memory-heavy full-res image with several CPU cores available used to
+    # default to a CPU-sized worker count regardless of how much RAM was actually free, which is
+    # exactly what let a real batch run OOM-kill a worker even without --workers being misused.
+    jobs = [_job_with_image(tmp_path, "large.tiff", (3000, 4000, 3))]  # ~137MB decoded -> several GB estimate
+    with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=1 * 1024**3)):
+        assert default_worker_count(jobs) == 1
+
+
+def test_default_worker_count_is_capped_by_cpu_when_memory_is_plentiful(tmp_path):
+    jobs = [_job_with_image(tmp_path, f"small_{i}.tiff", (64, 64, 3)) for i in range(10)]
+    with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 1024**3)), patch(
+        "os.cpu_count", return_value=4
+    ):
+        assert default_worker_count(jobs) == 4
+
+
+def test_default_worker_count_never_exceeds_the_number_of_jobs(tmp_path):
+    jobs = [_job_with_image(tmp_path, "small.tiff", (64, 64, 3))]
+    with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 1024**3)), patch(
+        "os.cpu_count", return_value=8
+    ):
+        assert default_worker_count(jobs) == 1
+
+
+def test_default_worker_count_falls_back_to_cpu_heuristic_if_psutil_is_unavailable(tmp_path):
+    jobs = [_job_with_image(tmp_path, "large.tiff", (3000, 4000, 3))]
+    with patch("psutil.virtual_memory", side_effect=RuntimeError("no such API on this platform")), patch(
+        "os.cpu_count", return_value=4
+    ):
+        assert default_worker_count(jobs) == 4
+
+
+def test_memory_budget_warning_fires_when_requested_workers_exceed_the_safe_estimate(tmp_path):
+    jobs = [_job_with_image(tmp_path, "large.tiff", (3000, 4000, 3))]
+    with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=1 * 1024**3)):
+        warning = memory_budget_warning(jobs, requested_workers=8)
+    assert warning is not None
+    assert "--workers 8" in warning
+
+
+def test_memory_budget_warning_is_none_when_requested_workers_look_safe(tmp_path):
+    jobs = [_job_with_image(tmp_path, "small.tiff", (64, 64, 3))]
+    with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 1024**3)):
+        assert memory_budget_warning(jobs, requested_workers=4) is None
+
+
+def test_run_batch_rejects_a_non_positive_explicit_worker_count(tmp_path):
+    jobs = _jobs(tmp_path, 1)
+    try:
+        run_batch(jobs, Stage.FULL, None, ToneCurveParams(), max_workers=0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
