@@ -128,6 +128,42 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   now recorded as its own `BatchResult` with an actionable message instead. `estimate_roll_density_profile`
   similarly needed to catch broad `Exception`, not just `ScanColorError` — a genuinely corrupt (not
   just unsupported-ICC) file raises straight from `tifffile` and was aborting the whole roll estimate.
+- **`batch.orchestrator.default_worker_count` sizes the worker pool from available RAM, not just
+  CPU count, and this is what `run_batch`/`halide batch` actually use whenever `--workers` isn't
+  given explicitly.** Found via real testing: even with the `BrokenProcessPool` handling above
+  making an OOM-killed worker survivable (no longer a hard crash), the *old* default
+  (`min(os.cpu_count(), 6)`) still picked a worker count that reliably triggered that OOM path on a
+  real memory-constrained machine, including at `--workers 2` — full-resolution 32-bit scans are
+  several hundred MB on disk and multiple GB decoded, and `core/pipeline.py`'s chain of elementwise
+  numpy ops holds many float64-sized copies of that pixel grid alive at once rather than freeing
+  intermediates eagerly. CPU thread count was never the actual limiting factor on such a machine.
+  `estimate_worker_memory_bytes` predicts a single worker's peak RSS as `baseline + K *
+  decoded_pixel_bytes` (reading each job's TIFF *header* only — page shape/dtype — never decoding
+  pixel data just to size the pool), where `baseline ≈ 150 MiB` and `K = 24` were fit from real
+  peak-RSS measurements (`/proc/<pid>/status`'s `VmHWM`) across a real 3276×4849 full-res scan
+  (~182 MiB decoded → ~4.25 GiB peak) and a small 500×500 synthetic image (~2.9 MiB decoded → ~175
+  MiB peak) — both constants rounded up from that fit for safety margin, not exact physics.
+  `default_worker_count` then takes `min(cpu_cap, available_memory // per_worker_estimate,
+  len(jobs))`, using `psutil.virtual_memory().available` (new dependency — the only reliable
+  cross-platform way to ask this; falls back to the old CPU-only heuristic if `psutil` can't answer,
+  e.g. an unsupported platform). An explicit `--workers N` is still fully respected as an override
+  (this is a *default*, not a hard cap) — but `memory_budget_warning` prints a heads-up when `N`
+  looks likely to exceed available memory, so a user overriding the default at least sees why it
+  might crash instead of just hitting the crash. Verified end-to-end against real full-res scans in
+  a genuinely memory-constrained environment: auto-selection correctly dropped to 1 worker and
+  completed successfully where the old default's implicit worker count (and an explicit
+  `--workers 6` override) both reproduced the real OOM/crash.
+  - **What looked like a separate bug but wasn't**: a user reported `--workers 2` appearing to
+    "spawn more than 2 processes" before crashing. Investigated by running a real batch under `ps`
+    and inspecting the process tree: with `--workers N`, exactly `N` real worker processes run the
+    actual pipeline, but Python's `multiprocessing` machinery itself adds a `resource_tracker`
+    process plus (on platforms/Python versions defaulting to the `forkserver` start method) a
+    persistent forkserver control process — both lightweight, neither runs `_worker`. These are
+    easy to mistake for extra heavy workers in a process list/task manager, but they aren't — no
+    code path was found that spawns more than the requested/selected worker count. Noted here so
+    this isn't re-investigated as a phantom bug: the actual reason `--workers 2` still crashed was
+    that 2 real full-resolution workers already exceeded the machine's available RAM, which the
+    memory-aware default above now accounts for.
 - **`--auto-density-roll` selects neutral candidates per frame, then pools candidates — never pools
   raw pixels across frames first.** The per-channel median used to judge "how neutral is this
   pixel" (`calibration/auto.py::_saturation`) is only a valid proxy for the film's own systematic
