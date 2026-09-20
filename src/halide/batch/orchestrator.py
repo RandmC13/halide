@@ -23,14 +23,16 @@ from halide.processing import Stage, process_scan
 
 TIFF_SUFFIXES = (".tif", ".tiff")
 
-# Empirically measured (two real scans + one small synthetic image, all run through the real CLI
-# with peak RSS sampled from /proc/<pid>/status's VmHWM): peak worker RSS fits closely to
-# `baseline + K * decoded_pixel_bytes`, K ~= 23, baseline ~= 110 MiB. core/pipeline.py's chain of
-# elementwise numpy ops holds many float64-sized copies of the same pixel grid alive at once rather
-# than freeing intermediates eagerly, which is why K is so much larger than the naive "one copy of
-# the array" guess of ~2 (float32 -> float64). Both constants below are rounded up from the fit for
-# safety margin — see CLAUDE.md.
-_PEAK_RSS_MULTIPLIER = 24
+# Empirically measured (three real full-res scans + one small synthetic image, all run through the
+# real CLI with peak RSS sampled from /proc/<pid>/status's VmHWM): peak worker RSS fits closely to
+# `baseline + K * decoded_pixel_bytes`, K ~= 9.7, baseline ~= 108 MiB, after the memory-usage pass
+# that fixed the two real causes of the old K ~= 23 (see git history around this comment and
+# CLAUDE.md for the investigation): io/icc.py's working-space conversion was silently upcasting
+# every pixel from float32 to float64 for the rest of the pipeline (a straight 2x on its own), and
+# core/density.py, core/invert.py, core/tone_render.py, and io/lut.py's chain of elementwise numpy
+# ops was allocating a fresh full-size temporary at nearly every line instead of reusing buffers via
+# `out=`/in-place ops. Both constants below are rounded up from the fit for safety margin.
+_PEAK_RSS_MULTIPLIER = 11
 _BASELINE_PROCESS_OVERHEAD_BYTES = 150 * 1024 * 1024
 _FALLBACK_PER_WORKER_BYTES = 5 * 1024**3  # used only if a file's header can't be read at all
 

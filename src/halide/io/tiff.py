@@ -39,7 +39,9 @@ def read_tiff(path: str | Path) -> RawScan:
     elif raw.dtype == np.uint32:
         image = raw.astype(np.float32) / 4294967295.0
     elif np.issubdtype(raw.dtype, np.floating):
-        image = raw.astype(np.float32)
+        # copy=False: the normal case (RawTherapee/darktable's linear-Rec.2020 export) already
+        # decodes as float32 — avoid a second full-size copy on top of tifffile's own decode.
+        image = raw.astype(np.float32, copy=False)
     else:
         raise ValueError(f"{path}: unsupported TIFF sample dtype {raw.dtype}")
 
@@ -57,7 +59,7 @@ def write_tiff(path: str | Path, image: np.ndarray, icc_profile: bytes | None = 
     if icc_profile is not None:
         write_kwargs["extratags"] = [(_ICC_TAG, "B", len(icc_profile), icc_profile)]
 
-    tifffile.imwrite(path, image.astype(np.float32), **write_kwargs)
+    tifffile.imwrite(path, image.astype(np.float32, copy=False), **write_kwargs)
 
 
 def copy_exif_metadata(source_path: str | Path, dest_path: str | Path, drop_icc: bool = False) -> bool:

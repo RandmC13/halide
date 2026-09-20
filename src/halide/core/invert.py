@@ -18,5 +18,7 @@ from halide.core._constants import MIN_TRANSMITTANCE
 def invert(negative_linear: np.ndarray) -> np.ndarray:
     """positive = 1 / negative. Unbounded: values are only guaranteed to be >= 1 for a
     well-exposed (density-balanced, transmittance <= 1) input, and are not clipped here."""
+    # `safe` is a fresh copy (never negative_linear itself) — reusing it as the reciprocal's `out`
+    # avoids a second full-size allocation.
     safe = np.maximum(negative_linear, MIN_TRANSMITTANCE)
-    return 1.0 / safe
+    return np.divide(1.0, safe, out=safe)

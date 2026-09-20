@@ -205,11 +205,23 @@ def parse_linear_rgb_profile(icc_bytes: bytes) -> LinearRGBProfile:
 def convert_to_working_space(img: np.ndarray, profile: LinearRGBProfile) -> np.ndarray:
     """Convert a linear-RGB image (in the color space described by `profile`) into this project's
     internal linear ACEScg working space."""
-    pcs_xyz = img @ profile.rgb_to_pcs_xyz.T
-    return colour.XYZ_to_RGB(
+    # The ICC matrix is parsed as float64 (its source s15Fixed16 tags only carry ~1.5e-5 precision
+    # to begin with, so float32 loses nothing real), but multiplying a float32 image by an
+    # unmodified float64 matrix silently upcasts the *whole image* to float64 — doubling every
+    # array this project's core pipeline allocates from here on. Casting the (tiny) matrix down to
+    # match the image keeps the matmul itself in the image's own dtype.
+    matrix = profile.rgb_to_pcs_xyz.astype(img.dtype, copy=False)
+    pcs_xyz = img @ matrix.T
+    # colour-science always computes in float64 internally regardless of input dtype (confirmed
+    # empirically — see the memory-usage investigation), so this call itself has one unavoidable
+    # float64 intermediate; casting its *result* back down here still stops that float64-ness from
+    # propagating through the rest of this project's pipeline (white balance, density balance,
+    # invert, tone render), which is where it would otherwise multiply repeatedly.
+    working = colour.XYZ_to_RGB(
         pcs_xyz,
         colourspace=colour.RGB_COLOURSPACES["ACEScg"],
         illuminant=_D50_XY,
         chromatic_adaptation_transform="Bradford",
         apply_cctf_encoding=False,
     )
+    return np.asarray(working, dtype=img.dtype)

@@ -85,6 +85,9 @@ def apply_density_balance(img: np.ndarray, profile: DensityProfile) -> np.ndarra
     """Per-channel power function on linear transmittance: x ** density_scale. Equivalent to
     scaling each channel's density (log10(1/x) * density_scale) and converting back — the power
     form avoids a log/exp round trip. Green's exponent is always 1.0 (no-op) by construction."""
+    # `safe` is a fresh copy of img (np.maximum never returns its input in place), so writing the
+    # power result back into it via `out=` is safe — img itself is never mutated — and avoids a
+    # second full-size allocation for what used to be a separate return value.
     safe = np.maximum(img, MIN_TRANSMITTANCE)
     exponent = np.asarray(profile.density_scale, dtype=safe.dtype)
-    return np.power(safe, exponent)
+    return np.power(safe, exponent, out=safe)
