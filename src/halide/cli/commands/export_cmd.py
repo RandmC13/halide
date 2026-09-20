@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 from halide.batch.orchestrator import (
@@ -14,6 +15,7 @@ from halide.batch.orchestrator import (
     run_export_batch,
 )
 from halide.batch.progress import GridProgressRenderer
+from halide.cli import console
 from halide.processing import export_delivery_image
 
 _FORMATS = ("png", "jpg", "jpeg")
@@ -56,9 +58,31 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_single(args: argparse.Namespace, input_path: Path) -> int:
-    warning = export_delivery_image(input_path, args.output, quality=args.quality)
+    if not input_path.exists():
+        raise SystemExit(f"input file not found: {input_path}")
+
+    output_path = Path(args.output)
+    if output_path.exists() and not console.confirm_overwrite(output_path):
+        return 1
+
+    start = time.monotonic()
+    label = f"{console.VERB['export']} {input_path.name}... (exposing)"
+    with console.themed_animation(
+        console.ENLARGER_FRAMES, label, min_width=console.ENLARGER_MIN_SIZE[0],
+        min_height=console.ENLARGER_MIN_SIZE[1], interval=0.45,
+    ):
+        warning = export_delivery_image(input_path, args.output, quality=args.quality)
     if warning:
-        print(f"Warning: {warning}")
+        print(console.warning(warning))
+
+    elapsed = time.monotonic() - start
+    size = output_path.stat().st_size
+    print(
+        console.success(
+            f"{console.VERB_PAST['export']} → {output_path} "
+            f"({console.human_time(elapsed)}, {console.human_bytes(size)})"
+        )
+    )
     return 0
 
 
@@ -80,7 +104,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path) -> int:
         workers = args.workers
         warning = export_memory_budget_warning(jobs, workers)
         if warning and not args.quiet:
-            print(warning)
+            print(console.warning(warning))
     else:
         workers = default_export_worker_count(jobs)
         if not args.quiet:
@@ -89,7 +113,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path) -> int:
                 "count (pass --workers N to override)"
             )
 
-    renderer = None if args.quiet else GridProgressRenderer(total=len(jobs))
+    renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="export")
     job_index = {job: i for i, job in enumerate(jobs)}
 
     def on_start(job):
@@ -107,17 +131,27 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path) -> int:
         jobs, quality=args.quality, max_workers=workers, on_result=on_result, on_start=on_start
     )
 
+    cancelled = len(results) < len(jobs)
     if renderer:
-        renderer.finish()
+        if cancelled:
+            done_indices = {job_index[r.job] for r in results}
+            not_started = [i for i in range(len(jobs)) if i not in done_indices]
+            renderer.cancel(not_started)
+        renderer.finish(cancelled=cancelled)
 
     for r in results:
         if r.warning:
-            print(f"Warning: {r.job.input_path.name}: {r.warning}")
+            print(console.warning(f"{r.job.input_path.name}: {r.warning}"))
 
     failures = [r for r in results if r.error]
-    if failures and renderer is None:
+    if renderer is None:
+        if cancelled:
+            print(console.warning(f"Cancelled — {len(results)}/{len(jobs)} frames processed."))
         for r in failures:
-            print(f"FAILED: {r.job.input_path.name}: {r.error}")
+            print(console.error(f"{r.job.input_path.name}: {r.error}"))
+
+    if cancelled:
+        return 130
     return 1 if failures else 0
 
 

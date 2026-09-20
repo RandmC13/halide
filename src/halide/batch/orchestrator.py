@@ -298,18 +298,30 @@ def _run_pool(
         for _ in range(min(max_workers, len(jobs))):
             submit_next()
 
-        while in_flight:
-            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
-            for future in done:
-                job = in_flight.pop(future)
-                try:
-                    result = future.result()
-                except BrokenProcessPool:
-                    result = _crashed_result(job)
-                results.append(result)
-                if on_result:
-                    on_result(result)
-                submit_next()
+        try:
+            while in_flight:
+                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                for future in done:
+                    job = in_flight.pop(future)
+                    try:
+                        result = future.result()
+                    except BrokenProcessPool:
+                        result = _crashed_result(job)
+                    results.append(result)
+                    if on_result:
+                        on_result(result)
+                    submit_next()
+        except KeyboardInterrupt:
+            # Ctrl+C can land on any bytecode boundary in this loop, not just inside wait() — the
+            # try wraps the whole loop body rather than just the blocking call. Workers in the same
+            # process group receive SIGINT directly too and will exit on their own; cancel_futures
+            # drops anything not yet started rather than waiting for a full drain. Return whatever
+            # completed rather than propagating, so the caller can report "X/N completed, cancelled"
+            # (see batch_cmd.py/export_cmd.py) instead of every already-finished result being lost
+            # to a bare KeyboardInterrupt traceback — the same "don't discard good results" principle
+            # this function already applies to BrokenProcessPool above.
+            executor.shutdown(wait=False, cancel_futures=True)
+            return results
 
     return results
 

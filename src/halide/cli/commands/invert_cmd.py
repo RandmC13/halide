@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import time
+from pathlib import Path
 
+from halide.cli import console
 from halide.cli._calibration_args import (
     add_calibration_arguments,
     add_stage_arguments,
@@ -25,14 +28,36 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    input_path = Path(args.input)
+    if not input_path.exists():
+        raise SystemExit(f"input file not found: {input_path}")
+
     stage = resolve_stage(args)
     density_profile = None if stage is Stage.INVERT_ONLY else resolve_density_profile(args)
     maybe_save_profile(args, density_profile)
     tone_params = resolve_tone_params(args)
 
+    output_path = Path(args.output)
+    if output_path.exists() and not console.confirm_overwrite(output_path):
+        return 1
+
+    start = time.monotonic()
+    label = f"{console.VERB['invert']} {input_path.name}... (agitating)"
     try:
-        process_scan(args.input, args.output, stage, density_profile, tone_params)
+        with console.themed_animation(
+            console.TANK_FRAMES, label, min_width=console.TANK_MIN_SIZE[0],
+            min_height=console.TANK_MIN_SIZE[1], interval=0.5,
+        ):
+            process_scan(args.input, args.output, stage, density_profile, tone_params)
     except ScanColorError as exc:
         raise SystemExit(str(exc))
 
+    elapsed = time.monotonic() - start
+    size = output_path.stat().st_size
+    print(
+        console.success(
+            f"{console.VERB_PAST['invert']} → {output_path} "
+            f"({console.human_time(elapsed)}, {console.human_bytes(size)})"
+        )
+    )
     return 0

@@ -74,6 +74,24 @@ def test_one_bad_frame_does_not_corrupt_the_rest(roll_dir, tmp_path):
     assert not failed[0].job.output_path.exists()
 
 
+def test_run_batch_keyboard_interrupt_returns_partial_results_instead_of_raising(roll_dir, tmp_path, monkeypatch):
+    # Regression test for the raw-traceback-on-Ctrl+C bug: _run_pool must catch KeyboardInterrupt
+    # around its wait() loop and return whatever completed so far, not propagate it and discard
+    # every already-finished result.
+    import halide.batch.orchestrator as orchestrator
+
+    def _raise_interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(orchestrator, "wait", _raise_interrupt)
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    jobs = discover_jobs(roll_dir, out_dir)
+    results = run_batch(jobs, Stage.FULL, density_profile=None, tone_params=ToneCurveParams(), max_workers=2)
+    assert results == []
+
+
 def test_batch_cli_end_to_end(roll_dir, tmp_path):
     out_dir = tmp_path / "out"
     exit_code = main(
@@ -93,6 +111,14 @@ def test_batch_cli_reports_failure_exit_code(roll_dir, tmp_path):
     out_dir = tmp_path / "out"
     exit_code = main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"])
     assert exit_code == 1
+
+
+def test_batch_cli_missing_input_directory_errors(tmp_path):
+    # Regression test: a nonexistent input directory used to propagate a raw FileNotFoundError
+    # traceback straight out of discover_jobs' iterdir() call.
+    out_dir = tmp_path / "out"
+    with pytest.raises(SystemExit, match="input directory not found"):
+        main(["batch", str(tmp_path / "does-not-exist"), str(out_dir)])
 
 
 def test_batch_cli_empty_directory_errors(tmp_path):

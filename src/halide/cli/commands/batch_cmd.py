@@ -7,6 +7,7 @@ from pathlib import Path
 
 from halide.batch.orchestrator import default_worker_count, discover_jobs, memory_budget_warning, run_batch
 from halide.batch.progress import GridProgressRenderer
+from halide.cli import console
 from halide.cli._calibration_args import (
     add_calibration_arguments,
     add_stage_arguments,
@@ -50,6 +51,8 @@ def run(args: argparse.Namespace) -> int:
 
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
+    if not input_dir.exists():
+        raise SystemExit(f"input directory not found: {input_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     jobs = discover_jobs(input_dir, output_dir, suffix=args.suffix)
@@ -82,14 +85,14 @@ def run(args: argparse.Namespace) -> int:
         workers = args.workers
         warning = memory_budget_warning(jobs, workers)
         if warning and not args.quiet:
-            print(warning)
+            print(console.warning(warning))
     else:
         workers = default_worker_count(jobs)
         if not args.quiet:
             print(f"Auto-selected {workers} worker process(es) based on available memory and CPU count "
                   "(pass --workers N to override)")
 
-    renderer = None if args.quiet else GridProgressRenderer(total=len(jobs))
+    renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="invert")
     job_index = {job: i for i, job in enumerate(jobs)}
 
     def on_start(job):
@@ -113,11 +116,21 @@ def run(args: argparse.Namespace) -> int:
         on_start=on_start,
     )
 
+    cancelled = len(results) < len(jobs)
     if renderer:
-        renderer.finish()
+        if cancelled:
+            done_indices = {job_index[r.job] for r in results}
+            not_started = [i for i in range(len(jobs)) if i not in done_indices]
+            renderer.cancel(not_started)
+        renderer.finish(cancelled=cancelled)
 
     failures = [r for r in results if r.error]
-    if failures and renderer is None:
+    if renderer is None:
+        if cancelled:
+            print(console.warning(f"Cancelled — {len(results)}/{len(jobs)} frames processed."))
         for r in failures:
-            print(f"FAILED: {r.job.input_path.name}: {r.error}")
+            print(console.error(f"{r.job.input_path.name}: {r.error}"))
+
+    if cancelled:
+        return 130
     return 1 if failures else 0

@@ -5,10 +5,19 @@ flags/logic."""
 from __future__ import annotations
 
 import argparse
+import difflib
+import sys
 
-from halide.calibration.profile_store import load_profile, resolve_profile_path, save_named_profile
+from halide.calibration.profile_store import list_profiles, load_profile, resolve_profile_path, save_named_profile
+from halide.cli import console
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.processing import Stage
+
+
+def _suggest_profile_name(name: str) -> str | None:
+    names = [n for n, _ in list_profiles()]
+    matches = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
+    return matches[0] if matches else None
 
 
 def add_stage_arguments(parser: argparse.ArgumentParser) -> None:
@@ -109,7 +118,14 @@ def resolve_density_profile(args: argparse.Namespace) -> DensityProfile | None:
         )
 
     if args.profile:
-        return load_profile(resolve_profile_path(args.profile))
+        try:
+            return load_profile(resolve_profile_path(args.profile))
+        except FileNotFoundError as exc:
+            suggestion = _suggest_profile_name(args.profile)
+            if suggestion and console.confirm(f"No profile named '{args.profile}' — did you mean '{suggestion}'?"):
+                return load_profile(resolve_profile_path(suggestion))
+            hint = f" — did you mean '{suggestion}'?" if suggestion else ""
+            raise SystemExit(f"{exc}{hint}") from exc
     if manual_given:
         return DensityProfile(
             white_balance=(args.rm if args.rm is not None else 1.0, 1.0, args.bm if args.bm is not None else 1.0),
@@ -129,6 +145,24 @@ def resolve_density_profile(args: argparse.Namespace) -> DensityProfile | None:
         if profile is None:
             raise SystemExit("no calibration picked — closed without using a calibration")
         return profile
+
+    if sys.stdin.isatty():
+        options = []
+        if hasattr(args, "pick"):
+            options.append(("pick", "Pick shadow/highlight points interactively now"))
+        options.append(("auto", "Use --auto-density (quick automatic estimate)"))
+        options.append(("cancel", "Cancel"))
+        choice = console.menu("No calibration source given for this image. What would you like to do?", options)
+        if choice == "pick":
+            from halide.gui.quick_pick import run_quick_pick
+
+            profile = run_quick_pick(args.input)
+            if profile is None:
+                raise SystemExit("no calibration picked — closed without using a calibration")
+            return profile
+        if choice == "auto":
+            return None
+
     pick_hint = " --pick to choose interactively," if hasattr(args, "pick") else ""
     raise SystemExit(
         "density balance requires a calibration source: --profile <name-or-path> (see `halide "
@@ -154,4 +188,4 @@ def maybe_save_profile(args: argparse.Namespace, profile: DensityProfile | None)
             "shared automatic profile, or a manual/--profile source instead)"
         )
     path = save_named_profile(profile, save_as)
-    print(f"Saved calibration profile as {save_as!r} ({path})")
+    print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))
