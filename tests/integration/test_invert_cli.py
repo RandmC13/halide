@@ -138,6 +138,28 @@ def test_profile_and_manual_override_conflict_errors(negative_tiff, tmp_path):
         main(["invert", str(negative_tiff), str(output), "--profile", str(profile_path), "--rm", "2.0"])
 
 
+def test_missing_input_file_errors_before_calibration_check(tmp_path):
+    # Regression test: calibration-source resolution used to run before the input path was ever
+    # checked, so a mistyped/missing input file reported "needs a calibration source" instead of
+    # the actually-wrong thing. Deliberately passes no calibration flags to prove input-file
+    # validation now happens first.
+    output = tmp_path / "positive.tiff"
+    with pytest.raises(SystemExit, match="input file not found"):
+        main(["invert", str(tmp_path / "does-not-exist.tiff"), str(output)])
+
+
+def test_profile_typo_suggests_closest_match(negative_tiff, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    from halide.calibration.profile_store import save_named_profile
+    from halide.core.types import DensityProfile
+
+    save_named_profile(DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78)), "portra400")
+
+    output = tmp_path / "positive.tiff"
+    with pytest.raises(SystemExit, match="did you mean 'portra400'"):
+        main(["invert", str(negative_tiff), str(output), "--profile", "portra40"])
+
+
 def test_rejects_scan_with_no_embedded_icc_profile(tmp_path):
     path = tmp_path / "no_icc.tiff"
     write_tiff(path, np.zeros((4, 4, 3), dtype=np.float32))  # no icc_profile

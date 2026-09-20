@@ -12,6 +12,7 @@ from halide.calibration.profile_store import (
     rename_profile,
     resolve_profile_path,
 )
+from halide.cli import console
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -36,11 +37,16 @@ def _run_list(args: argparse.Namespace) -> int:
         print(f"No saved profiles in {default_profiles_dir()}")
         return 0
 
+    print(console.rule())
     print(f"Saved profiles in {default_profiles_dir()}:")
     for name, profile in profiles:
         detail_bits = [b for b in (profile.film_stock, profile.process, profile.scanner) if b]
         detail = f" ({', '.join(detail_bits)})" if detail_bits else ""
-        print(f"  {name}{detail} — source: {profile.source}, created: {profile.created_at or 'unknown'}")
+        source_color = console.SOURCE_COLOR.get(profile.source, console.Style.DIM)
+        source = f"{source_color}{profile.source}{console.Style.RESET}"
+        print(f"  {console.Style.BOLD}{name}{console.Style.RESET}{detail} — source: {source}, "
+              f"created: {profile.created_at or 'unknown'}")
+    print(console.rule())
     return 0
 
 
@@ -67,7 +73,7 @@ def _run_rename(args: argparse.Namespace) -> int:
         new_path = rename_profile(args.old_name, args.new_name)
     except (FileNotFoundError, FileExistsError) as exc:
         raise SystemExit(str(exc))
-    print(f"Renamed {args.old_name!r} to {args.new_name!r} ({new_path})")
+    print(console.success(f"Renamed {args.old_name!r} to {args.new_name!r} ({new_path})"))
     return 0
 
 
@@ -76,7 +82,7 @@ def _run_delete(args: argparse.Namespace) -> int:
         delete_profile(args.name)
     except FileNotFoundError as exc:
         raise SystemExit(str(exc))
-    print(f"Deleted profile {args.name!r}")
+    print(console.success(f"Deleted profile {args.name!r}"))
     return 0
 
 

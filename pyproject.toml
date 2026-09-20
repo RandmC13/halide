@@ -19,7 +19,7 @@ dependencies = [
 dev = ["pytest"]
 
 [project.scripts]
-halide = "halide.cli.main:main"
+halide = "halide.cli.main:run_cli"
 
 [build-system]
 requires = ["setuptools>=68"]
