@@ -43,3 +43,69 @@ def test_export_warns_on_mismatched_profile(tmp_path, capsys):
     output = tmp_path / "out.png"
     assert main(["export", str(path), str(output)]) == 0
     assert "does not look like ACEScg" in capsys.readouterr().out
+
+
+def _write_positive(path):
+    write_tiff(path, np.full((4, 4, 3), 0.18, dtype=np.float32), icc_profile=build_icc(LINEAR_TAGS))
+
+
+def test_bulk_export_converts_every_tiff_in_directory(tmp_path):
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    for i in range(3):
+        _write_positive(in_dir / f"frame_{i:02d}.tiff")
+
+    out_dir = tmp_path / "out"
+    assert main(["export", str(in_dir), str(out_dir), "--quiet"]) == 0
+
+    outputs = sorted(out_dir.glob("*.png"))
+    assert len(outputs) == 3
+    with Image.open(outputs[0]) as delivered:
+        assert delivered.size == (4, 4)
+        assert delivered.mode == "RGB"
+        assert delivered.info.get("icc_profile") is not None
+
+
+def test_bulk_export_respects_format_and_suffix(tmp_path):
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    _write_positive(in_dir / "frame_00.tiff")
+
+    out_dir = tmp_path / "out"
+    assert (
+        main(
+            ["export", str(in_dir), str(out_dir), "--format", "jpg", "--suffix", "_delivery", "--quiet"]
+        )
+        == 0
+    )
+
+    outputs = list(out_dir.glob("*.jpg"))
+    assert len(outputs) == 1
+    assert outputs[0].name == "frame_00_delivery.jpg"
+
+
+def test_bulk_export_one_bad_frame_does_not_abort_the_rest(tmp_path):
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    _write_positive(in_dir / "frame_00.tiff")
+    write_tiff(in_dir / "frame_01.tiff", np.zeros((4, 4, 3), dtype=np.float32))  # no ICC at all
+    _write_positive(in_dir / "frame_02.tiff")
+
+    out_dir = tmp_path / "out"
+    # frame_01 has no ICC profile, which is only a warning (not an error) for export — sabotage it
+    # further with unreadable pixel data instead, to force a genuine per-file failure.
+    (in_dir / "frame_01.tiff").write_bytes(b"not a tiff")
+
+    exit_code = main(["export", str(in_dir), str(out_dir), "--quiet"])
+    assert exit_code == 1
+
+    assert (out_dir / "frame_00.png").exists()
+    assert (out_dir / "frame_02.png").exists()
+    assert not (out_dir / "frame_01.png").exists()
+
+
+def test_bulk_export_empty_directory_errors(tmp_path):
+    in_dir = tmp_path / "empty_in"
+    in_dir.mkdir()
+    out_dir = tmp_path / "out"
+    assert main(["export", str(in_dir), str(out_dir)]) == 1
