@@ -8,6 +8,7 @@ from __future__ import annotations
 from enum import Enum
 from pathlib import Path
 
+import colour
 import numpy as np
 
 from halide.calibration.auto import auto_density_balance, roll_auto_density_balance
@@ -20,9 +21,19 @@ from halide.io.icc import (
     output_profile_bytes,
     parse_linear_rgb_profile,
 )
+from halide.io.raster import write_delivery_image
 from halide.io.tiff import copy_exif_metadata, read_tiff, write_tiff
 
 IDENTITY_PROFILE = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0))
+
+_D50_XY = colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"]
+_ACESCG_MATRIX = colour.RGB_to_XYZ(
+    np.eye(3),
+    colourspace=colour.RGB_COLOURSPACES["ACEScg"],
+    illuminant=_D50_XY,
+    chromatic_adaptation_transform="Bradford",
+    apply_cctf_decoding=False,
+).T
 
 
 class Stage(Enum):
@@ -79,6 +90,35 @@ def process_scan(
     # Output is always ACEScg, a different profile than the source — exiftool must not clobber
     # the ACEScg tag we just wrote with the source's own ICC bytes.
     copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
+
+
+def export_delivery_image(input_path: str | Path, output_path: str | Path, quality: int = 95) -> str | None:
+    """Convert one processed ACEScg TIFF into a delivery-ready sRGB PNG/JPEG. The single place this
+    logic lives, so `halide export`'s single-file and bulk-directory modes, and the export worker
+    pool, don't duplicate it — same reasoning as process_scan above.
+
+    Returns a warning message if the input's embedded ICC profile doesn't look like ACEScg (or is
+    missing/unusable), or None if it looks fine. Unlike ScanColorError elsewhere in this module,
+    this is not fatal — export can still proceed by assuming ACEScg, it just may be wrong.
+    """
+    scan = read_tiff(input_path)
+    warning = None
+    if scan.icc_profile is None:
+        warning = f"{input_path} has no embedded ICC profile; assuming it is ACEScg."
+    else:
+        try:
+            profile = parse_linear_rgb_profile(scan.icc_profile)
+            if not np.allclose(profile.rgb_to_pcs_xyz, _ACESCG_MATRIX, atol=1e-3):
+                warning = (
+                    f"{input_path}'s embedded profile does not look like ACEScg — `halide export` "
+                    f"expects the output of `halide invert`/`halide batch`. Proceeding anyway, but "
+                    f"colors may be wrong."
+                )
+        except UnsupportedICCProfileError as exc:
+            warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway."
+
+    write_delivery_image(output_path, scan.image, quality=quality)
+    return warning
 
 
 def estimate_roll_density_profile(input_paths: list[str | Path], stride: int = 8) -> DensityProfile:

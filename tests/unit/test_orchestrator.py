@@ -12,10 +12,14 @@ from halide.batch.orchestrator import (
     BatchJob,
     BatchResult,
     _FALLBACK_PER_WORKER_BYTES,
+    default_export_worker_count,
     default_worker_count,
+    estimate_export_worker_memory_bytes,
     estimate_worker_memory_bytes,
+    export_memory_budget_warning,
     memory_budget_warning,
     run_batch,
+    run_export_batch,
 )
 from halide.core.types import ToneCurveParams
 from halide.io.tiff import write_tiff
@@ -159,6 +163,87 @@ def test_run_batch_rejects_a_non_positive_explicit_worker_count(tmp_path):
     jobs = _jobs(tmp_path, 1)
     try:
         run_batch(jobs, Stage.FULL, None, ToneCurveParams(), max_workers=0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+# --- export's own worker-pool sizing/execution: same machinery, its own calibrated constants ---
+
+
+def test_estimate_export_worker_memory_bytes_scales_with_decoded_image_size(tmp_path):
+    small = [_job_with_image(tmp_path, "small.tiff", (64, 64, 3))]
+    large = [_job_with_image(tmp_path, "large.tiff", (2000, 3000, 3))]
+    assert estimate_export_worker_memory_bytes(large) > estimate_export_worker_memory_bytes(small)
+
+
+def test_estimate_export_worker_memory_bytes_uses_its_own_calibrated_constants(tmp_path):
+    # export does far less per-file work than the full inversion pipeline (no white/density
+    # balance, invert, or tone-render stages) — its calibrated estimate for the same file must be
+    # smaller than the pipeline's own estimate, not the same value reused unchanged.
+    jobs = [_job_with_image(tmp_path, "large.tiff", (2000, 3000, 3))]
+    assert estimate_export_worker_memory_bytes(jobs) < estimate_worker_memory_bytes(jobs)
+
+
+def test_default_export_worker_count_is_capped_by_available_memory(tmp_path):
+    jobs = [_job_with_image(tmp_path, "large.tiff", (3000, 4000, 3))]
+    with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=1 * 1024**3)):
+        assert default_export_worker_count(jobs) == 1
+
+
+def test_default_export_worker_count_is_capped_by_cpu_when_memory_is_plentiful(tmp_path):
+    jobs = [_job_with_image(tmp_path, f"small_{i}.tiff", (64, 64, 3)) for i in range(10)]
+    with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 1024**3)), patch(
+        "os.cpu_count", return_value=4
+    ):
+        assert default_export_worker_count(jobs) == 4
+
+
+def test_export_memory_budget_warning_fires_when_requested_workers_exceed_the_safe_estimate(tmp_path):
+    jobs = [_job_with_image(tmp_path, "large.tiff", (3000, 4000, 3))]
+    with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=1 * 1024**3)):
+        warning = export_memory_budget_warning(jobs, requested_workers=8)
+    assert warning is not None
+    assert "--workers 8" in warning
+
+
+def test_export_memory_budget_warning_is_none_when_requested_workers_look_safe(tmp_path):
+    jobs = [_job_with_image(tmp_path, "small.tiff", (64, 64, 3))]
+    with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 1024**3)):
+        assert export_memory_budget_warning(jobs, requested_workers=4) is None
+
+
+def test_run_export_batch_records_a_broken_pool_as_a_failed_result_per_job(tmp_path):
+    jobs = _jobs(tmp_path, 3)
+
+    ok_future = Future()
+    ok_future.set_result(BatchResult(job=jobs[0], error=None))
+    crashed_future_1 = Future()
+    crashed_future_1.set_exception(BrokenProcessPool("simulated crash"))
+    crashed_future_2 = Future()
+    crashed_future_2.set_exception(BrokenProcessPool("simulated crash"))
+
+    futures_by_job = {jobs[0]: ok_future, jobs[1]: crashed_future_1, jobs[2]: crashed_future_2}
+
+    reported = []
+    with patch(
+        "halide.batch.orchestrator.ProcessPoolExecutor",
+        lambda *a, **k: _FakeExecutor(futures_by_job, *a, **k),
+    ):
+        results = run_export_batch(jobs, quality=95, on_result=reported.append)
+
+    assert len(results) == 3
+    by_job = {r.job: r for r in results}
+    assert by_job[jobs[0]].error is None
+    assert "crashed" in by_job[jobs[1]].error
+    assert "crashed" in by_job[jobs[2]].error
+    assert len(reported) == 3
+
+
+def test_run_export_batch_rejects_a_non_positive_explicit_worker_count(tmp_path):
+    jobs = _jobs(tmp_path, 1)
+    try:
+        run_export_batch(jobs, max_workers=0)
         assert False, "expected ValueError"
     except ValueError:
         pass
