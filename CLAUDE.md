@@ -164,6 +164,34 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
     this isn't re-investigated as a phantom bug: the actual reason `--workers 2` still crashed was
     that 2 real full-resolution workers already exceeded the machine's available RAM, which the
     memory-aware default above now accounts for.
+  - **The ~4x RSS multiplier itself (K, above) was a real, fixable inefficiency, not just something
+    to size the worker pool around** — found via a follow-up memory-usage investigation after a user
+    with 7 GB free and 16 cores still got auto-selected down to 1 worker on ~120 MB scans. Root
+    causes, both confirmed by profiling real scans' peak RSS (`/proc/<pid>/status`'s `VmHWM`) before
+    and after: (1) `io/icc.py::convert_to_working_space` multiplied the float32 image by the ICC
+    matrix without casting the matrix down first — numpy silently upcast the *entire image* to
+    float64 for the rest of the pipeline from that point on, a straight 2x that then compounded
+    through every later stage; the matrix's own source precision (ICC s15Fixed16 tags, ~1.5e-5) is
+    already coarser than float32, so casting it to the image's dtype before the matmul loses nothing
+    real. (2) `core/density.py`, `core/invert.py`, `core/tone_render.py`, and `io/lut.py::Cube1D.
+    lookup` each allocated a fresh full-size array at nearly every line of a multi-step elementwise
+    chain instead of reusing a buffer via `out=`/in-place ops — `Cube1D.lookup` additionally forced
+    its inputs to float64/int64 unconditionally regardless of the caller's dtype, undoing any
+    upstream dtype fix at the single most temporary-heavy stage. Fixed by casting the ICC matrix to
+    the image's dtype and downcasting `colour.XYZ_to_RGB`'s (which always computes in float64
+    internally, confirmed empirically — not itself changed) result back before it re-enters this
+    project's pipeline; by rewriting the elementwise stages to reuse private (never-the-caller's-
+    own) temporaries in place; and by making `Cube1D.lookup` follow its input's own dtype instead of
+    hardcoding float64/int64. None of this touches any core function's actual math — verified
+    against all three real test scans: peak RSS dropped from ~4.3 GiB to ~1.9 GiB (measured, not
+    estimated) per scan, and output pixels match the pre-fix output to float32 rounding noise only
+    (max relative diff ~2e-6, i.e. reordering-of-floating-point-ops noise, not a real difference) —
+    not bit-identical, but bit-identical was never the bar (the pre-fix pipeline already computed
+    partly in float64 and wrote float32 output, so its own output already wasn't the "true" float64
+    result either). `K`/`baseline` refit from the same real scans post-fix: `K = 11`, `baseline ≈
+    150 MiB` (still generously rounded up from a measured fit of `K ≈ 9.7`, `baseline ≈ 108 MiB`).
+    On the reporting user's own numbers (7 GB free, ~120 MB scans), this raises the auto-selected
+    worker count from 1 to 3 — the actual point of this fix, not memory usage for its own sake.
 - **`--auto-density-roll` selects neutral candidates per frame, then pools candidates — never pools
   raw pixels across frames first.** The per-channel median used to judge "how neutral is this
   pixel" (`calibration/auto.py::_saturation`) is only a valid proxy for the film's own systematic

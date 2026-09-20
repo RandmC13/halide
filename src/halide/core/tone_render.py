@@ -74,8 +74,12 @@ def estimate_exposure(
     see the project's memory/feedback notes on verifying against real data before calling a fix
     correct.
     """
-    density = np.log10(np.maximum(positive_linear, MIN_TRANSMITTANCE))
-    shadow_density = np.percentile(density, shadow_percentile)
+    # `density` is a private temporary (never positive_linear itself, and not returned) — safe to
+    # let both np.log10's `out=` and np.percentile's `overwrite_input=True` mutate/reorder it in
+    # place rather than each making their own extra full-size copy of it.
+    density = np.maximum(positive_linear, MIN_TRANSMITTANCE)
+    np.log10(density, out=density)
+    shadow_density = np.percentile(density, shadow_percentile, overwrite_input=True)
     return target_density - shadow_density
 
 
@@ -114,18 +118,25 @@ def tone_render(positive_linear: np.ndarray, params: ToneCurveParams) -> np.ndar
         return linear_passthrough(positive_linear * estimate_linear_scale(positive_linear))
 
     curve = _load_curve(params.curve_path or str(_DEFAULT_CURVE_PATH))
-    safe = np.maximum(positive_linear, MIN_TRANSMITTANCE)
     exposure = params.exposure if params.exposure is not None else estimate_exposure(positive_linear)
+    # `safe` is a fresh copy of positive_linear (never positive_linear itself), so every step below
+    # reuses its buffer via `out=`/in-place ops instead of allocating a new full-size array at each
+    # line — positive_linear itself is left untouched throughout (callers, e.g. auto-exposure above
+    # and repeated tone_render calls on the same array in tests, still see the original values).
+    safe = np.maximum(positive_linear, MIN_TRANSMITTANCE)
     # positive_linear == invert(negative) == 1/negative, so log10(positive_linear) is exactly the
     # negative's density (log10(1/negative)) — the domain this curve is defined over. `exposure`
     # positions that density range on the paper's response curve (the darkroom-printing analogue
     # of enlarger exposure time), matching the reference's `base_exposure` constant.
-    density = np.log10(safe) + exposure
+    density = np.log10(safe, out=safe)
+    density += exposure
     # `contrast` compresses/expands density around the curve's own domain midpoint before lookup —
     # see ToneCurveParams' docstring for why this exists (contrast=1.0 is the untouched reference
     # curve).
     pivot = (curve.domain_min + curve.domain_max) / 2.0
-    density = pivot + (density - pivot) * params.contrast
+    density -= pivot
+    density *= params.contrast
+    density += pivot
     return curve.lookup(density)
 
 

@@ -22,15 +22,36 @@ class Cube1D:
     def lookup(self, x: np.ndarray) -> np.ndarray:
         """Linearly interpolate this LUT at x (any shape). Inputs outside
         [domain_min, domain_max] are clamped to the LUT's endpoints — the same floor/ceiling a
-        physical curve (e.g. photographic paper) has."""
+        physical curve (e.g. photographic paper) has.
+
+        Follows `x`'s own dtype throughout (used to hardcode float64/int64 regardless of caller
+        dtype) — on a full-size image array, forcing float64 here silently doubled the memory of
+        this function's several image-shaped temporaries even when the rest of the pipeline had
+        carefully stayed in float32. `x`'s own precision already bounds the result's accuracy, so
+        this changes nothing about correctness, only which dtype the arithmetic runs in.
+        """
+        x = np.asarray(x)
         size = self.values.shape[0]
-        t = (np.asarray(x, dtype=np.float64) - self.domain_min) / (self.domain_max - self.domain_min)
-        t = np.clip(t, 0.0, 1.0)
-        idx = t * (size - 1)
-        lo = np.floor(idx).astype(np.int64)
-        hi = np.minimum(lo + 1, size - 1)
-        frac = idx - lo
-        return self.values[lo] * (1 - frac) + self.values[hi] * frac
+        values = self.values if self.values.dtype == x.dtype else self.values.astype(x.dtype)
+
+        t = x - self.domain_min  # fresh array — safe to keep mutating in place from here
+        t *= 1.0 / (self.domain_max - self.domain_min)
+        np.clip(t, 0.0, 1.0, out=t)
+        t *= size - 1
+        floor_t = np.floor(t)
+        lo = floor_t.astype(np.int32)
+        t -= floor_t  # t now holds the interpolation fraction
+        hi = lo + 1
+        np.minimum(hi, size - 1, out=hi)
+
+        # lo + frac * (hi - lo), algebraically identical to lo*(1-frac) + hi*frac but reuses the
+        # two gathered buffers in place instead of allocating separate product/sum temporaries.
+        gathered_lo = values[lo]
+        gathered_hi = values[hi]
+        gathered_hi -= gathered_lo
+        gathered_hi *= t
+        gathered_lo += gathered_hi
+        return gathered_lo
 
 
 def load_1d_cube(path: str | Path) -> Cube1D:
