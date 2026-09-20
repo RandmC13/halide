@@ -5,6 +5,7 @@ processing logic at all."""
 
 from __future__ import annotations
 
+import random
 import sys
 
 from halide.batch.orchestrator import BatchResult
@@ -14,6 +15,8 @@ class _T:
     CYAN = "\033[96m"
     GREEN = "\033[92m"
     YELLOW = "\033[93m"
+    ORANGE = "\033[38;5;208m"
+    RED = "\033[91m"
     BOLD = "\033[1m"
     DIM = "\033[2m"
     RESET = "\033[0m"
@@ -25,12 +28,15 @@ class _T:
 
 
 _BLOCK = "██"
-_STATE_COLOR = {"pending": _T.DIM, "done": _T.GREEN, "error": _T.YELLOW}
+_STATE_COLOR = {"pending": _T.DIM, "processing": _T.ORANGE, "done": _T.GREEN, "error": _T.RED}
 
 
 class GridProgressRenderer:
-    """A colored block grid, one block per job, redrawn in place as jobs complete — ported from
-    the original script's terminal UI, decoupled from the processing it's reporting on."""
+    """A colored block grid, one block per job, redrawn in place as jobs start and complete —
+    ported from the original script's terminal UI, decoupled from the processing it's reporting
+    on. Each job is assigned to a random grid cell (fixed at construction time) rather than its
+    own index's position, so the grid fills in a scattered order rather than mechanically
+    top-left-to-bottom-right regardless of what order jobs actually start/finish in."""
 
     def __init__(self, total: int, columns: int = 9):
         self.total = total
@@ -38,15 +44,22 @@ class GridProgressRenderer:
         self.completed = 0
         self.failures: list[tuple[str, str]] = []  # (filename, error message)
         self._states = ["pending"] * total
+        self._cell_job = list(range(total))  # cell_job[grid position] -> job index
+        random.shuffle(self._cell_job)
 
     def _rows(self) -> int:
         return (self.total + self.columns - 1) // self.columns
 
     def _total_lines(self) -> int:
-        return self._rows() * 2 + 2
+        rows = self._rows()
+        # rows of blocks + a blank separator between each pair of rows + a blank line + the
+        # "[ Processed x/y ]" line. Must exactly match what _redraw() actually writes below, or
+        # its cursor_up() will drift by the difference on every subsequent redraw.
+        return rows + max(rows - 1, 0) + 2
 
     def start(self) -> None:
         sys.stdout.write("\n" * self._total_lines())
+        self._redraw()  # draw the initial all-pending grid immediately, not on the first report()
 
     def _redraw(self) -> None:
         rows = self._rows()
@@ -54,9 +67,10 @@ class GridProgressRenderer:
         for r in range(rows):
             row = ""
             for c in range(self.columns):
-                idx = r * self.columns + c
-                if idx < self.total:
-                    color = _STATE_COLOR[self._states[idx]]
+                pos = r * self.columns + c
+                if pos < self.total:
+                    job_index = self._cell_job[pos]
+                    color = _STATE_COLOR[self._states[job_index]]
                     row += f"{color}{_BLOCK}{_T.RESET} "
             sys.stdout.write(f"{_T.CLEAR_LINE}    {row}\n")
             if r < rows - 1:
@@ -67,6 +81,10 @@ class GridProgressRenderer:
             f"{f' — {len(self.failures)} failed' if self.failures else ''} ]\n"
         )
         sys.stdout.flush()
+
+    def mark_processing(self, index: int) -> None:
+        self._states[index] = "processing"
+        self._redraw()
 
     def report(self, index: int, result: BatchResult) -> None:
         self._states[index] = "error" if result.error else "done"

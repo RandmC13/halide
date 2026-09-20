@@ -112,6 +112,8 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path) -> int:
         renderer.start()
 
     for i, job in enumerate(jobs):
+        if renderer:
+            renderer.mark_processing(i)
         try:
             warning = _export_one(job.input_path, job.output_path, args.quality)
             if warning:
