@@ -10,7 +10,7 @@ computes its own per-frame automatic profile") before calling run_batch.
 from __future__ import annotations
 
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from pathlib import Path
@@ -151,23 +151,30 @@ def run_batch(
     tone_params: ToneCurveParams,
     max_workers: int | None = None,
     on_result: Callable[[BatchResult], None] | None = None,
+    on_start: Callable[[BatchJob], None] | None = None,
 ) -> list[BatchResult]:
-    """Process every job in a process pool, in parallel. Calls on_result(result) as each job
-    completes, if given — purely for progress reporting, this function has no rendering logic
-    of its own. A single job's failure is captured in its BatchResult, not raised — the rest of
-    the batch keeps running.
+    """Process every job in a process pool, in parallel. Calls on_start(job) when a job is handed
+    to a worker and on_result(result) when it completes, if given — purely for progress reporting,
+    this function has no rendering logic of its own. A single job's failure is captured in its
+    BatchResult, not raised — the rest of the batch keeps running.
+
+    Jobs are submitted in a rolling window of at most `workers` in flight at once (rather than all
+    of them up front) specifically so on_start reflects jobs actually dispatched to a worker, not
+    merely queued — a caller rendering "processing" status for every submitted job would otherwise
+    show the whole batch as active immediately even though only `workers` can run at a time.
 
     That guarantee covers exceptions raised *inside* a worker (caught by _worker's own try/except).
     A worker process dying outright — OOM-killed, segfault, anything that kills it before its own
     try/except can run — is a different failure mode: found via real testing on full-resolution
     scans (a single frame's pipeline run can peak around 4GB RSS; enough parallel workers on a
     memory-constrained machine gets one OOM-killed). Once that happens, ProcessPoolExecutor marks
-    the whole pool broken and every *other* pending future raises BrokenProcessPool too — without
-    the handling below, that would propagate straight out of this function, discarding every
-    already-completed BatchResult and surfacing nothing but a bare traceback that gives no hint
-    what happened or which file was involved. Instead, each future that raises BrokenProcessPool is
-    recorded as its own failed BatchResult with an actionable message, exactly like a per-file
-    processing error — the rest of the batch's real results are preserved either way."""
+    the whole pool broken and every *other* pending/future submission raises BrokenProcessPool too
+    — without the handling below, that would propagate straight out of this function, discarding
+    every already-completed BatchResult and surfacing nothing but a bare traceback that gives no
+    hint what happened or which file was involved. Instead, each job that hits BrokenProcessPool
+    (whether already in flight or still queued when the pool broke) is recorded as its own failed
+    BatchResult with an actionable message, exactly like a per-file processing error — the rest of
+    the batch's real results are preserved either way."""
     if max_workers is not None and max_workers < 1:
         raise ValueError(f"max_workers must be at least 1, got {max_workers}")
 
@@ -181,25 +188,53 @@ def run_batch(
     workers = max_workers if max_workers is not None else default_worker_count(jobs)
     results: list[BatchResult] = []
 
+    def _crashed_result(job: BatchJob) -> BatchResult:
+        return BatchResult(
+            job=job,
+            error=(
+                "worker process crashed while processing this file or another file in the "
+                "same batch (often caused by running out of memory) — try re-running with "
+                "a lower --workers value"
+            ),
+        )
+
     with ProcessPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(_worker, job, stage, density_profile, tone_params): job for job in jobs
-        }
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-            except BrokenProcessPool:
-                job = futures[future]
-                result = BatchResult(
-                    job=job,
-                    error=(
-                        "worker process crashed while processing this file or another file in the "
-                        "same batch (often caused by running out of memory) — try re-running with "
-                        "a lower --workers value"
-                    ),
-                )
-            results.append(result)
-            if on_result:
-                on_result(result)
+        pending = list(jobs)
+        in_flight: dict = {}
+
+        def submit_next() -> None:
+            # Loops rather than submitting exactly one job, so that once the pool is broken every
+            # remaining queued job is immediately resolved as a crashed result instead of being
+            # submitted (and raising) one at a time as later callers happen to invoke this again.
+            while pending:
+                job = pending.pop(0)
+                try:
+                    future = executor.submit(_worker, job, stage, density_profile, tone_params)
+                except BrokenProcessPool:
+                    result = _crashed_result(job)
+                    results.append(result)
+                    if on_result:
+                        on_result(result)
+                    continue
+                in_flight[future] = job
+                if on_start:
+                    on_start(job)
+                break
+
+        for _ in range(min(workers, len(jobs))):
+            submit_next()
+
+        while in_flight:
+            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+            for future in done:
+                job = in_flight.pop(future)
+                try:
+                    result = future.result()
+                except BrokenProcessPool:
+                    result = _crashed_result(job)
+                results.append(result)
+                if on_result:
+                    on_result(result)
+                submit_next()
 
     return results

@@ -92,6 +92,10 @@ def run(args: argparse.Namespace) -> int:
     renderer = None if args.quiet else GridProgressRenderer(total=len(jobs))
     job_index = {job: i for i, job in enumerate(jobs)}
 
+    def on_start(job):
+        if renderer:
+            renderer.mark_processing(job_index[job])
+
     def on_result(result):
         if renderer:
             renderer.report(job_index[result.job], result)
@@ -100,7 +104,13 @@ def run(args: argparse.Namespace) -> int:
         renderer.start()
 
     results = run_batch(
-        jobs, stage, density_profile, tone_params, max_workers=workers, on_result=on_result
+        jobs,
+        stage,
+        density_profile,
+        tone_params,
+        max_workers=workers,
+        on_result=on_result,
+        on_start=on_start,
     )
 
     if renderer:
