@@ -109,3 +109,17 @@ def test_bulk_export_empty_directory_errors(tmp_path):
     in_dir.mkdir()
     out_dir = tmp_path / "out"
     assert main(["export", str(in_dir), str(out_dir)]) == 1
+
+
+def test_bulk_export_runs_in_parallel_with_explicit_workers(tmp_path):
+    # Exercises the real ProcessPoolExecutor path (not a fake executor) with more than one worker,
+    # to catch anything that only works when everything stays in a single process (e.g. a worker
+    # function or its arguments failing to pickle).
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    for i in range(4):
+        _write_positive(in_dir / f"frame_{i:02d}.tiff")
+
+    out_dir = tmp_path / "out"
+    assert main(["export", str(in_dir), str(out_dir), "--workers", "2", "--quiet"]) == 0
+    assert len(list(out_dir.glob("*.png"))) == 4
