@@ -130,7 +130,7 @@ def _curve():
 
 def _synthetic_positive(d_lo: float, d_hi: float, n: int = 20_000) -> np.ndarray:
     """A neutral RGB "positive" whose luminance density (log10) spans exactly [d_lo, d_hi] — so
-    its 0.1/99.9th percentiles sit a hair inside those, at known values."""
+    its robust percentiles (see negative_density_range) sit a hair inside those, at known values."""
     density = np.linspace(d_lo, d_hi, n)
     return np.repeat((10.0**density)[:, None], 3, axis=1)
 

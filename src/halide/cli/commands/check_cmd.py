@@ -42,7 +42,7 @@ def run(args: argparse.Namespace) -> int:
         return 1
     report = assess_roll({f.name: meta for f, meta in zip(files, read_roll_scan_metadata(files).values())})
 
-    print(console.rule())
+    print(console.full_width_rule())
     print(f"Checked {len(files)} scan(s)")
 
     print(f"\n{console.Style.BOLD}Camera exposure when digitizing{console.Style.RESET}")
@@ -83,5 +83,5 @@ def run(args: argparse.Namespace) -> int:
 
     width = min(shutil.get_terminal_size((100, 24)).columns, 100)
     print(f"\n{textwrap.fill(SCANNING_GUIDANCE, width=width, initial_indent='  ', subsequent_indent='  ')}")
-    print(console.rule())
+    print(console.full_width_rule())
     return 1 if report.has_issues else 0

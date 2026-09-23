@@ -48,16 +48,15 @@ def _run_list(args: argparse.Namespace) -> int:
         print(f"No saved profiles in {default_profiles_dir()}")
         return 0
 
-    print(console.rule())
-    print(f"Saved profiles in {default_profiles_dir()}:")
+    lines = [f"Saved profiles in {default_profiles_dir()}:"]
     for name, profile in profiles:
         detail_bits = [b for b in (profile.film_stock, profile.process, profile.scanner) if b]
         detail = f" ({', '.join(detail_bits)})" if detail_bits else ""
         source_color = console.SOURCE_COLOR.get(profile.source, console.Style.DIM)
         source = f"{source_color}{profile.source}{console.Style.RESET}"
-        print(f"  {console.Style.BOLD}{name}{console.Style.RESET}{detail} — source: {source}, "
-              f"created: {profile.created_at or 'unknown'}")
-    print(console.rule())
+        lines.append(f"  {console.Style.BOLD}{name}{console.Style.RESET}{detail} — source: {source}, "
+                     f"created: {profile.created_at or 'unknown'}")
+    print(console.framed(lines))
     return 0
 
 
