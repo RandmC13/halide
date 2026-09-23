@@ -329,6 +329,15 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   frame-picker (choose which image in the roll to calibrate against) before the existing
   shadow/highlight picker makes sense to open at all. Don't wire up `--pick` on `batch` without
   designing that piece first.
+- **The batch/export progress display is a static contact sheet, not a moving strip**
+  (`batch/progress.py`). The whole roll is drawn at once in sprocket-edged strips of six 3:2
+  frames (`███`); only individual frames animate (pulse while developing, fade to near-black when
+  done). It replaced a one-strip window that wiped across to the next slice, which the user found
+  busy rather than film-like. The layout (full → compact shared sprockets → scrolling with
+  "N frames above/below") is fixed at start from the terminal size so every redraw has the same
+  height, and the status line is trimmed rather than allowed to wrap — both because the in-place
+  redraw's cursor-up counts logical lines, and a taller-than-screen or wrapped frame leaves stale
+  rows behind (verified by replaying real `halide batch` pty output into a virtual terminal).
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 
