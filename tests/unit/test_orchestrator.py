@@ -12,6 +12,8 @@ from halide.batch.orchestrator import (
     BatchJob,
     BatchResult,
     _FALLBACK_PER_WORKER_BYTES,
+    _cpu_cap,
+    _pool_context,
     default_export_worker_count,
     default_worker_count,
     estimate_export_worker_memory_bytes,
@@ -124,7 +126,7 @@ def test_default_worker_count_is_capped_by_available_memory(tmp_path):
 def test_default_worker_count_is_capped_by_cpu_when_memory_is_plentiful(tmp_path):
     jobs = [_job_with_image(tmp_path, f"small_{i}.tiff", (64, 64, 3)) for i in range(10)]
     with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 1024**3)), patch(
-        "os.cpu_count", return_value=4
+        "halide.batch.orchestrator._cpu_cap", return_value=4
     ):
         assert default_worker_count(jobs) == 4
 
@@ -132,7 +134,7 @@ def test_default_worker_count_is_capped_by_cpu_when_memory_is_plentiful(tmp_path
 def test_default_worker_count_never_exceeds_the_number_of_jobs(tmp_path):
     jobs = [_job_with_image(tmp_path, "small.tiff", (64, 64, 3))]
     with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 1024**3)), patch(
-        "os.cpu_count", return_value=8
+        "halide.batch.orchestrator._cpu_cap", return_value=8
     ):
         assert default_worker_count(jobs) == 1
 
@@ -140,9 +142,58 @@ def test_default_worker_count_never_exceeds_the_number_of_jobs(tmp_path):
 def test_default_worker_count_falls_back_to_cpu_heuristic_if_psutil_is_unavailable(tmp_path):
     jobs = [_job_with_image(tmp_path, "large.tiff", (3000, 4000, 3))]
     with patch("psutil.virtual_memory", side_effect=RuntimeError("no such API on this platform")), patch(
-        "os.cpu_count", return_value=4
+        "halide.batch.orchestrator._cpu_cap", return_value=4
     ):
         assert default_worker_count(jobs) == 4
+
+
+def test_cpu_cap_is_the_physical_core_count():
+    # One worker per physical core: a hyperthread sibling adds little speed to a numpy-bound
+    # worker but costs a whole extra frame of memory. No longer a fixed cap of 6.
+    with patch("psutil.cpu_count", side_effect=lambda logical=True: 16 if logical else 8):
+        assert _cpu_cap() == 8
+
+
+def test_cpu_cap_falls_back_to_logical_cores_when_physical_is_unknown():
+    with patch("psutil.cpu_count", return_value=None), patch("os.cpu_count", return_value=12):
+        assert _cpu_cap() == 12
+
+
+def test_cpu_cap_is_at_least_one():
+    with patch("psutil.cpu_count", return_value=None), patch("os.cpu_count", return_value=None):
+        assert _cpu_cap() == 1
+
+
+def test_pool_context_preloads_halide_into_the_forkserver_where_available():
+    with patch("multiprocessing.get_all_start_methods", return_value=["fork", "spawn", "forkserver"]):
+        with patch("multiprocessing.context.ForkServerContext.set_forkserver_preload") as preload:
+            context = _pool_context()
+    assert context.get_start_method() == "forkserver"
+    modules = preload.call_args.args[0]
+    assert "halide.processing" in modules and "__main__" in modules  # keeps Python's own default
+
+
+def test_pool_context_leaves_platforms_without_forkserver_on_their_default():
+    with patch("multiprocessing.get_all_start_methods", return_value=["spawn"]):
+        assert _pool_context() is None
+
+
+def test_run_pool_hands_the_preload_context_to_the_executor(tmp_path):
+    job = BatchJob(input_path=tmp_path / "a.tif", output_path=tmp_path / "b.tif")
+    future: Future = Future()
+    future.set_result(BatchResult(job=job, error=None))
+    seen = {}
+
+    def fake_executor(*args, **kwargs):
+        seen.update(kwargs)
+        return _FakeExecutor({job: future})
+
+    sentinel = object()
+    with patch("halide.batch.orchestrator.ProcessPoolExecutor", side_effect=fake_executor), patch(
+        "halide.batch.orchestrator._pool_context", return_value=sentinel
+    ):
+        run_batch([job], Stage.FULL, None, ToneCurveParams(), max_workers=1)
+    assert seen["mp_context"] is sentinel
 
 
 def test_memory_budget_warning_fires_when_requested_workers_exceed_the_safe_estimate(tmp_path):
@@ -198,7 +249,7 @@ def test_default_export_worker_count_is_capped_by_available_memory(tmp_path):
 def test_default_export_worker_count_is_capped_by_cpu_when_memory_is_plentiful(tmp_path):
     jobs = [_job_with_image(tmp_path, f"small_{i}.tiff", (64, 64, 3)) for i in range(10)]
     with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 1024**3)), patch(
-        "os.cpu_count", return_value=4
+        "halide.batch.orchestrator._cpu_cap", return_value=4
     ):
         assert default_export_worker_count(jobs) == 4
 
