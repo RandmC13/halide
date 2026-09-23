@@ -20,13 +20,12 @@ from PySide6.QtWidgets import QCheckBox, QDialog, QHBoxLayout, QLabel, QSlider, 
 from halide.core.density import apply_density_balance, apply_white_balance, solve_density_balance
 from halide.core.invert import invert
 from halide.core.pipeline import run_pipeline
-from halide.core.tone_render import estimate_exposure
+from halide.core.tone_render import resolve_tone
 from halide.core.types import ToneCurveParams
 from halide.io.raster import to_srgb_8bit
 
 _EXPOSURE_RANGE = (-200, 200)  # hundredths, i.e. -2.00..2.00
 _CONTRAST_RANGE = (0, 100)  # hundredths, i.e. 0.00..1.00
-_DEFAULT_CONTRAST = 0.5
 
 
 def _to_qimage_uint8(rgb_uint8: np.ndarray) -> QImage:
@@ -53,7 +52,7 @@ class PreviewPopup(QDialog):
 
         self.preview_working = preview_working
         self.live_profile = solve_density_balance(shadow_rgb, highlight_rgb)
-        self._auto_exposure = self._compute_auto_exposure()
+        self._auto_exposure, self._auto_contrast = self._compute_auto_fit()
 
         self._build_ui()
 
@@ -68,16 +67,28 @@ class PreviewPopup(QDialog):
         popup - called by main_window.py whenever a point changes while this popup is still open,
         so the preview actually tracks what you're picking instead of going stale. Any active
         Fine-tune slider values are left exactly as the user set them; only the underlying density
-        calibration (and, if Fine-tune is off, the auto-exposure seed) changes."""
+        calibration (and, if Fine-tune is off, the fitted exposure/grade the sliders start from)
+        changes."""
         self.live_profile = solve_density_balance(shadow_rgb, highlight_rgb)
-        self._auto_exposure = self._compute_auto_exposure()
+        self._auto_exposure, self._auto_contrast = self._compute_auto_fit()
+        if not self.finetune_checkbox.isChecked():
+            self._seed_sliders_from_fit()
         self._render()
 
-    def _compute_auto_exposure(self) -> float:
+    def _compute_auto_fit(self) -> tuple[float, float]:
+        """The same per-image print fit the CLI uses (core.tone_render.fit_print), measured on this
+        downsampled preview — so Fine-tune starts from what `halide invert` would do, not from an
+        unrelated default."""
         wb = apply_white_balance(self.preview_working, self.live_profile)
         db = apply_density_balance(wb, self.live_profile)
-        positive = invert(db)
-        return estimate_exposure(positive)
+        resolved = resolve_tone(invert(db), ToneCurveParams())
+        return resolved.exposure, resolved.contrast
+
+    def _seed_sliders_from_fit(self) -> None:
+        for slider, value in ((self.exposure_slider, self._auto_exposure), (self.contrast_slider, self._auto_contrast)):
+            slider.blockSignals(True)
+            slider.setValue(round(value * 100))
+            slider.blockSignals(False)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -106,12 +117,12 @@ class PreviewPopup(QDialog):
         contrast_row.addWidget(QLabel("Contrast"))
         self.contrast_slider = QSlider(Qt.Orientation.Horizontal)
         self.contrast_slider.setRange(*_CONTRAST_RANGE)
-        self.contrast_slider.setValue(round(_DEFAULT_CONTRAST * 100))
+        self.contrast_slider.setValue(round(self._auto_contrast * 100))
         self.contrast_slider.valueChanged.connect(self._render)
         contrast_row.addWidget(self.contrast_slider)
         controls_layout.addLayout(contrast_row)
 
-        self.linear_checkbox = QCheckBox("Linear output (skip tone curve, preview only)")
+        self.linear_checkbox = QCheckBox("Flat output (skip the print stage, preview only)")
         self.linear_checkbox.toggled.connect(self._render)
         controls_layout.addWidget(self.linear_checkbox)
 
@@ -124,7 +135,7 @@ class PreviewPopup(QDialog):
 
     def _current_tone_params(self) -> ToneCurveParams:
         if not self.finetune_checkbox.isChecked():
-            return ToneCurveParams(mode="paper", exposure=self._auto_exposure, contrast=_DEFAULT_CONTRAST)
+            return ToneCurveParams(mode="paper", exposure=self._auto_exposure, contrast=self._auto_contrast)
         exposure = self.exposure_slider.value() / 100.0
         contrast = self.contrast_slider.value() / 100.0
         mode = "linear" if self.linear_checkbox.isChecked() else "paper"

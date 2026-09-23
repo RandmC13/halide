@@ -73,27 +73,38 @@ def add_calibration_arguments(
     )
 
 
-def add_tone_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--linear-output", action="store_true", help="Skip the tone-render curve; write unbounded linear values"
-    )
+def add_tone_arguments(parser: argparse.ArgumentParser, *, allow_output_mode: bool = True) -> None:
+    """`allow_output_mode=False` is for `halide print`, whose whole job is the print output — it
+    only takes the exposure/contrast flags."""
+    if allow_output_mode:
+        parser.add_argument(
+            "--output",
+            dest="output_mode",
+            choices=("print", "flat"),
+            default=None,
+            help="print (default): a finished print — exposure and paper grade fitted to this "
+            "negative, then the paper curve. flat: white balance + density balance + invert + one "
+            "global exposure scale only, a minimal-bias linear positive for editing elsewhere "
+            "(e.g. darktable, then `halide print`)",
+        )
+        parser.add_argument(
+            "--linear-output", action="store_true", help="Same as --output flat (kept for compatibility)"
+        )
     parser.add_argument(
         "--exposure",
         type=float,
         default=None,
-        help="Tone-render curve exposure offset. Default: auto-computed per image from its own "
-        "shadow statistics (recommended — a single fixed value doesn't correctly position every "
-        "scan's density range). Pass an explicit value to pin it, e.g. to match a look across a "
-        "whole roll.",
+        help="Print exposure (where the negative sits on the paper curve, in density units). "
+        "Default: fitted per image so the negative's highlights land on the paper's highlight "
+        "point. Pass a value to pin it, e.g. to match a look across a whole roll.",
     )
     parser.add_argument(
         "--contrast",
         type=float,
         default=None,
-        help="Tone-render curve contrast, 0-1 (default: 0.5, or a value saved into the resolved "
-        "--profile's calibration if it has one — see `halide calibrate`'s Fine-tune controls). 1.0 "
-        "is the untouched reference paper curve (very high contrast — can amplify small calibration "
-        "residuals into visible color casts); lower is the digital equivalent of a softer paper grade.",
+        help="Paper grade, 0-1 (1.0 = the untouched reference paper; lower = softer). Default: "
+        "fitted per image so the negative's density range fills the paper's range (capped at 1.0), "
+        "or a value saved into the resolved --profile's calibration if it has one.",
     )
 
 
@@ -108,13 +119,26 @@ def resolve_stage(args: argparse.Namespace) -> Stage:
 def resolve_tone_params(args: argparse.Namespace, saved_tone: ToneCurveParams | None = None) -> ToneCurveParams:
     """Precedence for exposure/contrast: an explicit CLI flag wins, then a tone override saved
     into the resolved calibration profile (see calibration/profile_store.py's `tone` sidecar,
-    written by the GUI's Fine-tune controls), then the built-in default (auto-computed exposure /
-    contrast 0.5). Linear-output mode is CLI-flag-only — never inherited from `saved_tone`,
-    deliberately (see the GUI redesign plan for why silently changing output format felt like the
-    wrong kind of thing for a saved profile to do by default)."""
+    written by the GUI's Fine-tune controls), then None = fitted per image (see
+    core.tone_render.fit_print). The flat/linear output is CLI-flag-only — never inherited from
+    `saved_tone`, deliberately (silently changing output format felt like the wrong kind of thing
+    for a saved profile to do by default)."""
     exposure = args.exposure if args.exposure is not None else (saved_tone.exposure if saved_tone else None)
-    contrast = args.contrast if args.contrast is not None else (saved_tone.contrast if saved_tone else 0.5)
-    return ToneCurveParams(mode="linear" if args.linear_output else "paper", exposure=exposure, contrast=contrast)
+    contrast = args.contrast if args.contrast is not None else (saved_tone.contrast if saved_tone else None)
+    output_mode = getattr(args, "output_mode", None)
+    linear_output = getattr(args, "linear_output", False)
+    if linear_output and output_mode == "print":
+        raise SystemExit("--linear-output conflicts with --output print")
+    flat = linear_output or output_mode == "flat"
+    return ToneCurveParams(mode="linear" if flat else "paper", exposure=exposure, contrast=contrast)
+
+
+def describe_resolved_tone(resolved) -> str:
+    """One line naming the printing decision actually made, so it's visible and reproducible
+    (pass the same numbers back as --exposure/--contrast to pin them)."""
+    if resolved.mode == "linear":
+        return f"flat output: exposure scale ×{resolved.linear_scale:.4g}"
+    return f"print: grade (--contrast) {resolved.contrast:.3f}, exposure (--exposure) {resolved.exposure:+.3f}"
 
 
 def resolve_density_profile(

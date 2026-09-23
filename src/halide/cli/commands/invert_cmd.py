@@ -11,6 +11,7 @@ from halide.cli._calibration_args import (
     add_calibration_arguments,
     add_stage_arguments,
     add_tone_arguments,
+    describe_resolved_tone,
     maybe_save_profile,
     resolve_density_profile,
     resolve_stage,
@@ -54,9 +55,11 @@ def run(args: argparse.Namespace) -> int:
             min_height=console.TANK_MIN_SIZE[1],
             interval=0.5,
         ):
-            process_scan(args.input, args.output, stage, density_profile, tone_params)
+            resolved = process_scan(args.input, args.output, stage, density_profile, tone_params)
     except ScanColorError as exc:
         raise SystemExit(str(exc))
+    if resolved is not None:
+        print(describe_resolved_tone(resolved))
 
     elapsed = time.monotonic() - start
     size = output_path.stat().st_size

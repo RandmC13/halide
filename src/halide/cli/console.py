@@ -50,11 +50,12 @@ ICON_WARN = "⚠"  # ⚠
 SPROCKET = "▫"  # ▫
 
 # Real darkroom terms mapped onto what each command actually does, so headers/spinners/finish
-# banners read consistently instead of each command inventing its own wording. `export` maps to
-# "print" deliberately — producing a delivery image from a processed negative is, in the real
-# darkroom process this tool is modeled on, literally what printing is.
-VERB = {"invert": "Developing", "export": "Printing", "batch": "Developing"}
-VERB_PAST = {"invert": "Developed", "export": "Printed", "batch": "Developed"}
+# banners read consistently instead of each command inventing its own wording. `export` used to
+# be "Printing" too, back when no separate print step existed; now that `halide print` is the real
+# printing step (paper exposure + grade + paper curve), `export` is just a format conversion and
+# says so, so the two can't be confused.
+VERB = {"invert": "Developing", "export": "Exporting", "batch": "Developing", "print": "Printing"}
+VERB_PAST = {"invert": "Developed", "export": "Exported", "batch": "Developed", "print": "Printed"}
 
 # manual/auto/anchor/colorchecker — see core.types.CalibrationSource.
 SOURCE_COLOR = {
@@ -151,6 +152,10 @@ def welcome_screen() -> str:
             "    halide calibrate --save-profile-as NAME   solve a calibration once",
             "    halide invert negative.tif positive.tif   develop a single scan",
             "    halide batch  in_dir/ out_dir/            develop a whole roll",
+            "",
+            "  Editing yourself? Develop flat, edit in darktable, then print:",
+            "    halide invert negative.tif flat.tif --output flat",
+            "    halide print  flat_edited.tif print.tif",
             "",
             "  Run `halide --help` for the full command list.",
         ]
