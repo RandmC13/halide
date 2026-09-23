@@ -45,11 +45,14 @@ def run(args: argparse.Namespace) -> int:
         return 1
 
     start = time.monotonic()
-    label = f"{console.VERB['invert']} {input_path.name}... (agitating)"
+    label = f"{console.VERB['invert']} {input_path.name}..."
     try:
         with console.themed_animation(
-            console.TANK_FRAMES, label, min_width=console.TANK_MIN_SIZE[0],
-            min_height=console.TANK_MIN_SIZE[1], interval=0.5,
+            console.TANK_FRAMES,
+            label,
+            min_width=console.TANK_MIN_SIZE[0],
+            min_height=console.TANK_MIN_SIZE[1],
+            interval=0.5,
         ):
             process_scan(args.input, args.output, stage, density_profile, tone_params)
     except ScanColorError as exc:
