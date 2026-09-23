@@ -8,7 +8,13 @@ import argparse
 import difflib
 import sys
 
-from halide.calibration.profile_store import list_profiles, load_profile, resolve_profile_path, save_named_profile
+from halide.calibration.profile_store import (
+    list_profiles,
+    load_profile,
+    load_tone_override,
+    resolve_profile_path,
+    save_named_profile,
+)
 from halide.cli import console
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.processing import Stage
@@ -83,10 +89,11 @@ def add_tone_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--contrast",
         type=float,
-        default=0.5,
-        help="Tone-render curve contrast, 0-1 (default: 0.5). 1.0 is the untouched reference paper "
-        "curve (very high contrast — can amplify small calibration residuals into visible color "
-        "casts); lower is the digital equivalent of a softer paper grade.",
+        default=None,
+        help="Tone-render curve contrast, 0-1 (default: 0.5, or a value saved into the resolved "
+        "--profile's calibration if it has one — see `halide calibrate`'s Fine-tune controls). 1.0 "
+        "is the untouched reference paper curve (very high contrast — can amplify small calibration "
+        "residuals into visible color casts); lower is the digital equivalent of a softer paper grade.",
     )
 
 
@@ -98,15 +105,26 @@ def resolve_stage(args: argparse.Namespace) -> Stage:
     return Stage.FULL
 
 
-def resolve_tone_params(args: argparse.Namespace) -> ToneCurveParams:
-    return ToneCurveParams(
-        mode="linear" if args.linear_output else "paper", exposure=args.exposure, contrast=args.contrast
-    )
+def resolve_tone_params(args: argparse.Namespace, saved_tone: ToneCurveParams | None = None) -> ToneCurveParams:
+    """Precedence for exposure/contrast: an explicit CLI flag wins, then a tone override saved
+    into the resolved calibration profile (see calibration/profile_store.py's `tone` sidecar,
+    written by the GUI's Fine-tune controls), then the built-in default (auto-computed exposure /
+    contrast 0.5). Linear-output mode is CLI-flag-only — never inherited from `saved_tone`,
+    deliberately (see the GUI redesign plan for why silently changing output format felt like the
+    wrong kind of thing for a saved profile to do by default)."""
+    exposure = args.exposure if args.exposure is not None else (saved_tone.exposure if saved_tone else None)
+    contrast = args.contrast if args.contrast is not None else (saved_tone.contrast if saved_tone else 0.5)
+    return ToneCurveParams(mode="linear" if args.linear_output else "paper", exposure=exposure, contrast=contrast)
 
 
-def resolve_density_profile(args: argparse.Namespace) -> DensityProfile | None:
-    """Returns None to mean "compute automatically per-frame" — only call this when the pipeline
-    stage actually needs a density profile at all (i.e. not Stage.INVERT_ONLY)."""
+def resolve_density_profile(
+    args: argparse.Namespace,
+) -> tuple[DensityProfile | None, ToneCurveParams | None]:
+    """Returns (profile, saved_tone) - profile=None means "compute automatically per-frame" (only
+    call this when the pipeline stage actually needs a density profile at all, i.e. not
+    Stage.INVERT_ONLY); saved_tone is an optional exposure/contrast override that came bundled with
+    the resolved profile (from a saved profile's "tone" sidecar, or from the GUI's Fine-tune
+    controls during --pick), to be passed into resolve_tone_params."""
     manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
     auto_given = getattr(args, "auto_density", False)
     pick_given = getattr(args, "pick", False)
@@ -119,32 +137,37 @@ def resolve_density_profile(args: argparse.Namespace) -> DensityProfile | None:
 
     if args.profile:
         try:
-            return load_profile(resolve_profile_path(args.profile))
+            path = resolve_profile_path(args.profile)
+            return load_profile(path), load_tone_override(path)
         except FileNotFoundError as exc:
             suggestion = _suggest_profile_name(args.profile)
             if suggestion and console.confirm(f"No profile named '{args.profile}' — did you mean '{suggestion}'?"):
-                return load_profile(resolve_profile_path(suggestion))
+                path = resolve_profile_path(suggestion)
+                return load_profile(path), load_tone_override(path)
             hint = f" — did you mean '{suggestion}'?" if suggestion else ""
             raise SystemExit(f"{exc}{hint}") from exc
     if manual_given:
-        return DensityProfile(
-            white_balance=(args.rm if args.rm is not None else 1.0, 1.0, args.bm if args.bm is not None else 1.0),
-            density_scale=(args.rs, 1.0, args.bs),
-            source="manual",
+        return (
+            DensityProfile(
+                white_balance=(args.rm if args.rm is not None else 1.0, 1.0, args.bm if args.bm is not None else 1.0),
+                density_scale=(args.rs, 1.0, args.bs),
+                source="manual",
+            ),
+            None,
         )
     if auto_given:
-        return None
+        return None, None
     if pick_given:
-        # Deferred import: the rest of the CLI must not require dearpygui/a display (see
+        # Deferred import: the rest of the CLI must not require Qt/a display (see
         # cli/commands/calibrate_cmd.py's own deferred import for the same reason). --pick is
         # currently invert-only (add_calibration_arguments(allow_pick=...) gates this), so
         # args.input is always present whenever pick_given is True.
         from halide.gui.quick_pick import run_quick_pick
 
-        profile = run_quick_pick(args.input)
-        if profile is None:
+        result = run_quick_pick(args.input)
+        if result is None:
             raise SystemExit("no calibration picked — closed without using a calibration")
-        return profile
+        return result
 
     if sys.stdin.isatty():
         options = []
@@ -156,12 +179,12 @@ def resolve_density_profile(args: argparse.Namespace) -> DensityProfile | None:
         if choice == "pick":
             from halide.gui.quick_pick import run_quick_pick
 
-            profile = run_quick_pick(args.input)
-            if profile is None:
+            result = run_quick_pick(args.input)
+            if result is None:
                 raise SystemExit("no calibration picked — closed without using a calibration")
-            return profile
+            return result
         if choice == "auto":
-            return None
+            return None, None
 
     pick_hint = " --pick to choose interactively," if hasattr(args, "pick") else ""
     raise SystemExit(
@@ -172,11 +195,13 @@ def resolve_density_profile(args: argparse.Namespace) -> DensityProfile | None:
     )
 
 
-def maybe_save_profile(args: argparse.Namespace, profile: DensityProfile | None) -> None:
+def maybe_save_profile(
+    args: argparse.Namespace, profile: DensityProfile | None, tone: ToneCurveParams | None = None
+) -> None:
     """Save the resolved profile under --save-profile-as, if given. `profile=None` means no
     single profile was computed here (per-frame --auto-density produces a different profile per
     image; --invert-only skips density balance entirely) — that is an error if the user asked to
-    save one."""
+    save one. `tone` (e.g. from a --pick session's Fine-tune controls) is saved alongside it."""
     save_as = getattr(args, "save_profile_as", None)
     if not save_as:
         return
@@ -187,5 +212,5 @@ def maybe_save_profile(args: argparse.Namespace, profile: DensityProfile | None)
             "skips density balance entirely — use --auto-density-roll in `batch` for a single "
             "shared automatic profile, or a manual/--profile source instead)"
         )
-    path = save_named_profile(profile, save_as)
+    path = save_named_profile(profile, save_as, tone=tone)
     print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))

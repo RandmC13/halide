@@ -14,7 +14,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from halide.core.types import DensityProfile
+from halide.core.types import DensityProfile, ToneCurveParams
 
 
 def default_profiles_dir() -> Path:
@@ -23,8 +23,17 @@ def default_profiles_dir() -> Path:
     return base / "halide" / "profiles"
 
 
-def save_profile(profile: DensityProfile, path: str | Path) -> None:
-    Path(path).write_text(json.dumps(asdict(profile), indent=2) + "\n")
+def save_profile(profile: DensityProfile, path: str | Path, *, tone: ToneCurveParams | None = None) -> None:
+    """`tone`, if given, is a GUI-picked exposure/contrast override (see gui/preview_popup.py's
+    Fine-tune controls) saved as an extra "tone" sidecar key alongside the profile's own fields -
+    deliberately not merged into DensityProfile itself (see calibration_args.py/core/types.py: the
+    density profile stays a pure calibration concept, tone stays a separate, optional per-run
+    rendering choice that a profile can merely *suggest* a default for). Linear-output mode is
+    deliberately never included here - see load_tone_override's docstring."""
+    data = asdict(profile)
+    if tone is not None:
+        data["tone"] = {"exposure": tone.exposure, "contrast": tone.contrast}
+    Path(path).write_text(json.dumps(data, indent=2) + "\n")
 
 
 def load_profile(path: str | Path) -> DensityProfile:
@@ -63,14 +72,30 @@ def resolve_profile_path(name_or_path: str | Path, profiles_dir: Path | None = N
     )
 
 
-def save_named_profile(profile: DensityProfile, name: str, profiles_dir: Path | None = None) -> Path:
-    """Save `profile` under `name` in the profiles directory, stamping its name and creation time."""
+def save_named_profile(
+    profile: DensityProfile, name: str, profiles_dir: Path | None = None, tone: ToneCurveParams | None = None
+) -> Path:
+    """Save `profile` under `name` in the profiles directory, stamping its name and creation time.
+    `tone` is an optional exposure/contrast override to save alongside it - see save_profile."""
     directory = profiles_dir or default_profiles_dir()
     directory.mkdir(parents=True, exist_ok=True)
     stamped = replace(profile, name=name, created_at=datetime.now(timezone.utc).isoformat())
     path = directory / f"{name}.json"
-    save_profile(stamped, path)
+    save_profile(stamped, path, tone=tone)
     return path
+
+
+def load_tone_override(path: str | Path) -> ToneCurveParams | None:
+    """Read back an optional saved exposure/contrast override (see save_profile's `tone` param).
+    Returns None for any profile file without one - including every profile saved before this
+    existed, which is the point: fully backward compatible, no migration needed. Deliberately never
+    restores linear-output mode - that stays a CLI-flag/preview-only choice, not something a saved
+    profile silently changes about a future run's output format."""
+    data = json.loads(Path(path).read_text())
+    tone_data = data.get("tone")
+    if tone_data is None:
+        return None
+    return ToneCurveParams(mode="paper", exposure=tone_data["exposure"], contrast=tone_data["contrast"])
 
 
 def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityProfile]]:

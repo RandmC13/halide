@@ -104,7 +104,7 @@ def test_missing_calibration_source_error_mentions_calibrate_and_pick(negative_t
 
 def test_pick_uses_the_interactively_chosen_profile(negative_tiff, tmp_path, monkeypatch):
     picked = DensityProfile(white_balance=(1.5, 1.0, 0.7), density_scale=(1.1, 1.0, 0.9), source="anchor")
-    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: picked)
+    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: (picked, None))
 
     output = tmp_path / "positive.tiff"
     exit_code = main(["invert", str(negative_tiff), str(output), "--pick"])

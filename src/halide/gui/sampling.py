@@ -1,6 +1,6 @@
 """Pure, GUI-framework-independent helpers for the anchor-frame calibration picker: patch
-sampling, outlier-robust snapping, and preview stretching. No dearpygui import here, so this is
-unit-testable without a display — only gui/calibrate_screen.py touches dearpygui itself.
+sampling, outlier-robust snapping, and preview stretching. No Qt import here, so this is
+unit-testable without a display — only gui/main_window.py and gui/preview_popup.py touch Qt itself.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ def display_to_full_res_coords(
     display_x: int, display_y: int, stride: int, image_width: int, image_height: int
 ) -> tuple[int, int]:
     """Map a click/hover position on the downsampled display back to clamped full-resolution
-    pixel coordinates. Extracted from calibrate_screen.on_image_click's inline math so the hover
+    pixel coordinates. Extracted from main_window's on-click handler math so the hover
     handler can reuse the exact same, tested mapping instead of duplicating it."""
     full_x = max(0, min(image_width - 1, display_x * stride))
     full_y = max(0, min(image_height - 1, display_y * stride))
