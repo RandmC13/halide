@@ -46,7 +46,9 @@ without being asked.
 CLI (installed as the `halide` console script, or run via `.venv/bin/python -m halide.cli.main`):
 ```bash
 halide invert <negative.tif> <positive.tif> [--profile NAME | --rm/--bm/--rs/--bs | --auto-density | --pick]
-halide batch <in_dir> <out_dir> [--auto-density-roll] [--save-profile-as NAME]
+                                               [--output print|flat] [--exposure E] [--contrast C]
+halide batch <in_dir> <out_dir> [--auto-density-roll] [--save-profile-as NAME] [--output print|flat]
+halide print <flat.tif|dir> <print.tif|dir>    # print stage only, for a flat positive edited elsewhere
 halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sRGB PNG/JPEG
 halide profile list|show|rename|delete
 halide calibrate [negative.tif]                # Dear PyGui: anchor-frame picker + live preview;
@@ -105,12 +107,46 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   Pillow is still a dependency, but only for `io/raster.py`'s PNG/JPEG writing — an unrelated job.
 - **The default tone-render curve is a vendored real paper response curve** (`assets/tone_curves`,
   from `abpy/color-neg-resources`, MIT), not an invented analytic curve — deliberately, to keep the
-  "faithful over flashy" priority. `ToneCurveParams.contrast` (default 0.5, not the curve's native
-  1.0) and `exposure` (default `None` = auto-computed per image, see
-  `core/tone_render.py::estimate_exposure`) both exist because of real bugs found by testing
-  against actual scans, not speculative options — see their docstrings for the specific failure
-  each one fixes. Don't "simplify" them back to fixed constants.
-- **`mode="linear"` output is scaled, not a bare unbounded passthrough** (`estimate_linear_scale`
+  "faithful over flashy" priority. `ToneCurveParams.exposure` (enlarger exposure) and `contrast`
+  (paper grade) both default to `None` = **fitted per image** by `core/tone_render.py::fit_print`,
+  and both exist because of real bugs found on actual scans — see `ToneCurveParams`' docstring for
+  the history. Don't "simplify" them back to fixed constants.
+- **The print fit matches paper grade to the negative, before the curve — never a post-curve
+  stretch.** Found via real use: the previous defaults (fixed `contrast=0.5`, plus a shadow-only
+  `estimate_exposure`, now removed) covered only about half the paper on all three real scans —
+  blacks at sRGB ~45, whites ~220-233, against the paper's own ~11/255 — so the user was tempted to
+  stretch levels in darktable, which is a second, non-physical tone curve on top of the paper
+  (a linear-light black point reshapes the paper's toe; unlinked levels would also overwrite the
+  density balance). `fit_print` instead measures this frame's robust luminance density range
+  (0.1/99.9th percentiles) and solves exactly for the grade that fills the paper's ISO 6846 range
+  (computed from the curve file itself: 0.04 above paper white to 90% of D-max) and the exposure
+  that puts the highlights on the paper's highlight point. Grade is capped at 1.0 (the real paper)
+  so a genuinely flat scene prints soft rather than being normalised. The two scalars are applied
+  identically to every channel, so the fit can't create a cast — but a harder grade (~0.8-0.9 on the
+  real scans vs 0.5) makes an existing calibration residual ~1.7x more visible. Known, accepted
+  trade-off of highlight anchoring: highlight-heavy frames print with dark midtones (IMG_0151's
+  shaded crowd, IMG_0158's rider: median sRGB ~80 -> ~40). The user chose 99.9 as the anchor
+  deliberately; don't re-tune it from one image. Every output records its decision (fitted or
+  pinned) as JSON in the TIFF ImageDescription (`processing.py::provenance_json`), and `invert`
+  prints it.
+- **`halide print` exists for the flat -> darktable -> print round trip, and range-setting belongs
+  to it, not to the editor.** The contract: edits between `--output flat` and `print` stay linear
+  and scene-referred (crop, spot removal, lens, denoise, global exposure; no filmic/sigmoid, curves,
+  levels, local contrast). The fitted print is invariant to a global multiply, so an exposure change
+  in darktable (or losing halide's metadata) doesn't change the print — verified on the real scans:
+  flat -> print matches direct `invert` to ~4e-7, and a +0.6 EV, metadata-stripped copy to within
+  1 8-bit sRGB step. A *pinned* `--exposure` is not scale-invariant: `print` reproduces it exactly
+  only when the flat file's provenance (its exposure scale) survived, otherwise warns and fits.
+  `load_working_space_image` skips ICC conversion when the embedded profile is byte-identical to
+  halide's own ACEScg output profile: the conversion isn't a true identity (the profile's
+  s15Fixed16 matrix round-trips ACEScg only to ~1e-4 per channel), which broke exact round trips.
+  `export`'s console verb became "Exporting" (it was "Printing" before a real print step existed).
+- **`mode="linear"` (`--output flat`, alias `--linear-output`) output is scaled, not a bare
+  unbounded passthrough** — one global multiply is the *only* adjustment, since per the reference
+  blog exposure and white balance are the only operations that keep a flat positive faithful. It
+  looks flat because it is the film's own recorded contrast (negative gamma ~0.6), and its black is
+  the film base, not zero — both are data, not headroom to trim. Undoing film gamma would need a
+  measured gamma (ColorChecker tier), so it is deliberately not guessed. (`estimate_linear_scale`
   in `core/tone_render.py`). Found via real use: a real scan's raw `invert()` reciprocal is
   typically in the tens, so an unscaled passthrough put ~100% of pixels above 1.0 — solid white in
   darktable or any standard viewer. Scaled via a robust highlight percentile (not the true max,

@@ -1,6 +1,9 @@
 # Plan: two output modes ("print" and "flat") and a stand-alone print step
 
-Status: **plan only, not implemented.** Written 2026-09-23 against `c9fa7de`.
+Status: **implemented** on this branch (2026-09-23). Decisions taken: D1 print is the default,
+D2 99.9th-percentile highlight anchor, D3 `estimate_exposure` removed, D4 per-frame grade in batch
+(the optional `--grade roll` and `--linear-scale roll` flags were *not* built), D5 black-point
+compensation deferred. Written against `c9fa7de`.
 
 This plan covers three things you raised:
 
