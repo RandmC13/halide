@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from halide.calibration.auto import (
+    _density_local_saturation,
     _neutral_candidate_mask,
     _neutral_candidates,
     _saturation,
@@ -50,7 +51,7 @@ def test_auto_density_balance_recovers_true_profile_despite_decoys():
 def test_auto_density_balance_recovers_true_profile_even_with_a_narrow_fraction():
     # Used to fail here (a too-narrow fraction captured only one of the two genuinely-neutral
     # clusters, since they didn't share identical residual "saturation" against a single
-    # frame-wide median). Fixed by _density_reference's density-local reference — each cluster is
+    # frame-wide median). Fixed by _density_local_saturation's density-local reference — each cluster is
     # now judged against its own nearby density, not a frame-wide reference that could favor one
     # cluster over the other. Regression test for that fix: recovery now holds even far below the
     # generous DEFAULT_NEUTRAL_FRACTION default.
@@ -180,3 +181,56 @@ def test_roll_auto_density_balance_selects_neutral_candidates_per_frame_not_from
     assert len(calls) == 2  # called once per frame, never once on pooled/concatenated pixels
     assert calls[0] is frame_a
     assert calls[1] is frame_b
+
+
+def _old_density_reference(pixels, target_bins=20, min_pixels_per_bin=200):
+    """Verbatim copy of the pre-memory-diet `_density_reference` (a full per-pixel reference array
+    built from an int64 np.arange split) — kept only as an oracle for the bin-by-bin rewrite."""
+    n = len(pixels)
+    n_bins = max(1, min(target_bins, n // min_pixels_per_bin))
+    if n_bins == 1:
+        return np.broadcast_to(np.median(pixels, axis=0), pixels.shape)
+    order = np.argsort(pixels.mean(axis=1))
+    reference = np.empty_like(pixels)
+    for bin_positions in np.array_split(np.arange(n), n_bins):
+        bin_indices = order[bin_positions]
+        reference[bin_indices] = np.median(pixels[bin_indices], axis=0)
+    return reference
+
+
+def _old_neutral_candidate_mask(image, neutral_fraction):
+    flat = image.reshape(-1, 3)
+    saturation = _saturation(flat, _old_density_reference(flat))
+    threshold = np.percentile(saturation, neutral_fraction * 100)
+    return (saturation <= threshold).reshape(image.shape[:2])
+
+
+def _noisy_frame(shape, dtype, seed):
+    rng = np.random.default_rng(seed)
+    image = rng.uniform(0.005, 0.4, size=shape).astype(dtype)
+    image[: shape[0] // 3] = rng.choice([0.05, 0.1, 0.2], size=(shape[0] // 3, shape[1], 3)).astype(dtype)  # exact ties
+    return image
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        _noisy_frame((61, 97, 3), np.float32, 1),  # 5917 px -> 20 bins with a remainder
+        _noisy_frame((41, 43, 3), np.float64, 2),  # 1763 px -> 8 bins
+        _noisy_frame((9, 11, 3), np.float32, 3),  # 99 px -> the single-global-median path
+        _synthetic_image_with_decoys(),
+    ],
+    ids=["float32-20-bins", "float64-8-bins", "one-bin", "decoys"],
+)
+@pytest.mark.parametrize("neutral_fraction", [0.01, 0.5, 0.9])
+def test_neutral_candidate_mask_is_bit_identical_to_the_old_full_reference_form(image, neutral_fraction):
+    # _density_local_saturation computes each bin's saturation directly instead of first building a
+    # full-frame per-pixel reference array (~500 MiB of scratch on a real scan). Same bins, same
+    # medians, same arithmetic — the saturation values must match exactly, not approximately, so
+    # the selected candidates (and every auto-calibrated profile) are unchanged.
+    flat = image.reshape(-1, 3)
+    old = _saturation(flat, _old_density_reference(flat))
+    new = _density_local_saturation(flat)
+    assert new.dtype == old.dtype
+    assert np.array_equal(new.view(np.uint8), np.ascontiguousarray(old).view(np.uint8))
+    assert np.array_equal(_neutral_candidate_mask(image, neutral_fraction), _old_neutral_candidate_mask(image, neutral_fraction))
