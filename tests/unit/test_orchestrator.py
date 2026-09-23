@@ -201,7 +201,7 @@ def test_memory_budget_warning_fires_when_requested_workers_exceed_the_safe_esti
     with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=1 * 1024**3)):
         warning = memory_budget_warning(jobs, requested_workers=8)
     assert warning is not None
-    assert "--workers 8" in warning
+    assert warning.startswith("--workers 8")  # no "Warning:" of its own — console.warning() adds that
 
 
 def test_memory_budget_warning_is_none_when_requested_workers_look_safe(tmp_path):
