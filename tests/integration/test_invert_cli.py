@@ -48,13 +48,13 @@ def test_invert_with_saved_profile(negative_tiff, tmp_path):
 def test_linear_output_is_viewable_not_solid_white(negative_tiff, tmp_path):
     # Regression test for a real bug: the bare unbounded invert() output (typically tens in linear
     # value) is unusable directly — almost every pixel lands above 1.0 and a standard viewer (e.g.
-    # darktable) shows solid white. --linear-output must scale into a viewable range.
+    # darktable) shows solid white. --output flat must scale into a viewable range.
     output = tmp_path / "positive_linear.tiff"
     main(
         [
             "invert", str(negative_tiff), str(output),
             "--rm", "2.28", "--bm", "1.47", "--rs", "1.32", "--bs", "0.78",
-            "--linear-output",
+            "--output", "flat",
         ]
     )
     result = read_tiff(output)

@@ -56,7 +56,7 @@ def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool) -> tuple
         raise SystemExit(
             "--match-scan-exposure needs the camera exposure the profile was calibrated at, but it "
             "isn't recorded in this profile — pass --scan-reference FRAME (the frame you calibrated "
-            "on), or record it once with `halide profile set-scan-reference NAME FRAME`"
+            "on), or save the profile again from that frame so it records it"
         )
     if frame_settings is None:
         raise SystemExit(f"--match-scan-exposure: {args.input} has no camera exposure settings (EXIF) to match from")
