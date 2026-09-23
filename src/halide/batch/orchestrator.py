@@ -184,7 +184,7 @@ def memory_budget_warning(
     if requested_workers <= safe_workers:
         return None
     return (
-        f"Warning: --workers {requested_workers} may exceed available memory (~{per_worker / 1024**3:.1f} "
+        f"--workers {requested_workers} may exceed available memory (~{per_worker / 1024**3:.1f} "
         f"GB estimated per worker vs. ~{available / 1024**3:.1f} GB available suggests {safe_workers} "
         f"worker(s) is safer) — continuing with {requested_workers} since it was explicitly requested."
     )

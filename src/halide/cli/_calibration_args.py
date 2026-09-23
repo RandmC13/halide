@@ -254,14 +254,17 @@ def maybe_save_profile(
     profile: DensityProfile | None,
     tone: ToneCurveParams | None = None,
     scan: ScanSettings | None = None,
-) -> None:
-    """Save the resolved profile under --save-profile-as, if given. `profile=None` means no
+    *,
+    announce: bool = True,
+):
+    """Save the resolved profile under --save-profile-as, if given, returning where it went (None
+    if nothing was asked to be saved); `announce=False` leaves reporting it to the caller. `profile=None` means no
     single profile was computed here (per-frame --auto-density produces a different profile per
     image; --invert-only skips density balance entirely) — that is an error if the user asked to
     save one. `tone` (e.g. from a --pick session's Fine-tune controls) is saved alongside it."""
     save_as = getattr(args, "save_profile_as", None)
     if not save_as:
-        return
+        return None
     if profile is None:
         raise SystemExit(
             "--save-profile-as needs a single resolved profile to save, but none was computed here "
@@ -270,4 +273,6 @@ def maybe_save_profile(
             "shared automatic profile, or a manual/--profile source instead)"
         )
     path = save_named_profile(profile, save_as, tone=tone, scan=scan)
-    print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))
+    if announce:
+        print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))
+    return path

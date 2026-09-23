@@ -133,3 +133,25 @@ def test_auto_density_roll_conflicts_with_other_sources(roll_dir, tmp_path):
     out_dir = tmp_path / "out"
     with pytest.raises(SystemExit, match="cannot be combined"):
         main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--rm", "2.0", "--quiet"])
+
+
+def test_batch_cli_prints_its_settings_as_one_run_sheet_before_developing(roll_dir, tmp_path, capsys):
+    import re
+
+    out_dir = tmp_path / "out"
+    args = ["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--contrast", "0.8", "--workers", "1"]
+    assert main(args) == 0
+    out = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", capsys.readouterr().out)
+    sheet = out[: out.index("Developing")].splitlines()
+
+    assert sheet[0] == sheet[-1] and set(sheet[0]) == {"▫", " "}  # framed by sprocket rules
+    rows: dict[str, str] = {}
+    for line in sheet[1:-1]:  # a continuation line (blank label) belongs to the row above it
+        label = line[2:17].strip() or label
+        rows[label] = f"{rows[label]} {line[17:].strip()}" if label in rows else line[17:]
+    assert list(rows) == ["Roll", "Scans", "Calibration", "Output", "Workers"]
+    nbsp = "\u00a0"  # RunSheet.SEP's non-breaking space
+    assert rows["Roll"].replace(" ", "") == f"in{nbsp}·4frames→{out_dir}"  # the long tmp path wraps
+    assert rows["Calibration"] == f"auto{nbsp}· one profile for the whole roll, from 4 frames"
+    assert rows["Output"] == f"print{nbsp}· grade 0.80{nbsp}· exposure fitted per frame"
+    assert rows["Workers"] == "1 (--workers)"

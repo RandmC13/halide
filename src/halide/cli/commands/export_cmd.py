@@ -16,6 +16,7 @@ from halide.batch.orchestrator import (
 )
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
+from halide.cli._run_sheet import choose_workers, roll_row
 from halide.processing import export_delivery_image
 
 _FORMATS = ("png", "jpg", "jpeg")
@@ -100,18 +101,12 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path) -> int:
         for f in files
     ]
 
-    if args.workers is not None:
-        workers = args.workers
-        warning = export_memory_budget_warning(jobs, workers)
-        if warning and not args.quiet:
-            print(console.warning(warning))
-    else:
-        workers = default_export_worker_count(jobs)
-        if not args.quiet:
-            print(
-                f"Auto-selected {workers} worker process(es) based on available memory and CPU "
-                "count (pass --workers N to override)"
-            )
+    with console.RunSheet(quiet=args.quiet) as sheet:
+        roll_row(sheet, input_dir, len(jobs), str(output_dir))
+        workers = choose_workers(
+            args, jobs, sheet,
+            default_count=default_export_worker_count, budget_warning=export_memory_budget_warning,
+        )
 
     renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="export")
     job_index = {job: i for i, job in enumerate(jobs)}

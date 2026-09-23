@@ -24,6 +24,7 @@ from halide.batch.orchestrator import (
 from halide.batch.progress import GridProgressRenderer
 from halide.calibration.profile_store import load_tone_override, resolve_profile_path
 from halide.cli import console
+from halide.cli._run_sheet import choose_workers, roll_row
 from halide.cli._calibration_args import add_tone_arguments, describe_resolved_tone, resolve_tone_params
 from halide.core.types import ToneCurveParams
 from halide.processing import PrintInputError, ScanColorError, print_scan
@@ -107,18 +108,11 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
         return 1
     jobs = [BatchJob(input_path=f, output_path=output_dir / f"{f.stem}{args.suffix}.tif") for f in files]
 
-    if args.workers is not None:
-        workers = args.workers
-        warning = memory_budget_warning(jobs, workers)
-        if warning and not args.quiet:
-            print(console.warning(warning))
-    else:
-        workers = default_worker_count(jobs)
-        if not args.quiet:
-            print(
-                f"Auto-selected {workers} worker process(es) based on available memory and CPU "
-                "count (pass --workers N to override)"
-            )
+    with console.RunSheet(quiet=args.quiet) as sheet:
+        roll_row(sheet, input_dir, len(jobs), str(output_dir))
+        workers = choose_workers(
+            args, jobs, sheet, default_count=default_worker_count, budget_warning=memory_budget_warning
+        )
 
     renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="print")
     job_index = {job: i for i, job in enumerate(jobs)}
