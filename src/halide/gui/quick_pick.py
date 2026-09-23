@@ -2,50 +2,50 @@
 the persistent `halide calibrate` app, for a user who just wants to manually pick shadow/highlight
 points for a single image without building a reusable named profile.
 
-Reuses `calibrate_screen`'s widgets as-is (magnifier, markers, live preview, the auto-detection
-overlay/comparison) — none of that is specific to the profile-building workflow, all of it is
-directly useful for picking quickly and accurately. The only real difference is the entry point
-itself: a blocking function that returns a value, rather than a screen inside the persistent
-tabbed app (see `gui/app.py`).
+Reuses `main_window.MainWindow` as-is (magnifier, markers, live preview, the auto-detection overlay/
+comparison, Fine-tune) via its `is_pick_session=True` mode - none of that picking machinery is
+specific to the profile-saving workflow, all of it is directly useful for picking quickly and
+accurately. The only real difference is the entry point itself: a blocking function that returns a
+value, rather than the persistent tabbed app's own event loop (see `gui/app.py`).
 """
 
 from __future__ import annotations
 
-import dearpygui.dearpygui as dpg
+import sys
 
-from halide.core.types import DensityProfile
-from halide.gui import calibrate_screen
+from PySide6.QtCore import QEventLoop
+from PySide6.QtWidgets import QApplication
+
+from halide.core.types import DensityProfile, ToneCurveParams
+from halide.gui import theme
+from halide.gui.main_window import MainWindow
 
 
-def run_quick_pick(path: str) -> DensityProfile | None:
+def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None] | None:
     """Open a standalone picker window pre-loaded with `path`, block until the user either clicks
-    "Use these values for this run" (returns the picked DensityProfile) or closes the window
-    without doing so (returns None).
+    "Develop" (returns the picked (DensityProfile, tone_override) - tone_override is None unless
+    Fine-tune was used in a Preview popup) or closes the window without doing so (returns None).
 
-    Uses a manual `render_dearpygui_frame` loop instead of `start_dearpygui` so this function can
-    return a value once the user's done, rather than running until the process exits — new
-    territory for this codebase's GUI code (every other entry point runs the full event loop and
-    exits the process), verified via real interactive testing, not just code review.
+    Runs a local QEventLoop rather than a full QApplication.exec() so this function can return a
+    value once the user's done, rather than exiting the process - new territory for this codebase's
+    GUI code (every other entry point runs the full event loop and exits the process).
     """
-    dpg.create_context()
-    dpg.create_viewport(title="halide - quick calibrate", width=1000, height=1050)
-    dpg.setup_dearpygui()
+    app = QApplication.instance() or QApplication(sys.argv)
+    theme.apply(app)
 
-    state = {"profile": None, "done": False}
+    window = MainWindow(show_load_controls=False, is_pick_session=True)
+    window.setWindowTitle("halide · quick calibrate")
+    window.load_image(path)
 
-    def on_continue(sender, app_data) -> None:
-        state["profile"] = screen.live_profile
-        state["done"] = True
+    result_holder: list[tuple[DensityProfile, ToneCurveParams | None] | None] = [None]
+    loop = QEventLoop()
 
-    with dpg.window(tag="quick_pick_window"):
-        screen = calibrate_screen.build(show_path_input=False)
-        dpg.add_button(label="Use these values for this run", callback=on_continue)
+    def on_completed(value: object) -> None:
+        result_holder[0] = value
+        loop.quit()
 
-    screen.load_image(path)
-    dpg.set_primary_window("quick_pick_window", True)
-    dpg.show_viewport()
-    while dpg.is_dearpygui_running() and not state["done"]:
-        dpg.render_dearpygui_frame()
-    dpg.destroy_context()
+    window.pickCompleted.connect(on_completed)
+    window.show()
+    loop.exec()
 
-    return state["profile"]
+    return result_holder[0]
