@@ -33,28 +33,29 @@ from halide.processing import Stage, export_delivery_image, print_scan, process_
 
 TIFF_SUFFIXES = (".tif", ".tiff")
 
-# Empirically measured (three real full-res scans + one small synthetic image, all run through the
-# real CLI with peak RSS sampled from /proc/<pid>/status's VmHWM): peak worker RSS fits closely to
-# `baseline + K * decoded_pixel_bytes`, K ~= 9.7, baseline ~= 108 MiB, after the memory-usage pass
-# that fixed the two real causes of the old K ~= 23 (see git history around this comment and
-# CLAUDE.md for the investigation): io/icc.py's working-space conversion was silently upcasting
-# every pixel from float32 to float64 for the rest of the pipeline (a straight 2x on its own), and
-# core/density.py, core/invert.py, core/tone_render.py, and io/lut.py's chain of elementwise numpy
-# ops was allocating a fresh full-size temporary at nearly every line instead of reusing buffers via
-# `out=`/in-place ops. Both constants below are rounded up from the fit for safety margin.
-_PEAK_RSS_MULTIPLIER = 11
+# Peak worker memory fits `baseline + K * decoded_pixel_bytes`. Measured on real worker processes
+# (`--workers 1` batches over the four real full-res scans, 3276x4849 = ~182 MiB decoded, peak
+# sampled from /proc/<pid>/status's VmHWM): worst case `--auto-density` 509 MiB RSS (481 PSS),
+# `--output flat` 487, print output 365, `halide print` 386 — K ~= 2.2 over a ~106 MiB process.
+# K = 3 with the 150 MiB baseline (695 MiB for such a scan) leaves ~37% margin over the worst case.
+# exiftool (run after every output) needs no term of its own: it streams the file (measured 67 MiB
+# peak on a 130 MiB output), and process_scan frees the frame before running it.
+#
+# History, so K isn't "tuned" back up: it was ~23, then 11 after fixing a float64 upcast and
+# per-line temporaries in core/ (see git history), then 3 after moving every full-resolution path
+# to band-by-band processing into one owned buffer (halide/banding.py) — the frame itself, the
+# print fit's 1/3-frame luminance, and at most one extra frame for flat output's percentile or auto
+# calibration's statistics, where it used to be ~9 frames of scratch.
+_PEAK_RSS_MULTIPLIER = 3
 _BASELINE_PROCESS_OVERHEAD_BYTES = 150 * 1024 * 1024
 _FALLBACK_PER_WORKER_BYTES = 5 * 1024**3  # used only if a file's header can't be read at all
 
-# Same methodology as above, fit from a real 3276x4849 scan (~182 MiB decoded -> ~2.61 GiB peak)
-# and a small 500x500 synthetic image (~2.9 MiB decoded -> ~133 MiB peak) run through
-# halide.processing.export_delivery_image specifically: K ~= 13.8, baseline ~= 93 MiB (rounded up
-# below for safety margin). Despite doing far less math than the full inversion pipeline, export's
-# K is not that much smaller — colour.RGB_to_RGB (ACEScg -> sRGB) computes internally in float64
-# regardless of input dtype (same behavior noted for XYZ_to_RGB elsewhere in this codebase), so a
-# single delivery conversion still holds several float64-sized temporaries of the full image alive
-# at once, not just the small 8-bit output it ultimately writes.
-_EXPORT_PEAK_RSS_MULTIPLIER = 15
+# Export (and `halide contact`'s thumbnail pool, which does the same read + convert shape of work),
+# measured the same way: export 379 MiB RSS (340 PSS), contact 378 — K ~= 1.5. K = 2 with the
+# 100 MiB baseline (464 MiB) leaves ~22% margin over RSS. Was 15 before export converted to 8-bit
+# sRGB band by band: colour.RGB_to_RGB computes in float64 internally, so converting the whole
+# frame at once held several float64 copies of it.
+_EXPORT_PEAK_RSS_MULTIPLIER = 2
 _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 
 
@@ -139,11 +140,11 @@ def default_worker_count(
     baseline_bytes: int = _BASELINE_PROCESS_OVERHEAD_BYTES,
     multiplier: int = _PEAK_RSS_MULTIPLIER,
 ) -> int:
-    """Auto-select a worker count that respects available RAM, not just CPU count. Found via real
-    testing: full-resolution scans are memory-heavy enough (a single frame's pipeline run can peak
-    around 4GB RSS) that on a typical machine, available memory — not CPU thread count — is the
-    actual limiting factor; running out of --workers-only-capped processes was still enough to get
-    a worker OOM-killed. Falls back to the old CPU-only heuristic if `psutil` can't report available
+    """Auto-select a worker count that respects available RAM, not just CPU count: min(physical
+    cores, available memory / per-worker estimate, number of jobs). Found via real testing:
+    full-resolution scans are memory-heavy (a single frame's pipeline once peaked around 4GB RSS;
+    ~0.5 GB now, see the constants above), and a CPU-only worker count was enough to get a worker
+    OOM-killed. Falls back to the CPU-only cap if `psutil` can't report available
     memory, or if none of the batch's files' headers could be read at all. `baseline_bytes`/
     `multiplier` default to the full-inversion-pipeline fit — see estimate_worker_memory_bytes."""
     cpu_cap = _cpu_cap()

@@ -84,6 +84,9 @@ src/halide/
   processing.py # The glue layer: read -> validate ICC -> convert to working space -> calibrate
                # -> run_pipeline -> write. Both the single-file CLI command and the batch worker
                # call this same function rather than duplicating the chain.
+  banding.py   # map_in_bands: runs per-pixel core/ functions over ~4 MiB bands of rows into a
+               # buffer the caller owns — how every full-resolution path stays near 1 frame of
+               # memory. Bit-identical to the whole-array call (see "Decisions and why").
 ```
 
 The internal working color space is **ACEScg**, chosen (not just used) — the blog is explicit that
@@ -277,6 +280,49 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
     150 MiB` (still generously rounded up from a measured fit of `K ≈ 9.7`, `baseline ≈ 108 MiB`).
     On the reporting user's own numbers (7 GB free, ~120 MB scans), this raises the auto-selected
     worker count from 1 to 3 — the actual point of this fix, not memory usage for its own sake.
+  - **Every full-resolution path now works band by band in one owned buffer (`halide/banding.py`),
+    and this one IS bit-identical — keep it that way.** After the pass above a frame still peaked at
+    1.3-2.6 GiB (7-14x the 182 MiB frame): every core/ stage returned a new whole frame, colour-
+    science converted the whole frame in float64 (+900 MiB in the ICC step alone; export's
+    `RGB_to_RGB` was the single heaviest step at 2.6 GiB), `Cube1D.lookup` held ~6 frame-sized
+    temporaries, `process_scan` kept the original negative alive through develop, `print_scan`
+    decoded its input twice, tifffile's default 256 MiB read buffer held a whole ~120 MiB compressed
+    scan next to the decoded frame, and auto calibration built ~500 MiB of full-frame side arrays.
+    Fix: `map_in_bands` runs the *unchanged* core/ functions over ~4 MiB bands of rows (~64 rows of
+    a real scan) of a buffer the caller owns — `load_working_space_image` converts in place,
+    `processing.py::_develop_in_place` runs `core.pipeline.negative_to_positive` banded, the print
+    fit on the full buffer exactly where `develop()` runs it, then the paper curve banded; export
+    converts into one preallocated 8-bit array; `read_tiff` uses a 16 MiB `buffersize`;
+    `calibration/auto.py::_density_local_saturation` scores each density bin directly. Why it can't
+    move a pixel: every banded function is per-pixel, and whole-frame statistics (print fit, auto
+    calibration) are never banded. Measured on the four real scans through the real CLI (peak RSS,
+    MiB): invert 1870 -> 377, flat 1327 -> 500, `--auto-density` 1880 -> 521, `--density-only` 1327
+    -> 324, `print` 1990 -> 365, `export` 2605 -> 402, `--auto-density-roll`'s pre-pass 1333 -> 333;
+    also faster (invert ~6.5 -> ~4.7 s per frame: bands stay in CPU cache). Verified bit-for-bit, not
+    to a tolerance: every artifact of invert/print/export/contact/batch on the four scans (TIFF
+    pixels, provenance, EXIF, export PNGs, contact sheets) matched the pre-change code 38/38, and
+    `tests/unit/test_banding.py` pins each banded path to the whole-array pipeline at 1- and 7-row
+    bands plus a tracemalloc guard (9.0x the frame before, 1.4x after, on the same test). Bands
+    bigger than ~4 MiB measurably cost memory (1000 rows: 713 MiB) for no speed gain. Deliberately
+    *not* done, because each would change output: fusing the two ICC matrices into one float32
+    matrix (~2 s/frame faster, output moves ~1e-7), replacing colour-science, measuring the fit or
+    auto calibration on a downsampled frame, float16 buffers. Known, pre-existing and untouched:
+    export PNGs / contact-sheet JPEGs aren't byte-reproducible between runs even on unchanged code —
+    Pillow stamps its synthesized sRGB ICC profile with the creation time (pixels are identical).
+  - **Worker pool after that pass**: `K = 3` (baseline 150 MiB) for inversion and `K = 2` (100 MiB)
+    for export/contact, refit from real worker processes' peaks (worst: `--auto-density` 509 MiB RSS
+    on a 182 MiB scan) — see the constants' comment in `batch/orchestrator.py`. exiftool needs no
+    term: it streams (67 MiB peak on a 130 MiB output) and `process_scan` frees the frame before
+    running it. Workers come from a forkserver with `halide.processing` preloaded (they share numpy/
+    colour-science pages copy-on-write: 4 idle workers 294 -> 73 MiB proportional memory). The old
+    fixed `min(cpu_count, 6)` cap is now one worker per *physical* core (`_cpu_cap`, the user's
+    choice) — a hyperthread sibling adds little to a numpy-bound worker but costs a frame of memory.
+    Net effect: 4 GiB free now runs 5 workers (was 1), 7 GiB runs 9 (was 3). Measured on 16 real
+    frames in the dev sandbox (5.5 GiB free, 16 cores), each version at its own default: old code 2
+    workers, 46.4 s, 3.83 GiB total PSS; new code 8 workers, 16.9 s, 2.49 GiB — outputs 16/16
+    bit-identical. Scaling flattens past ~4 workers there (1: 66 s, 2: 35 s, 4: 22 s, 6: 20 s, 8:
+    17 s) — probably disk writes (~2 GB of TIFFs per run) and memory bandwidth, not re-tuned from
+    one sandbox; re-check on the user's own machine before lowering the physical-core cap.
 - **`--auto-density-roll` selects neutral candidates per frame, then pools candidates — never pools
   raw pixels across frames first.** The per-channel median used to judge "how neutral is this
   pixel" (`calibration/auto.py::_saturation`) is only a valid proxy for the film's own systematic
@@ -286,7 +332,7 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   same-roll scans), now fixed — but did not fully resolve a residual color cast, see the limitation
   noted below.
 - **`calibration/auto.py::_saturation` judges neutrality against a density-local reference
-  (`_density_reference`), not one frame-wide median.** A single global median is only a valid stand-
+  (`_density_local_saturation`, formerly `_density_reference`), not one frame-wide median.** A single global median is only a valid stand-
   in for the film's systematic per-channel imbalance at the ONE density level it happens to sit at —
   it is not a fixed ratio across the whole tonal range, because the three dye layers have different
   characteristic-curve shapes. This was a real, structural bug, not just an occasional gray-world
@@ -298,7 +344,7 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   nearly the same raw color there, because little image-forming density is left to differentiate
   it, so deep-shadow content passes a ratio test almost regardless of whether it's truly neutral,
   while properly-exposed content (which preserves real hue differences) is comparatively
-  under-selected even when it genuinely is neutral. `_density_reference` fixes this half of the
+  under-selected even when it genuinely is neutral. The density-local reference fixes this half of the
   problem by comparing each pixel only against others at a similar density (verified: the old
   bimodal-fraction test, `neutral_fraction=0.25` failing to recover a known profile, is now fixed
   even down to `neutral_fraction=0.01`; a direct synthetic reproduction of the traffic-light/hair/
