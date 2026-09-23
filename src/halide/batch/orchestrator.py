@@ -27,7 +27,8 @@ from typing import Callable
 import tifffile
 
 from halide.core.types import DensityProfile, ToneCurveParams
-from halide.processing import Stage, export_delivery_image, print_scan, process_scan
+from halide.io.contact_sheet import DEFAULT_FRAME_WIDTH
+from halide.processing import Stage, export_delivery_image, print_scan, process_scan, thumbnail_existing_output
 
 TIFF_SUFFIXES = (".tif", ".tiff")
 
@@ -59,8 +60,9 @@ _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 @dataclass(frozen=True)
 class BatchJob:
     input_path: Path
-    output_path: Path
+    output_path: Path | None  # None = don't keep the full-size output (contact-sheet preview)
     scan_gain: float = 1.0  # see processing.process_scan / --match-scan-exposure
+    thumbnail_path: Path | None = None  # contact-sheet thumbnail to write alongside, if any
 
 
 @dataclass(frozen=True)
@@ -201,9 +203,13 @@ def _worker(
     stage: Stage,
     density_profile: DensityProfile | None,
     tone_params: ToneCurveParams,
+    thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
 ) -> BatchResult:
     try:
-        process_scan(job.input_path, job.output_path, stage, density_profile, tone_params, scan_gain=job.scan_gain)
+        process_scan(
+            job.input_path, job.output_path, stage, density_profile, tone_params, scan_gain=job.scan_gain,
+            thumbnail_path=job.thumbnail_path, thumbnail_long_edge=thumbnail_long_edge,
+        )
         return BatchResult(job=job, error=None)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc))
@@ -221,6 +227,14 @@ def _print_worker(job: BatchJob, tone_params: ToneCurveParams) -> BatchResult:
     try:
         _, warning = print_scan(job.input_path, job.output_path, tone_params)
         return BatchResult(job=job, error=None, warning=warning)
+    except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
+        return BatchResult(job=job, error=str(exc))
+
+
+def _thumbnail_worker(job: BatchJob, thumbnail_long_edge: int) -> BatchResult:
+    try:
+        thumbnail_existing_output(job.input_path, job.thumbnail_path, thumbnail_long_edge)
+        return BatchResult(job=job, error=None)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc))
 
@@ -343,13 +357,15 @@ def run_batch(
     max_workers: int | None = None,
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
+    thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
 ) -> list[BatchResult]:
     """Invert every job in a process pool, in parallel — see _run_pool for the shared failure-
     handling and progress-callback behavior. `max_workers` defaults to default_worker_count(jobs)
-    if not given."""
+    if not given. Jobs with a thumbnail_path also get a contact-sheet thumbnail."""
     workers = max_workers if max_workers is not None else default_worker_count(jobs)
     return _run_pool(
-        jobs, _worker, (stage, density_profile, tone_params), workers, on_result=on_result, on_start=on_start
+        jobs, _worker, (stage, density_profile, tone_params, thumbnail_long_edge), workers,
+        on_result=on_result, on_start=on_start,
     )
 
 
@@ -380,3 +396,17 @@ def run_print_batch(
     stage alone (which is the tail of that same pipeline)."""
     workers = max_workers if max_workers is not None else default_worker_count(jobs)
     return _run_pool(jobs, _print_worker, (tone_params,), workers, on_result=on_result, on_start=on_start)
+
+
+def run_thumbnail_batch(
+    jobs: list[BatchJob],
+    thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
+    max_workers: int | None = None,
+    on_result: Callable[[BatchResult], None] | None = None,
+    on_start: Callable[[BatchJob], None] | None = None,
+) -> list[BatchResult]:
+    """Contact-sheet thumbnails of already-processed files (`halide contact`), in a process pool.
+    Sized with export's constants: reading + colour-converting one full-size file is the same
+    shape of work as an export, and the thumbnail itself is tiny."""
+    workers = max_workers if max_workers is not None else default_export_worker_count(jobs)
+    return _run_pool(jobs, _thumbnail_worker, (thumbnail_long_edge,), workers, on_result=on_result, on_start=on_start)
