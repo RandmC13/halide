@@ -1,4 +1,3 @@
-import pytest
 import argparse
 
 from halide.cli._calibration_args import resolve_tone_params
@@ -7,8 +6,8 @@ from halide.core.types import ToneCurveParams
 _SAVED_TONE = ToneCurveParams(mode="paper", exposure=0.4, contrast=0.7)
 
 
-def _args(exposure=None, contrast=None, linear_output=False) -> argparse.Namespace:
-    return argparse.Namespace(exposure=exposure, contrast=contrast, linear_output=linear_output)
+def _args(exposure=None, contrast=None, output_mode=None) -> argparse.Namespace:
+    return argparse.Namespace(exposure=exposure, contrast=contrast, output_mode=output_mode)
 
 
 def test_explicit_cli_flag_wins_over_saved_tone():
@@ -36,27 +35,13 @@ def test_partial_cli_override_still_falls_back_to_saved_tone_per_field():
     assert result.contrast == 0.7
 
 
-def test_linear_output_is_cli_flag_only_never_inherited_from_saved_tone():
-    result = resolve_tone_params(_args(linear_output=False), saved_tone=_SAVED_TONE)
+def test_flat_output_is_cli_flag_only_never_inherited_from_saved_tone():
+    result = resolve_tone_params(_args(), saved_tone=_SAVED_TONE)
     assert result.mode == "paper"
-    result = resolve_tone_params(_args(linear_output=True), saved_tone=_SAVED_TONE)
+    result = resolve_tone_params(_args(output_mode="flat"), saved_tone=_SAVED_TONE)
     assert result.mode == "linear"
 
 
-def test_output_flat_selects_linear_mode_and_linear_output_is_an_alias():
-    args = _args()
-    args.output_mode = "flat"
-    assert resolve_tone_params(args).mode == "linear"
-    args = _args(linear_output=True)
-    args.output_mode = None
-    assert resolve_tone_params(args).mode == "linear"
-    args = _args()
-    args.output_mode = "print"
-    assert resolve_tone_params(args).mode == "paper"
-
-
-def test_linear_output_conflicts_with_explicit_output_print():
-    args = _args(linear_output=True)
-    args.output_mode = "print"
-    with pytest.raises(SystemExit):
-        resolve_tone_params(args)
+def test_output_flag_selects_mode():
+    assert resolve_tone_params(_args(output_mode="flat")).mode == "linear"
+    assert resolve_tone_params(_args(output_mode="print")).mode == "paper"

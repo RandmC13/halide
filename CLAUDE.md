@@ -52,7 +52,7 @@ halide print <flat.tif|dir> <print.tif|dir>    # print stage only, for a flat po
 halide check <roll_dir>                        # were the scans made consistently? (headers only)
   (invert/batch also take --match-scan-exposure [--scan-reference FRAME])
 halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sRGB PNG/JPEG
-halide profile list|show|rename|delete|set-scan-reference
+halide profile list|show|rename|delete
 halide calibrate [negative.tif]                # Dear PyGui: anchor-frame picker + live preview;
                                                 # auto-loads the given TIFF if a path is passed
 ```
@@ -150,7 +150,7 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   warmer uncorrected) — CC13-CC22, clearly visible. `--match-scan-exposure` corrects it exactly
   from EXIF (one global multiply on linear sensor data commutes with every colour matrix; verified
   end to end in tests/unit/test_scan_consistency.py), against the profile's recorded scan settings
-  (profiles now carry a "scan" sidecar; `halide profile set-scan-reference` for older ones; batch
+  (profiles carry a "scan" sidecar, written whenever one is saved; `--scan-reference FRAME` for older ones; batch
   falls back to the roll's most common setting with a warning). Deliberately **not** corrected:
   per-frame raw white balance (a per-channel multiply in the camera's own colour space, before the
   raw converter's camera matrix — not invertible from the export without that matrix, so it's
@@ -171,7 +171,7 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   halide's own ACEScg output profile: the conversion isn't a true identity (the profile's
   s15Fixed16 matrix round-trips ACEScg only to ~1e-4 per channel), which broke exact round trips.
   `export`'s console verb became "Exporting" (it was "Printing" before a real print step existed).
-- **`mode="linear"` (`--output flat`, alias `--linear-output`) output is scaled, not a bare
+- **`mode="linear"` (`--output flat`) output is scaled, not a bare
   unbounded passthrough** — one global multiply is the *only* adjustment, since per the reference
   blog exposure and white balance are the only operations that keep a flat positive faithful. It
   looks flat because it is the film's own recorded contrast (negative gamma ~0.6), and its black is

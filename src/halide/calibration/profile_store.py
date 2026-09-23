@@ -118,19 +118,11 @@ def load_tone_override(path: str | Path) -> ToneCurveParams | None:
 
 def load_scan_reference(path: str | Path) -> ScanSettings | None:
     """The scan exposure a profile was calibrated at, if recorded (profiles saved before this
-    existed have none — see set_scan_reference to add it)."""
+    existed have none — pass --scan-reference FRAME for those)."""
     scan = json.loads(Path(path).read_text()).get("scan")
     if not scan:
         return None
     return ScanSettings(exposure_time=scan["exposure_time"], f_number=scan["f_number"], iso=scan["iso"])
-
-
-def set_scan_reference(path: str | Path, scan: ScanSettings) -> None:
-    """Record (or replace) a saved profile's scan reference, leaving every other field untouched."""
-    path = Path(path)
-    data = json.loads(path.read_text())
-    data["scan"] = asdict(scan)
-    path.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityProfile]]:

@@ -89,9 +89,6 @@ def add_tone_arguments(parser: argparse.ArgumentParser, *, allow_output_mode: bo
             "global exposure scale only, a minimal-bias linear positive for editing elsewhere "
             "(e.g. darktable, then `halide print`)",
         )
-        parser.add_argument(
-            "--linear-output", action="store_true", help="Same as --output flat (kept for compatibility)"
-        )
     parser.add_argument(
         "--exposure",
         type=float,
@@ -124,7 +121,7 @@ def add_scan_arguments(parser: argparse.ArgumentParser) -> None:
         "--scan-reference",
         metavar="FRAME",
         help="With --match-scan-exposure: the scan the profile was calibrated on, for a profile "
-        "saved without its scan settings (or use `halide profile set-scan-reference` once)",
+        "saved without its scan settings (or save the profile again from that frame)",
     )
 
 
@@ -162,11 +159,7 @@ def resolve_tone_params(args: argparse.Namespace, saved_tone: ToneCurveParams | 
     for a saved profile to do by default)."""
     exposure = args.exposure if args.exposure is not None else (saved_tone.exposure if saved_tone else None)
     contrast = args.contrast if args.contrast is not None else (saved_tone.contrast if saved_tone else None)
-    output_mode = getattr(args, "output_mode", None)
-    linear_output = getattr(args, "linear_output", False)
-    if linear_output and output_mode == "print":
-        raise SystemExit("--linear-output conflicts with --output print")
-    flat = linear_output or output_mode == "flat"
+    flat = getattr(args, "output_mode", None) == "flat"
     return ToneCurveParams(mode="linear" if flat else "paper", exposure=exposure, contrast=contrast)
 
 

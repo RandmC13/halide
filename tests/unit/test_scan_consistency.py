@@ -10,7 +10,6 @@ from halide.calibration.profile_store import (
     load_tone_override,
     rename_profile,
     save_named_profile,
-    set_scan_reference,
 )
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.core.types import DensityProfile, ToneCurveParams
@@ -108,11 +107,9 @@ def test_matching_scan_exposure_exactly_undoes_a_brighter_scan(tmp_path):
 def test_profile_scan_reference_roundtrip_and_rename_keeps_sidecars(tmp_path):
     save_named_profile(PROFILE, "roll", profiles_dir=tmp_path, tone=ToneCurveParams(exposure=0.1, contrast=0.9), scan=S30)
     assert load_scan_reference(tmp_path / "roll.json") == S30
-    set_scan_reference(tmp_path / "roll.json", S60)
-    assert load_scan_reference(tmp_path / "roll.json") == S60
 
     new_path = rename_profile("roll", "roll16", profiles_dir=tmp_path)
-    assert load_scan_reference(new_path) == S60
+    assert load_scan_reference(new_path) == S30
     assert load_tone_override(new_path).contrast == 0.9  # used to be silently dropped by rename
     assert json.loads(new_path.read_text())["name"] == "roll16"
 
@@ -122,7 +119,7 @@ def test_invert_match_without_a_known_reference_explains_what_to_do(tmp_path, mo
 
     monkeypatch.setattr(invert_cmd, "read_scan_metadata", lambda path: (S30, None))
     args = argparse.Namespace(input="x.tif", match_scan_exposure=True, scan_reference=None, profile=None)
-    with pytest.raises(SystemExit, match="set-scan-reference"):
+    with pytest.raises(SystemExit, match="--scan-reference FRAME"):
         invert_cmd._resolve_scan_gain(args, calibrated_here=False)
     # Calibrated from this very frame: nothing to match, and the frame's own settings get recorded.
     assert invert_cmd._resolve_scan_gain(args, calibrated_here=True) == (1.0, S30)
