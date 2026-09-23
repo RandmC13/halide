@@ -60,6 +60,7 @@ _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 class BatchJob:
     input_path: Path
     output_path: Path
+    scan_gain: float = 1.0  # see processing.process_scan / --match-scan-exposure
 
 
 @dataclass(frozen=True)
@@ -202,7 +203,7 @@ def _worker(
     tone_params: ToneCurveParams,
 ) -> BatchResult:
     try:
-        process_scan(job.input_path, job.output_path, stage, density_profile, tone_params)
+        process_scan(job.input_path, job.output_path, stage, density_profile, tone_params, scan_gain=job.scan_gain)
         return BatchResult(job=job, error=None)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc))

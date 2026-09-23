@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 from halide.batch.orchestrator import default_worker_count, discover_jobs, memory_budget_warning, run_batch
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
+from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.cli._calibration_args import (
     add_calibration_arguments,
+    add_scan_arguments,
     add_stage_arguments,
     add_tone_arguments,
     maybe_save_profile,
     resolve_density_profile,
+    resolve_scan_reference,
     resolve_stage,
     resolve_tone_params,
 )
-from halide.processing import ScanColorError, Stage, estimate_roll_density_profile
+from halide.processing import ScanColorError, Stage, estimate_roll_density_profile, read_roll_scan_metadata
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -35,6 +39,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "not adapting to any single frame's content",
     )
     add_tone_arguments(parser)
+    add_scan_arguments(parser)
 
     parser.add_argument(
         "--workers",
@@ -44,6 +49,38 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "is usually the real limit; pass this to override the auto-selected count)",
     )
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
+
+
+def _match_scan_exposure(jobs, metadata, reference, roll_estimate: bool):
+    """Give every job the gain that puts it at the calibration's scan exposure (see
+    calibration/scan_consistency.py). Returns (jobs, the reference used)."""
+    known = [settings for settings, _ in metadata.values() if settings is not None]
+    if not known:
+        raise SystemExit("--match-scan-exposure: none of these frames has camera exposure settings (EXIF) to match from")
+    if reference is None:
+        reference = most_common_settings(known)
+        if roll_estimate:
+            print(f"Matching every frame to the roll's most common scan exposure ({reference.describe()})")
+        else:
+            print(console.warning(
+                f"the profile doesn't record the scan exposure it was calibrated at, so frames are "
+                f"matched to the roll's most common setting ({reference.describe()}) — if the "
+                "calibration frame was scanned differently, a constant colour offset remains across "
+                "the roll (pass --scan-reference FRAME, or `halide profile set-scan-reference`)"
+            ))
+    matched, missing = [], []
+    for job in jobs:
+        settings, _ = metadata[str(job.input_path)]
+        if settings is None:
+            missing.append(job.input_path.name)
+            matched.append(job)
+        else:
+            matched.append(replace(job, scan_gain=scan_gain(settings, reference)))
+    adjusted = sum(1 for job in matched if abs(job.scan_gain - 1.0) > 1e-9)
+    print(f"Matching scan exposure to {reference.describe()}: {adjusted}/{len(jobs)} frame(s) adjusted")
+    if missing:
+        print(console.warning(f"no camera exposure settings (EXIF) in {', '.join(missing)} — left unadjusted"))
+    return matched, reference
 
 
 def run(args: argparse.Namespace) -> int:
@@ -67,19 +104,36 @@ def run(args: argparse.Namespace) -> int:
             "--auto-density-roll cannot be combined with --profile/manual overrides/--auto-density"
         )
 
+    metadata = read_roll_scan_metadata([job.input_path for job in jobs])
+    report = assess_roll({Path(path).name: meta for path, meta in metadata.items()})
+    if report.has_issues and not args.quiet:
+        for line in report.summary_lines():
+            print(console.warning(line))
+        print(f"  Run `halide check {input_dir}` for details and how to scan a roll consistently.")
+
+    per_frame_auto = args.auto_density and not args.auto_density_roll
+    scan_reference = None if args.auto_density_roll else resolve_scan_reference(args)
+    if args.match_scan_exposure:
+        if stage is Stage.INVERT_ONLY or per_frame_auto:
+            print(console.warning("--match-scan-exposure has no effect here: each frame is calibrated from itself"))
+        else:
+            jobs, scan_reference = _match_scan_exposure(jobs, metadata, scan_reference, args.auto_density_roll)
+
     if stage is Stage.INVERT_ONLY:
         density_profile, saved_tone = None, None  # unused by process_scan for this stage
     elif args.auto_density_roll:
         print(f"Estimating a shared density-balance profile from {len(jobs)} frame(s)...")
         try:
-            density_profile = estimate_roll_density_profile([job.input_path for job in jobs])
+            density_profile = estimate_roll_density_profile(
+                [job.input_path for job in jobs], scan_gains={str(job.input_path): job.scan_gain for job in jobs}
+            )
         except ScanColorError as exc:
             raise SystemExit(str(exc))
         saved_tone = None
     else:
         density_profile, saved_tone = resolve_density_profile(args)  # profile may be None -> per-frame auto
 
-    maybe_save_profile(args, density_profile, tone=saved_tone)
+    maybe_save_profile(args, density_profile, tone=saved_tone, scan=scan_reference)
     tone_params = resolve_tone_params(args, saved_tone=saved_tone)
 
     if args.workers is not None:

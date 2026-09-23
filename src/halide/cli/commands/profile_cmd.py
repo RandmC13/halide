@@ -9,9 +9,12 @@ from halide.calibration.profile_store import (
     delete_profile,
     list_profiles,
     load_profile,
+    load_scan_reference,
     rename_profile,
     resolve_profile_path,
+    set_scan_reference,
 )
+from halide.io.scan_metadata import read_scan_metadata
 from halide.cli import console
 
 
@@ -29,6 +32,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
     delete_parser = subparsers.add_parser("delete", help="Delete a saved profile")
     delete_parser.add_argument("name")
+
+    scan_parser = subparsers.add_parser(
+        "set-scan-reference",
+        help="Record which camera exposure a profile was calibrated at (read from that frame's EXIF), "
+        "for --match-scan-exposure",
+    )
+    scan_parser.add_argument("name", help="Profile name or file path")
+    scan_parser.add_argument("frame", help="The scan TIFF the profile was calibrated on")
 
 
 def _run_list(args: argparse.Namespace) -> int:
@@ -65,6 +76,21 @@ def _run_show(args: argparse.Namespace) -> int:
     print(f"Scanner:        {profile.scanner or '(not set)'}")
     print(f"Source:         {profile.source}")
     print(f"Created:        {profile.created_at or 'unknown'}")
+    scan = load_scan_reference(path)
+    print(f"Scanned at:     {scan.describe() if scan else '(not recorded — see set-scan-reference)'}")
+    return 0
+
+
+def _run_set_scan_reference(args: argparse.Namespace) -> int:
+    try:
+        path = resolve_profile_path(args.name)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc))
+    settings, _ = read_scan_metadata(args.frame)
+    if settings is None:
+        raise SystemExit(f"{args.frame}: no camera exposure settings (EXIF) found")
+    set_scan_reference(path, settings)
+    print(console.success(f"Profile {args.name!r} now records its scan exposure as {settings.describe()}"))
     return 0
 
 
@@ -92,5 +118,6 @@ def run(args: argparse.Namespace) -> int:
         "show": _run_show,
         "rename": _run_rename,
         "delete": _run_delete,
+        "set-scan-reference": _run_set_scan_reference,
     }
     return handlers[args.profile_command](args)
