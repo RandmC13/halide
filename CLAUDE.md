@@ -192,6 +192,9 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   whole `ProcessPoolExecutor` and every other pending future raises `BrokenProcessPool` too —
   discarding every already-completed result and surfacing a bare traceback. Each crashed future is
   now recorded as its own `BatchResult` with an actionable message instead. `estimate_roll_density_profile`
+  also had to `.copy()` its downsampled frames: a strided slice is a view that pins the whole
+  full-resolution parent (~180 MiB per real scan), and a real 37-frame `--auto-density-roll` got the
+  main process OOM-killed (exit 137) before any worker started. It
   similarly needed to catch broad `Exception`, not just `ScanColorError` — a genuinely corrupt (not
   just unsupported-ICC) file raises straight from `tifffile` and was aborting the whole roll estimate.
 - **`batch.orchestrator.default_worker_count` sizes the worker pool from available RAM, not just

@@ -126,3 +126,16 @@ def test_invert_match_without_a_known_reference_explains_what_to_do(tmp_path, mo
         invert_cmd._resolve_scan_gain(args, calibrated_here=False)
     # Calibrated from this very frame: nothing to match, and the frame's own settings get recorded.
     assert invert_cmd._resolve_scan_gain(args, calibrated_here=True) == (1.0, S30)
+
+
+def test_roll_estimate_keeps_small_copies_not_views_of_full_frames(tmp_path, monkeypatch):
+    # Regression: the downsampled frames used to be strided *views*, each pinning its whole
+    # full-resolution parent (~180 MiB per real scan) — a real 37-frame roll got OOM-killed.
+    import halide.processing as processing
+
+    captured = []
+    monkeypatch.setattr(processing, "roll_auto_density_balance", lambda images: captured.extend(images) or PROFILE)
+    paths = [_negative(tmp_path, f"f{i}.tif", 1.0) for i in range(2)]
+    processing.estimate_roll_density_profile(paths, stride=4)
+    assert len(captured) == 2
+    assert all(image.base is None for image in captured)  # owns its (small) data

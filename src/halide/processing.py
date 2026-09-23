@@ -260,7 +260,10 @@ def estimate_roll_density_profile(
     images = []
     for path in input_paths:
         try:
-            image = load_working_space_image(path)[::stride, ::stride, :]
+            # .copy(): a strided slice is a *view* that keeps the whole full-resolution frame alive
+            # (~180 MiB each for a real scan) — holding a roll's worth of those got the process
+            # OOM-killed on a real 37-frame roll. The copy is ~2 MiB and frees the full frame.
+            image = load_working_space_image(path)[::stride, ::stride, :].copy()
             gain = (scan_gains or {}).get(str(path), 1.0)
             images.append(image * np.asarray(gain, dtype=image.dtype) if gain != 1.0 else image)
         except Exception as exc:  # noqa: BLE001 — one corrupt frame must not abort the roll estimate
