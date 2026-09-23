@@ -8,13 +8,14 @@ from halide.cli.commands import (
     batch_cmd,
     calibrate_cmd,
     check_cmd,
+    contact_cmd,
     export_cmd,
     invert_cmd,
     print_cmd,
     profile_cmd,
 )
 
-_SUBCOMMANDS = ("invert", "batch", "print", "export", "check", "profile", "calibrate")
+_SUBCOMMANDS = ("invert", "batch", "print", "export", "contact", "check", "profile", "calibrate")
 
 
 def _is_top_level_help(argv: list[str]) -> bool:
@@ -63,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_cmd.add_arguments(export_parser)
 
+    contact_parser = subparsers.add_parser(
+        "contact", help="Make a high-res contact sheet of a processed folder (TIFF or exported PNG/JPEG)"
+    )
+    contact_cmd.add_arguments(contact_parser)
+
     check_parser = subparsers.add_parser(
         "check", help="Check a roll's scans were made consistently (camera settings, white balance, edits)"
     )
@@ -99,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
         return print_cmd.run(args)
     if args.command == "export":
         return export_cmd.run(args)
+    if args.command == "contact":
+        return contact_cmd.run(args)
     if args.command == "check":
         return check_cmd.run(args)
     if args.command == "profile":

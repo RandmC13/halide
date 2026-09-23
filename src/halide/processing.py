@@ -12,6 +12,7 @@ from pathlib import Path
 
 import colour
 import numpy as np
+from PIL import Image
 
 from halide.calibration.auto import auto_density_balance, roll_auto_density_balance
 from halide.core.density import apply_density_balance, apply_white_balance
@@ -24,9 +25,15 @@ from halide.io.icc import (
     output_profile_bytes,
     parse_linear_rgb_profile,
 )
+from halide.io.contact_sheet import (
+    DEFAULT_FRAME_WIDTH,
+    save_thumbnail,
+    thumbnail_from_display,
+    thumbnail_from_linear,
+)
 from halide.io.raster import write_delivery_image
 from halide.io.scan_metadata import DarktableState, ScanSettings, read_scan_metadata
-from halide.io.tiff import copy_exif_metadata, read_tiff, set_description, write_tiff
+from halide.io.tiff import copy_exif_metadata, read_tiff, read_tiff_description, set_description, write_tiff
 
 IDENTITY_PROFILE = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0))
 
@@ -117,11 +124,13 @@ def load_working_space_image(path: str | Path) -> np.ndarray:
 
 def process_scan(
     input_path: str | Path,
-    output_path: str | Path,
+    output_path: str | Path | None,
     stage: Stage,
     density_profile: DensityProfile | None,
     tone_params: ToneCurveParams,
     scan_gain: float = 1.0,
+    thumbnail_path: str | Path | None = None,
+    thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
 ) -> ResolvedTone | None:
     """Process one negative scan end to end and write the result.
 
@@ -131,6 +140,12 @@ def process_scan(
 
     `density_profile=None` means "compute a per-frame automatic profile from this image" — not
     valid combined with `stage=Stage.INVERT_ONLY`, which always uses the identity profile.
+
+    `thumbnail_path`, if given, also writes a contact-sheet thumbnail of the result (see
+    io/contact_sheet.py); `output_path=None` then skips the full-size TIFF entirely — what
+    `batch --contact-sheet` without an output directory does, so previewing a roll's settings doesn't
+    fill a folder with TIFFs. The thumbnail is made from exactly the same full-resolution develop
+    (including the per-frame print fit), so the preview matches what a real run would write.
 
     Returns the tone values actually used (None for Stage.DENSITY_ONLY, which has no tone stage).
     """
@@ -151,13 +166,38 @@ def process_scan(
     else:
         result, resolved = develop(working_image, profile, tone_params)
 
-    write_tiff(output_path, result, icc_profile=output_profile_bytes())
-    # Output is always ACEScg, a different profile than the source — exiftool must not clobber
-    # the ACEScg tag we just wrote with the source's own ICC bytes.
-    copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
-    if resolved is not None:
-        set_description(output_path, provenance_json(resolved, profile, scan_gain))
+    record = provenance_json(resolved, profile, scan_gain) if resolved is not None else None
+    if output_path is not None:
+        write_tiff(output_path, result, icc_profile=output_profile_bytes())
+        # Output is always ACEScg, a different profile than the source — exiftool must not clobber
+        # the ACEScg tag we just wrote with the source's own ICC bytes.
+        copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
+        if record is not None:
+            set_description(output_path, record)
+    if thumbnail_path is not None:
+        save_thumbnail(thumbnail_path, thumbnail_from_linear(result, thumbnail_long_edge),
+                       read_provenance(record))
     return resolved
+
+
+_DISPLAY_SUFFIXES = (".png", ".jpg", ".jpeg")
+
+
+def thumbnail_existing_output(
+    input_path: str | Path, thumbnail_path: str | Path, thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH
+) -> None:
+    """A contact-sheet thumbnail of an already-processed file: halide's own TIFF output (or any
+    linear, profile-embedded TIFF — colour-managed the same way as a scan), or a display-encoded
+    PNG/JPEG such as `halide export` writes. The file's recorded printing decision, if any, comes
+    along for the caption."""
+    path = Path(input_path)
+    if path.suffix.lower() in _DISPLAY_SUFFIXES:
+        with Image.open(path) as image:
+            save_thumbnail(thumbnail_path, thumbnail_from_display(image, thumbnail_long_edge), None)
+        return
+    record = read_provenance(read_tiff_description(path))
+    image = load_working_space_image(path)
+    save_thumbnail(thumbnail_path, thumbnail_from_linear(image, thumbnail_long_edge), record)
 
 
 def print_scan(

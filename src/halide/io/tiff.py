@@ -64,6 +64,12 @@ def write_tiff(path: str | Path, image: np.ndarray, icc_profile: bytes | None = 
     tifffile.imwrite(path, image.astype(np.float32, copy=False), **write_kwargs)
 
 
+def read_tiff_description(path: str | Path) -> str | None:
+    """The first page's ImageDescription only, without decoding any pixels."""
+    with tifffile.TiffFile(path) as tif:
+        return tif.pages[0].description or None
+
+
 def set_description(path: str | Path, text: str) -> None:
     """Overwrite the first page's ImageDescription in place. Done as a separate step *after*
     copy_exif_metadata, which would otherwise copy the source scan's own description over it."""
