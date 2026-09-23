@@ -66,7 +66,7 @@ def _match_scan_exposure(jobs, metadata, reference, roll_estimate: bool):
                 f"the profile doesn't record the scan exposure it was calibrated at, so frames are "
                 f"matched to the roll's most common setting ({reference.describe()}) — if the "
                 "calibration frame was scanned differently, a constant colour offset remains across "
-                "the roll (pass --scan-reference FRAME, or `halide profile set-scan-reference`)"
+                "the roll (pass --scan-reference FRAME, or save the profile again from that frame)"
             ))
     matched, missing = [], []
     for job in jobs:
