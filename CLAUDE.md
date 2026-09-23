@@ -120,15 +120,15 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   stretch levels in darktable, which is a second, non-physical tone curve on top of the paper
   (a linear-light black point reshapes the paper's toe; unlinked levels would also overwrite the
   density balance). `fit_print` instead measures this frame's robust luminance density range
-  (0.1/99.9th percentiles) and solves exactly for the grade that fills the paper's ISO 6846 range
+  (0.1/99.5th percentiles) and solves exactly for the grade that fills the paper's ISO 6846 range
   (computed from the curve file itself: 0.04 above paper white to 90% of D-max) and the exposure
   that puts the highlights on the paper's highlight point. Grade is capped at 1.0 (the real paper)
   so a genuinely flat scene prints soft rather than being normalised. The two scalars are applied
   identically to every channel, so the fit can't create a cast — but a harder grade (~0.8-0.9 on the
   real scans vs 0.5) makes an existing calibration residual ~1.7x more visible. Known, accepted
   trade-off of highlight anchoring: highlight-heavy frames print with dark midtones (IMG_0151's
-  shaded crowd, IMG_0158's rider: median sRGB ~80 -> ~40). The user chose 99.9 as the anchor
-  deliberately; don't re-tune it from one image. Every output records its decision (fitted or
+  shaded crowd, IMG_0158's rider: median sRGB ~80 -> ~40). The anchor is 99.5 (see next entry)
+  — don't re-tune it from one image. Every output records its decision (fitted or
   pinned) as JSON in the TIFF ImageDescription (`processing.py::provenance_json`), and `invert`
   prints it.
 - **Per-frame grade (not a per-roll grade) was re-confirmed on a full real roll, and the roll's
@@ -138,9 +138,10 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   roll grade (median of per-frame fits) was tried and rejected: 21/37 frames sit at the 1.0 cap,
   so the "roll grade" is just the paper's own grade, and it only differs from per-frame on the
   genuinely long-range negatives, which a printer *would* print softer. The highlight anchor
-  (99.9th percentile) is the open question: on specular-heavy frames (chrome, IMG_0158: top 1% spans
-  ~1 stop) it darkens the whole print. Greyscale proof sheets at 99.9/99.5/99.0 were made for the
-  user to choose from — don't change the anchor without their decision.
+  moved from the 99.9th to the 99.5th percentile by the user's choice from greyscale proof sheets
+  of the whole roll at 99.9/99.5/99.0: at 99.9, specular-heavy frames (chrome, IMG_0158: top 1%
+  spans ~1 stop) printed dark; 99.0 pushed high-key frames too close to paper white. Don't change
+  it without the user's say-so.
 - **Scan consistency matters for colour, not just brightness, and is checked from file headers
   (`halide check`, and automatically at the start of `batch`).** Density balance is a per-channel
   power function, so a frame digitized brighter by k comes out scaled by k**density_scale — a

@@ -61,8 +61,15 @@ _ISO_SHADOW_FRACTION_OF_DMAX = 0.9
 # as estimate_linear_scale and calibration/auto.py: the true min/max are routinely single-pixel
 # artifacts, not photographed detail. Anything beyond these goes into the curve's toe/shoulder —
 # compressed, never clipped, since the curve is asymptotic at both ends.
+#
+# The highlight end is 99.5, not 99.9: chosen by the user from greyscale proof sheets of a whole
+# real 37-frame roll at 99.9 / 99.5 / 99.0 (grade fitted to the same range each time). At 99.9 the
+# brightest 0.1% — on specular-heavy frames that's chrome glints, whose top 1% spanned ~1 stop on
+# IMG_0158 — set the exposure and printed the whole frame dark, the opposite of a printer letting
+# speculars burn to paper white. 99.0 lifted those frames further but pushed high-key frames too
+# close to paper white. This is a judgement constant, deliberately not re-tuned from one image.
 _PRINT_SHADOW_PERCENTILE = 0.1
-_PRINT_HIGHLIGHT_PERCENTILE = 99.9
+_PRINT_HIGHLIGHT_PERCENTILE = 99.5
 
 # The one clamp on the fitted grade: never print harder than the real, measured paper the curve
 # emulates (contrast=1.0 is that paper untouched). A genuinely low-contrast scene (fog, overcast)

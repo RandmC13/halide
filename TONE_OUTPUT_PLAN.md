@@ -325,8 +325,8 @@ CLAUDE.md).
 
 Open:
 
-1. **Highlight anchor.** 99.9 (current) vs 99.5 vs 99.0 — greyscale proof sheets of the whole roll
-   were made for the user to decide. Specular-heavy frames (IMG_0158) print dark at 99.9.
+1. ~~**Highlight anchor.**~~ Decided: 99.5 (user's pick from whole-roll proof sheets at 99.9 /
+   99.5 / 99.0; 99.9 printed specular-heavy frames dark, 99.0 looked too bright on high-key ones).
 2. **Validate --match-scan-exposure against a real two-exposure scan**: digitize one frame twice at
    different shutter speeds (e.g. 1/40 and 1/20), identical darktable export, and confirm the
    matched outputs agree (and quantify the unmatched colour shift). The algebra is exact and tested
