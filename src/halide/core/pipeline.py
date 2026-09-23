@@ -37,8 +37,15 @@ def develop(
     if tone_params is None:
         tone_params = ToneCurveParams()
 
-    img = apply_white_balance(negative_linear, density_profile)
-    img = apply_density_balance(img, density_profile)
-    img = invert(img)
+    img = negative_to_positive(negative_linear, density_profile)
     resolved = resolve_tone(img, tone_params)
     return apply_tone(img, resolved, tone_params.curve_path), resolved
+
+
+def negative_to_positive(negative_linear: np.ndarray, density_profile: DensityProfile) -> np.ndarray:
+    """white_balance -> density_balance -> invert: every per-pixel stage before the print fit. The
+    one definition of that order — develop() applies it to a whole array, processing.py's
+    full-resolution paths to one band of rows at a time (see halide.banding)."""
+    img = apply_white_balance(negative_linear, density_profile)
+    img = apply_density_balance(img, density_profile)
+    return invert(img)

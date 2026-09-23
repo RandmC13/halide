@@ -14,9 +14,10 @@ import colour
 import numpy as np
 from PIL import Image
 
+from halide.banding import map_in_bands
 from halide.calibration.auto import auto_density_balance, roll_auto_density_balance
 from halide.core.density import apply_density_balance, apply_white_balance
-from halide.core.pipeline import develop
+from halide.core.pipeline import negative_to_positive
 from halide.core.tone_render import ResolvedTone, apply_tone, resolve_tone
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.io.icc import (
@@ -105,7 +106,12 @@ def read_provenance(description: str | None) -> dict | None:
 def load_working_space_image(path: str | Path) -> np.ndarray:
     """Read a TIFF and convert it into the internal ACEScg working space, validating its embedded
     ICC profile along the way. Raises ScanColorError with a specific, actionable message if the
-    profile is missing or unsupported."""
+    profile is missing or unsupported.
+
+    The returned array is a fresh buffer the caller owns outright (nothing else references it), so
+    callers may develop it in place. The conversion itself runs band by band into the decoded
+    buffer (see halide.banding): converting the whole frame at once held ~5 frames of
+    colour-science's float64 temporaries (+900 MiB on a real scan)."""
     scan = read_tiff(path)
     if scan.icc_profile is None:
         raise ScanColorError(f"{path}: no embedded ICC profile found; cannot verify color space")
@@ -114,12 +120,13 @@ def load_working_space_image(path: str | Path) -> np.ndarray:
         # `halide print`): already in the working space by definition. Converting anyway isn't a
         # true identity — the profile's s15Fixed16 matrix round-trips ACEScg only to ~1e-4 per
         # channel — so skip it rather than add that drift to a file halide itself wrote.
-        return scan.image
+        return np.require(scan.image, requirements="W")
     try:
         source_profile = parse_linear_rgb_profile(scan.icc_profile)
     except UnsupportedICCProfileError as exc:
         raise ScanColorError(f"{path}: unsupported color profile — {exc}") from exc
-    return convert_to_working_space(scan.image, source_profile)
+    image = np.require(scan.image, requirements="W")  # copies only if tifffile handed back read-only data
+    return map_in_bands(image, lambda band: convert_to_working_space(band, source_profile))
 
 
 def process_scan(
@@ -149,34 +156,51 @@ def process_scan(
 
     Returns the tone values actually used (None for Stage.DENSITY_ONLY, which has no tone stage).
     """
-    working_image = load_working_space_image(input_path)
+    # One full-frame buffer for the whole run: converted, developed and written in place.
+    image = load_working_space_image(input_path)
     if scan_gain != 1.0:
-        working_image *= np.asarray(scan_gain, dtype=working_image.dtype)
+        image *= np.asarray(scan_gain, dtype=image.dtype)
 
     if stage is Stage.INVERT_ONLY:
         profile = IDENTITY_PROFILE
     elif density_profile is not None:
         profile = density_profile
     else:
-        profile = auto_density_balance(working_image)
+        profile = auto_density_balance(image)
 
     resolved = None
     if stage is Stage.DENSITY_ONLY:
-        result = apply_density_balance(apply_white_balance(working_image, profile), profile)
+        map_in_bands(image, lambda band: apply_density_balance(apply_white_balance(band, profile), profile))
     else:
-        result, resolved = develop(working_image, profile, tone_params)
+        resolved = _develop_in_place(image, profile, tone_params)
 
     record = provenance_json(resolved, profile, scan_gain) if resolved is not None else None
     if output_path is not None:
-        write_tiff(output_path, result, icc_profile=output_profile_bytes())
+        write_tiff(output_path, image, icc_profile=output_profile_bytes())
+    if thumbnail_path is not None:
+        save_thumbnail(thumbnail_path, thumbnail_from_linear(image, thumbnail_long_edge),
+                       read_provenance(record))
+    # Free the frame before exiftool (a separate process) rewrites the output, so a batch worker
+    # never holds a developed frame and exiftool's own memory at once — see the per-worker memory
+    # estimate in batch/orchestrator.py.
+    del image
+    if output_path is not None:
         # Output is always ACEScg, a different profile than the source — exiftool must not clobber
         # the ACEScg tag we just wrote with the source's own ICC bytes.
         copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
         if record is not None:
             set_description(output_path, record)
-    if thumbnail_path is not None:
-        save_thumbnail(thumbnail_path, thumbnail_from_linear(result, thumbnail_long_edge),
-                       read_provenance(record))
+    return resolved
+
+
+def _develop_in_place(image: np.ndarray, profile: DensityProfile, tone_params: ToneCurveParams) -> ResolvedTone:
+    """core.pipeline.develop, applied band by band into `image` (which the caller owns): the same
+    per-pixel stages in the same order, with the one whole-frame step — the print fit — run on the
+    full buffer between the two banded passes, exactly where develop() runs it. Bit-identical to
+    develop() (pinned by tests/unit/test_banding.py), at ~1 frame of memory instead of ~9."""
+    map_in_bands(image, lambda band: negative_to_positive(band, profile))
+    resolved = resolve_tone(image, tone_params)
+    map_in_bands(image, lambda band: apply_tone(band, resolved, tone_params.curve_path))
     return resolved
 
 
@@ -215,8 +239,9 @@ def print_scan(
     — it's dropped in favour of the fit, with a warning. The fitted exposure itself doesn't need the
     metadata: it's invariant to a global multiply (see core.tone_render.fit_print).
     """
-    scan = read_tiff(input_path)
-    provenance = read_provenance(scan.description)
+    # Header only: decoding the pixels here just for the description held a second full frame
+    # alongside load_working_space_image's.
+    provenance = read_provenance(read_tiff_description(input_path))
     if provenance is not None and provenance.get("output") == "print":
         raise PrintInputError(
             f"{input_path} is already a halide print (it has the tone curve applied) — `halide print` "
@@ -240,8 +265,9 @@ def print_scan(
     )
 
     resolved = resolve_tone(working_image, print_params)
-    result = apply_tone(working_image, resolved, print_params.curve_path)
-    write_tiff(output_path, result, icc_profile=output_profile_bytes())
+    map_in_bands(working_image, lambda band: apply_tone(band, resolved, print_params.curve_path))
+    write_tiff(output_path, working_image, icc_profile=output_profile_bytes())
+    del working_image  # before exiftool runs — see process_scan
     copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
     set_description(output_path, provenance_json(resolved, None))
     return resolved, warning
