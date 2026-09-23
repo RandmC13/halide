@@ -475,7 +475,10 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   framed by sprocket rules per the sizing convention. It replaced a run of unrelated sentences
   (roll warnings, scan-exposure lines, "Auto-selected N workers…") that blended together. Rows are
   held until the sheet closes so prompts come before it, not inside it; the roll estimate shows a
-  spinner row. `--quiet` still prints warnings, as plain lines. Fixed on the way: the scan-exposure
+  spinner row. `--quiet` still prints warnings, as plain lines. An exposure spread that
+  `--match-scan-exposure` is correcting is still a ⚠ (worded as "evened out"), not a plain row —
+  it was briefly demoted, and the user noticed the warning was missing: the correction is exact
+  only for a truly linear scan and isn't yet validated on a real two-exposure scan. Fixed on the way: the scan-exposure
   reference was announced twice, the exposure warning told you to pass `--match-scan-exposure`
   when it already was, the "profile doesn't record its scan exposure" warning appeared for manual
   `--rm/--bm` values (no profile involved), and an explicit `--workers` over the memory budget

@@ -228,9 +228,6 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
         sheet.warn("Scans", line)
     if issues:
         sheet.note("Scans", f"details, and how to scan a roll consistently: halide check {input_dir}")
-    elif report.exposure_inconsistent:  # and being evened out, on the next row
-        sheet.row("Scans", f"digitized at {len(report.exposure_groups)} camera exposures, "
-                           f"{report.exposure_spread_stops:.1f} stops apart")
     elif report.exposure_groups or report.white_balance_groups:
         sheet.ok("Scans", "scanned consistently")
     else:

@@ -16,7 +16,8 @@ def frame_count(n: int) -> str:
 
 
 def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str) -> None:
-    sheet.row("Roll", f"{input_dir.name}{RunSheet.SEP}{frame_count(n_frames)} → {destination}")
+    # resolve(): `halide batch .` would otherwise name the roll "" (Path(".").name is empty).
+    sheet.row("Roll", f"{input_dir.resolve().name}{RunSheet.SEP}{frame_count(n_frames)} → {destination}")
 
 
 def choose_workers(

@@ -82,15 +82,25 @@ class RollScanReport:
 
     def summary_lines(self, *, exposure_corrected: bool = False) -> list[str]:
         """Short, one-per-problem warnings (what `batch` shows under "Scans" before starting).
-        `exposure_corrected` leaves out the exposure problem, for a run that's already evening it
-        out with --match-scan-exposure (and says so on its own line)."""
+        `exposure_corrected` words the exposure problem for a run that's already evening it out
+        with --match-scan-exposure — still a warning: the correction is exact only for a truly
+        linear scan, and one manual exposure for the whole roll is better."""
         lines = []
-        if self.exposure_inconsistent and not exposure_corrected:
-            lines.append(
+        if self.exposure_inconsistent:
+            spread = (
                 f"digitized at {len(self.exposure_groups)} different camera exposures, "
-                f"{self.exposure_spread_stops:.1f} stops apart — one profile will shift colour from "
-                "frame to frame, visibly so for a stop or more (--match-scan-exposure corrects this)"
+                f"{self.exposure_spread_stops:.1f} stops apart"
             )
+            if exposure_corrected:
+                lines.append(
+                    f"{spread} — evened out by --match-scan-exposure, but scanning every frame at "
+                    "one manual exposure is better"
+                )
+            else:
+                lines.append(
+                    f"{spread} — one profile will shift colour from frame to frame, visibly so for "
+                    "a stop or more (--match-scan-exposure corrects this)"
+                )
         if self.white_balance_inconsistent:
             spread = ", ".join(f"{c} {v * 100:.0f}%" for c, v in zip("RGB", self.white_balance_spread) if v > 0)
             lines.append(
