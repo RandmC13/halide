@@ -21,6 +21,7 @@ _ICC_TAG = 34675  # TIFF InterColorProfile / ICC Profile tag
 class RawScan:
     image: np.ndarray  # float32/64, normalized to [0, 1] in the *source* color space
     icc_profile: bytes | None
+    description: str | None = None  # TIFF ImageDescription (where halide's provenance JSON lives)
 
 
 def read_tiff(path: str | Path) -> RawScan:
@@ -31,6 +32,7 @@ def read_tiff(path: str | Path) -> RawScan:
         raw = tif.asarray()
         icc_tag = tif.pages[0].tags.get(_ICC_TAG)
         icc_profile = icc_tag.value if icc_tag is not None else None
+        description = tif.pages[0].description or None
 
     if raw.dtype == np.uint8:
         image = raw.astype(np.float32) / 255.0
@@ -45,7 +47,7 @@ def read_tiff(path: str | Path) -> RawScan:
     else:
         raise ValueError(f"{path}: unsupported TIFF sample dtype {raw.dtype}")
 
-    return RawScan(image=image, icc_profile=icc_profile)
+    return RawScan(image=image, icc_profile=icc_profile, description=description)
 
 
 def write_tiff(path: str | Path, image: np.ndarray, icc_profile: bytes | None = None) -> None:
@@ -60,6 +62,12 @@ def write_tiff(path: str | Path, image: np.ndarray, icc_profile: bytes | None = 
         write_kwargs["extratags"] = [(_ICC_TAG, "B", len(icc_profile), icc_profile)]
 
     tifffile.imwrite(path, image.astype(np.float32, copy=False), **write_kwargs)
+
+
+def set_description(path: str | Path, text: str) -> None:
+    """Overwrite the first page's ImageDescription in place. Done as a separate step *after*
+    copy_exif_metadata, which would otherwise copy the source scan's own description over it."""
+    tifffile.tiffcomment(path, text)
 
 
 def copy_exif_metadata(source_path: str | Path, dest_path: str | Path, drop_icc: bool = False) -> bool:

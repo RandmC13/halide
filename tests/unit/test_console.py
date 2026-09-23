@@ -129,3 +129,18 @@ def test_animation_uses_given_frames_when_terminal_is_big_enough(monkeypatch):
 
 def test_themed_animation_returns_an_animation_instance():
     assert isinstance(console.themed_animation(["a"], "label", min_width=1, min_height=1), console.animation)
+
+
+def test_framed_sizes_rules_to_short_text_and_to_the_terminal_for_long_output(monkeypatch):
+    # The user's convention: one or two lines -> rules as wide as the text (neatly wrapping it);
+    # longer output -> rules spanning the whole terminal line (a short rule looks cut off).
+    import os
+
+    from halide.cli import console
+
+    monkeypatch.setattr(console.shutil, "get_terminal_size", lambda fallback=None: os.terminal_size((101, 30)))
+    short = console.framed(["halide · calibration picker"]).split("\n")  # 27 visible characters
+    assert console.visible_width(short[0]) == 27
+    long = console.framed(["a", "b", "c"]).split("\n")
+    assert console.visible_width(long[0]) == 101
+    assert long[0] == long[-1] and short[0] == short[-1]

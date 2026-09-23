@@ -32,27 +32,33 @@ class DensityProfile:
 class ToneCurveParams:
     """Parameters for the final tone-render stage.
 
-    mode="paper" (the default) runs the inverted, density-balanced image through a print-emulating
-    response curve with a smooth toe/shoulder, replacing the old hard np.clip(0, 1) that caused
-    inconsistent clipping. mode="linear" is the escape hatch for users who want unclipped linear
-    output to grade elsewhere.
+    mode="paper" (the default, the "print" output) runs the inverted, density-balanced image
+    through a print-emulating response curve with a smooth toe/shoulder, replacing the old hard
+    np.clip(0, 1) that caused inconsistent clipping. mode="linear" (the "flat" output) is the
+    minimal-bias escape hatch: white balance + density balance + invert + one global exposure
+    scale, for users who want to grade elsewhere — per the reference blog, exposure and white
+    balance are the only adjustments that keep a flat positive faithful to the negative.
 
-    `contrast` scales how much of the paper curve's density range a given image engages, pivoted
-    around the curve's domain midpoint — contrast=1.0 reproduces the vendored reference curve
-    (a real, but extremely high-contrast, commercial paper) exactly; lower values are the digital
-    equivalent of printing on a lower contrast-grade paper. This exists because the raw reference
-    curve was found (on a real test scan, see project history) to amplify small, otherwise
-    negligible residual calibration imperfections into a visible color cast in midtones — the same
-    problem a real printer would reach for a softer paper grade to solve, not a different chemistry.
+    `exposure` positions the negative's density range along the paper curve (the darkroom analogue
+    of enlarger exposure time); `contrast` scales how much of the curve that range covers, pivoted
+    around the curve's domain midpoint (the analogue of paper grade — 1.0 is the vendored reference
+    paper untouched, lower is softer).
 
-    `exposure=None` (the default) auto-computes a per-image exposure from the image's own shadow
-    statistics (core.tone_render.estimate_exposure) rather than trusting one fixed constant for
-    every negative — found necessary on a real test scan where a fixed exposure left true blacks
-    unreachable on one scan while working fine on another. Pass an explicit float to pin it (e.g.
-    once you've dialed in a look in the preview GUI and want every frame of a roll to match).
+    Both default to None = fitted per image (core.tone_render.fit_print): the grade that makes this
+    negative's own density range fill the paper's ISO 6846 exposure range, capped at 1.0, with
+    exposure placing the negative's highlights on the paper's highlight point — so the print uses
+    the paper's real black and white through the curve's own toe/shoulder, never a post-curve
+    stretch. History, so neither is "simplified" back to a constant: a fixed exposure was found to
+    leave true blacks unreachable on one real scan while working on another; the replacement
+    shadow-only auto-exposure plus a fixed contrast=0.5 (chosen because the raw 1.0 curve amplified
+    small calibration residuals into visible casts) then used only about half the paper on every
+    real scan — flat, lifted blacks (sRGB ~45) and dim whites (~220-233) against the paper's own
+    ~11/255. The fitted grade typically lands around 0.8-0.9 on real scans, so a good calibration
+    matters more than it did at 0.5: a residual cast is ~1.7x more visible. Pin either value
+    explicitly (CLI flag, or a saved profile's Fine-tune override) to take it out of the fit.
     """
 
     mode: Literal["paper", "linear"] = "paper"
     exposure: float | None = None
-    contrast: float = 0.5
+    contrast: float | None = None
     curve_path: str | None = None  # override the bundled default curve asset
