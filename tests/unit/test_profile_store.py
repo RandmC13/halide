@@ -4,12 +4,13 @@ from halide.calibration.profile_store import (
     delete_profile,
     list_profiles,
     load_profile,
+    load_tone_override,
     rename_profile,
     resolve_profile_path,
     save_named_profile,
     save_profile,
 )
-from halide.core.types import DensityProfile
+from halide.core.types import DensityProfile, ToneCurveParams
 
 PROFILE = DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78))
 
@@ -102,3 +103,36 @@ def test_delete_profile(tmp_path):
 def test_delete_profile_raises_if_missing(tmp_path):
     with pytest.raises(FileNotFoundError):
         delete_profile("nonexistent", profiles_dir=tmp_path)
+
+
+def test_save_profile_with_tone_roundtrips(tmp_path):
+    path = tmp_path / "with_tone.json"
+    tone = ToneCurveParams(mode="paper", exposure=0.3, contrast=0.6)
+    save_profile(PROFILE, path, tone=tone)
+    loaded = load_profile(path)
+    assert loaded.white_balance == PROFILE.white_balance  # tone doesn't leak into DensityProfile
+    restored = load_tone_override(path)
+    assert restored.exposure == 0.3
+    assert restored.contrast == 0.6
+
+
+def test_save_profile_without_tone_has_no_override(tmp_path):
+    path = tmp_path / "no_tone.json"
+    save_profile(PROFILE, path)
+    assert load_tone_override(path) is None
+
+
+def test_save_named_profile_with_tone(tmp_path):
+    tone = ToneCurveParams(mode="paper", exposure=-0.5, contrast=0.4)
+    path = save_named_profile(PROFILE, "with_tone", profiles_dir=tmp_path, tone=tone)
+    restored = load_tone_override(path)
+    assert restored.exposure == -0.5
+    assert restored.contrast == 0.4
+
+
+def test_load_tone_override_never_restores_linear_mode(tmp_path):
+    # Even if a "tone" sidecar somehow had a mode field, load_tone_override should ignore it and
+    # always return "paper" - linear-output is deliberately never inherited from a saved profile.
+    path = tmp_path / "sneaky.json"
+    save_profile(PROFILE, path, tone=ToneCurveParams(mode="linear", exposure=0.1, contrast=0.5))
+    assert load_tone_override(path).mode == "paper"
