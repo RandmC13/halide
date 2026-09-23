@@ -155,3 +155,14 @@ def test_batch_cli_prints_its_settings_as_one_run_sheet_before_developing(roll_d
     assert rows["Calibration"] == f"auto{nbsp}· one profile for the whole roll, from 4 frames"
     assert rows["Output"] == f"print{nbsp}· grade 0.80{nbsp}· exposure fitted per frame"
     assert rows["Workers"] == "1 (--workers)"
+
+
+def test_batch_cli_run_sheet_names_the_roll_when_run_on_the_current_directory(roll_dir, tmp_path, monkeypatch, capsys):
+    # Path(".").name is "", which printed a blank roll name for `halide batch . ...`.
+    monkeypatch.chdir(roll_dir)
+    assert main(["batch", ".", str(tmp_path / "out"), "--auto-density-roll", "--workers", "1"]) == 0
+    import re
+
+    out = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", capsys.readouterr().out)
+    roll_line = next(line for line in out.splitlines() if line.startswith("  Roll"))
+    assert roll_line.split("Roll", 1)[1].split()[0].startswith("in")
