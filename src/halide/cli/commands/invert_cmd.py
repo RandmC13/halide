@@ -33,9 +33,12 @@ def run(args: argparse.Namespace) -> int:
         raise SystemExit(f"input file not found: {input_path}")
 
     stage = resolve_stage(args)
-    density_profile = None if stage is Stage.INVERT_ONLY else resolve_density_profile(args)
-    maybe_save_profile(args, density_profile)
-    tone_params = resolve_tone_params(args)
+    if stage is Stage.INVERT_ONLY:
+        density_profile, saved_tone = None, None
+    else:
+        density_profile, saved_tone = resolve_density_profile(args)
+    maybe_save_profile(args, density_profile, tone=saved_tone)
+    tone_params = resolve_tone_params(args, saved_tone=saved_tone)
 
     output_path = Path(args.output)
     if output_path.exists() and not console.confirm_overwrite(output_path):

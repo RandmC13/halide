@@ -1,84 +1,218 @@
-"""The GUI's shared visual identity — the dearpygui equivalent of `cli/console.py`. Nothing here
-imports calibrate_screen/preview_screen/quick_pick; those import this, never the other way around.
+"""The GUI's shared visual identity — the Qt equivalent of `cli/console.py`. A QSS stylesheet plus
+a couple of raw color constants for anything that needs to be painted by hand (the magnifier, custom
+widgets) rather than styled declaratively.
 
 Palette matches the CLI's own darkroom/film-photography language (see `cli/console.py`'s `Style`
-class and the tank/enlarger animations there): a warm dark charcoal background instead of dearpygui's
-stock cool grey, with an amber accent (the same family as `Style.ORANGE`'s ANSI 256 color 208, which
-renders as roughly rgb(255, 135, 0) — used here at a couple of brightness levels for normal/hovered/
-active states, the same "brighter = more active" logic the CLI's batch grid uses for its own
-processing-state colors).
+class and the tank/enlarger animations there): a warm dark charcoal background, an amber accent for
+ordinary controls, and — new in this rewrite — a red accent reserved for exactly one "primary action"
+button per window (Save calibration profile / Develop), a cheap nod to the big red button on the
+reference enlarger controller photo (`enlarger-controller.png`) without attempting its full
+skeuomorphic skin (deferred, see the GUI redesign plan's final section).
 """
 
 from __future__ import annotations
 
-import dearpygui.dearpygui as dpg
+BACKGROUND = "#181512"
+BACKGROUND_ALT = "#201c18"
+BORDER = "#4a3c2e"
+TEXT = "#e8e0d4"
+TEXT_DIM = "#968c7c"
+TEXT_WARNING = "#e6b450"
 
-BACKGROUND = (24, 21, 18)
-BACKGROUND_ALT = (32, 28, 24)  # child windows, frame backgrounds (input fields, combos)
-BORDER = (74, 60, 46)
-TEXT = (232, 224, 212)
-TEXT_DIM = (150, 138, 124)
-TEXT_WARNING = (230, 180, 80)  # matches console.Style.YELLOW's warning role
+AMBER = "#c46420"
+AMBER_HOVER = "#e07a2a"
+AMBER_ACTIVE = "#f59137"
 
-AMBER = (196, 100, 32)  # resting accent (buttons, checkmarks, active tab)
-AMBER_HOVER = (224, 122, 42)
-AMBER_ACTIVE = (245, 145, 55)
+RED = "#c4342a"
+RED_HOVER = "#e0453a"
+RED_ACTIVE = "#f5584c"
 
-_THEME_TAG = "halide_theme"
+# The single source of truth for "what color is a shadow/highlight pick" - the Shadow/Highlight
+# mode buttons and the markers drawn on the image (gui/main_window.py::ImageView) both read these,
+# so a button's color always tells you what color its picks will draw as, not just which one is
+# currently active.
+SHADOW_POINT_COLOR = "#ff5a5a"
+SHADOW_POINT_MUTED = "#8a3a3a"
+SHADOW_POINT_HOVER = "#b34848"
+
+HIGHLIGHT_POINT_COLOR = "#5aa0ff"
+HIGHLIGHT_POINT_MUTED = "#355a8a"
+HIGHLIGHT_POINT_HOVER = "#4570b3"
+
+STYLESHEET = f"""
+QWidget {{
+    background-color: {BACKGROUND};
+    color: {TEXT};
+    font-family: "DejaVu Sans", sans-serif;
+    font-size: 13px;
+}}
+
+QDialog {{
+    background-color: {BACKGROUND};
+}}
+
+QLabel {{
+    background: transparent;
+}}
+
+QLabel[role="dim"] {{
+    color: {TEXT_DIM};
+}}
+
+QLabel[role="warning"] {{
+    color: {TEXT_WARNING};
+}}
+
+QPushButton {{
+    background-color: {AMBER};
+    color: {TEXT};
+    border: none;
+    border-radius: 6px;
+    padding: 6px 14px;
+}}
+QPushButton:hover {{
+    background-color: {AMBER_HOVER};
+}}
+QPushButton:pressed {{
+    background-color: {AMBER_ACTIVE};
+}}
+QPushButton:disabled {{
+    background-color: {BACKGROUND_ALT};
+    color: {TEXT_DIM};
+}}
+QPushButton:checked {{
+    background-color: {AMBER_ACTIVE};
+    border: 2px solid {TEXT};
+}}
+
+QPushButton[role="primary"] {{
+    background-color: {RED};
+    font-weight: bold;
+    padding: 10px 18px;
+}}
+QPushButton[role="primary"]:hover {{
+    background-color: {RED_HOVER};
+}}
+QPushButton[role="primary"]:pressed {{
+    background-color: {RED_ACTIVE};
+}}
+QPushButton[role="primary"]:disabled {{
+    background-color: {BACKGROUND_ALT};
+    color: {TEXT_DIM};
+}}
+
+QPushButton[role="shadow"] {{
+    background-color: {SHADOW_POINT_MUTED};
+}}
+QPushButton[role="shadow"]:hover {{
+    background-color: {SHADOW_POINT_HOVER};
+}}
+QPushButton[role="shadow"]:checked {{
+    background-color: {SHADOW_POINT_COLOR};
+    border: 2px solid {TEXT};
+}}
+
+QPushButton[role="highlight"] {{
+    background-color: {HIGHLIGHT_POINT_MUTED};
+}}
+QPushButton[role="highlight"]:hover {{
+    background-color: {HIGHLIGHT_POINT_HOVER};
+}}
+QPushButton[role="highlight"]:checked {{
+    background-color: {HIGHLIGHT_POINT_COLOR};
+    border: 2px solid {TEXT};
+}}
+
+QLineEdit {{
+    background-color: {BACKGROUND_ALT};
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    padding: 4px 6px;
+    color: {TEXT};
+}}
+
+QFrame[role="imageBox"] {{
+    background-color: {BACKGROUND_ALT};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+}}
+
+QFrame[role="panel"] {{
+    background-color: {BACKGROUND_ALT};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+}}
+
+QSlider::groove:horizontal {{
+    background: {BACKGROUND_ALT};
+    border: 1px solid {BORDER};
+    height: 4px;
+    border-radius: 2px;
+}}
+QSlider::handle:horizontal {{
+    background: {AMBER};
+    width: 14px;
+    margin: -6px 0;
+    border-radius: 7px;
+}}
+QSlider::handle:horizontal:hover {{
+    background: {AMBER_HOVER};
+}}
+
+QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {BORDER};
+    border-radius: 3px;
+    background: {BACKGROUND_ALT};
+}}
+QCheckBox::indicator:checked {{
+    background: {AMBER_ACTIVE};
+}}
+
+QToolButton {{
+    background: transparent;
+    border: none;
+    color: {TEXT_DIM};
+}}
+QToolButton:hover {{
+    color: {TEXT};
+}}
+
+QStatusBar {{
+    background: {BACKGROUND_ALT};
+    color: {TEXT_DIM};
+}}
+
+QScrollArea {{
+    background: transparent;
+    border: none;
+}}
+QScrollArea > QWidget > QWidget {{
+    background: transparent;
+}}
+QScrollBar:vertical {{
+    background: {BACKGROUND_ALT};
+    width: 10px;
+    border-radius: 5px;
+}}
+QScrollBar::handle:vertical {{
+    background: {AMBER};
+    border-radius: 5px;
+    min-height: 20px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {AMBER_HOVER};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: none;
+}}
+"""
 
 
-def build_theme() -> int:
-    """Create (or return the already-created) global theme tag. Idempotent so callers don't need
-    to track whether this has already run in this process."""
-    if dpg.does_item_exist(_THEME_TAG):
-        return _THEME_TAG
-
-    with dpg.theme(tag=_THEME_TAG):
-        with dpg.theme_component(dpg.mvAll):
-            dpg.add_theme_color(dpg.mvThemeCol_WindowBg, BACKGROUND)
-            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, BACKGROUND_ALT)
-            dpg.add_theme_color(dpg.mvThemeCol_PopupBg, BACKGROUND_ALT)
-            dpg.add_theme_color(dpg.mvThemeCol_TitleBg, BACKGROUND)
-            dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, BACKGROUND_ALT)
-            dpg.add_theme_color(dpg.mvThemeCol_Border, BORDER)
-            dpg.add_theme_color(dpg.mvThemeCol_Text, TEXT)
-
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBg, BACKGROUND_ALT)
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, BORDER)
-            dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, BORDER)
-
-            dpg.add_theme_color(dpg.mvThemeCol_Button, AMBER)
-            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, AMBER_HOVER)
-            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, AMBER_ACTIVE)
-
-            dpg.add_theme_color(dpg.mvThemeCol_CheckMark, AMBER_ACTIVE)
-            dpg.add_theme_color(dpg.mvThemeCol_SliderGrab, AMBER)
-            dpg.add_theme_color(dpg.mvThemeCol_SliderGrabActive, AMBER_ACTIVE)
-
-            dpg.add_theme_color(dpg.mvThemeCol_Tab, BACKGROUND_ALT)
-            dpg.add_theme_color(dpg.mvThemeCol_TabHovered, AMBER_HOVER)
-            dpg.add_theme_color(dpg.mvThemeCol_TabActive, AMBER)
-            dpg.add_theme_color(dpg.mvThemeCol_Header, AMBER)
-            dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, AMBER_HOVER)
-            dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, AMBER_ACTIVE)
-
-            dpg.add_theme_color(dpg.mvThemeCol_Separator, BORDER)
-
-    return _THEME_TAG
-
-
-def apply() -> None:
-    """Bind the theme globally. Call once, right after `dpg.create_context()` — every window/tab
-    created afterward (including calibrate_screen reused standalone by quick_pick) picks it up."""
-    dpg.bind_theme(build_theme())
-
-
-def section_break(label: str | None = None) -> None:
-    """A themed separator marking a new logical section of a screen — the GUI's equivalent of the
-    CLI's `console.rule()`, used to break what used to be one flat vertical stack of widgets into
-    visually distinct groups (load / pick / preview / save, etc.)."""
-    dpg.add_spacer(height=6)
-    if label:
-        dpg.add_text(label.upper(), color=TEXT_DIM)
-    dpg.add_separator()
-    dpg.add_spacer(height=2)
+def apply(app) -> None:
+    """Apply the stylesheet to a QApplication. Call once, right after construction."""
+    app.setStyleSheet(STYLESHEET)

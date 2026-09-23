@@ -68,18 +68,19 @@ def run(args: argparse.Namespace) -> int:
         )
 
     if stage is Stage.INVERT_ONLY:
-        density_profile = None  # unused by process_scan for this stage; identity applies regardless
+        density_profile, saved_tone = None, None  # unused by process_scan for this stage
     elif args.auto_density_roll:
         print(f"Estimating a shared density-balance profile from {len(jobs)} frame(s)...")
         try:
             density_profile = estimate_roll_density_profile([job.input_path for job in jobs])
         except ScanColorError as exc:
             raise SystemExit(str(exc))
+        saved_tone = None
     else:
-        density_profile = resolve_density_profile(args)  # may be None -> per-frame auto
+        density_profile, saved_tone = resolve_density_profile(args)  # profile may be None -> per-frame auto
 
-    maybe_save_profile(args, density_profile)
-    tone_params = resolve_tone_params(args)
+    maybe_save_profile(args, density_profile, tone=saved_tone)
+    tone_params = resolve_tone_params(args, saved_tone=saved_tone)
 
     if args.workers is not None:
         workers = args.workers

@@ -73,8 +73,8 @@ src/halide/
                # abort the batch), progress.py (terminal rendering only, no math).
   cli/         # main.py + commands/*.py (argparse), _calibration_args.py (shared flag
                # definitions/resolution used by both invert and batch).
-  gui/         # Dear PyGui app. sampling.py is pure/tested (no dearpygui import); app.py,
-               # calibrate_screen.py, preview_screen.py hold the actual widget/callback code.
+  gui/         # PySide6/Qt app. sampling.py is pure/tested (no Qt import); app.py (entry point),
+               # main_window.py (the picker), preview_popup.py, theme.py hold the widget code.
   processing.py # The glue layer: read -> validate ICC -> convert to working space -> calibrate
                # -> run_pipeline -> write. Both the single-file CLI command and the batch worker
                # call this same function rather than duplicating the chain.
@@ -88,7 +88,7 @@ converts into ACEScg on read, output is always written back tagged with a real A
 ACEScg definition in `tests/unit/test_icc.py` — not hand-authored).
 
 Calibration is three-tier, all producing the same `DensityProfile`: ColorChecker (not yet built),
-anchor-frame manual picking (`gui/calibrate_screen.py`, or `--rm/--bm/--rs/--bs` on the CLI), and
+anchor-frame manual picking (`gui/main_window.py`, or `--rm/--bm/--rs/--bs` on the CLI), and
 statistical auto-detection (`calibration/auto.py`, `--auto-density`/`--auto-density-roll`).
 Profiles are meant to be solved once per film-stock/process/scanner combination and reused
 (`--save-profile-as`, `halide profile`), not re-solved per image.
@@ -250,7 +250,7 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
     shadow estimate is structurally more trustworthy than its highlight estimate (shadow-end
     convergence means almost any selected shadow candidate lands close to the true film base
     anyway). For a photo whose best neutral references aren't at the tonal extremes — which is
-    common, not an edge case — anchor-frame manual calibration (`gui/calibrate_screen.py`, and its
+    common, not an edge case — anchor-frame manual calibration (`gui/main_window.py`, and its
     auto-detected-candidate overlay is now a meaningfully better, though still imperfect, sanity
     check) or a ColorChecker are the reliable options, not further heuristic tuning of the auto tier.
 - **The Calibrate picker's point-picking labels state explicitly which way brightness is
@@ -262,51 +262,61 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   spot on the displayed raw negative would click a real highlight instead — a plausible source of
   genuinely wrong calibration, not just confusing wording. Fixed by stating both framings explicitly
   in the radio labels and instructional text. Don't revert to shorter/vaguer labels for aesthetics.
-- **The Calibrate picker now solves and renders a live preview automatically once both points are
-  picked** (`CalibrateScreen._maybe_render_live_preview`/`_render_preview` in
-  `gui/calibrate_screen.py`), instead of requiring a profile name + "Solve & Save" click before
-  showing anything. Saving to a named, reusable profile is now a fully separate, optional action —
-  per the user's real use case: sometimes you just want to invert one image with clearly visible
-  neutrals to see how it looks, not build a reusable profile. The screen also shows a hover
-  magnifier (a fixed-size `dpg.add_dynamic_texture` updated via `dpg.set_value` in place, not
-  delete+recreate — the click-driven main image and preview textures stay on delete+recreate since
-  they only change on discrete events, not every mouse-move) and draws picked-point markers on a
-  `dpg.drawlist` overlay, plus an optional toggle to visualize `calibration/auto.py`'s own
-  neutral-candidate selection (`_neutral_candidate_mask`) so a manual pick can be cross-checked
-  against the independent statistical method. All verified working via real interactive testing
-  (Xvfb + xdotool, see "Interactive GUI testing" below), not just code review — this was new DPG
-  territory for this codebase (no prior drawlist/hover-handler/dynamic-texture usage existed).
-- **`calibrate_screen.py` never deletes+recreates a GPU texture except when a genuinely new,
-  differently-sized image is loaded — everything else updates an existing texture's pixels via
-  `dpg.set_value` in place.** Found via a real segfault (`segmentation fault (core dumped)`) on the
-  user's actual machine, in two spots: toggling the auto-candidate overlay checkbox, and clicking
-  around the image to re-pick points. Both used to call `dpg.delete_item`+`dpg.add_raw_texture` on
-  every single interaction, not just on image load — repeatedly destroying and recreating a
-  GPU-backed texture from Python is a known class of instability in this dearpygui version
-  (couldn't reproduce it under Xvfb's software rendering even with heavy stress-testing, which
-  points at the real GPU/driver-backed rendering path specifically). Fixed: `toggle_auto_overlay`
-  now calls `_refresh_main_image` (`set_value` only) instead of `_upload_main_image`
-  (delete+recreate); `_render_preview` creates its texture once on the first successful pick pair
-  and `set_value`s it on every re-pick after that. `_upload_main_image` itself still legitimately
-  delete+recreates, but only from `load_image` — a new image can be a different size, so that one
-  case genuinely needs it. Don't reintroduce delete+recreate on a path that fires from routine
-  interaction (a checkbox, a click) rather than a new file being loaded.
+- **The Calibrate picker solves a preview profile automatically once both points are picked**,
+  shown on request via a Preview popup (`gui/preview_popup.py`) rather than requiring a profile name
+  + "Save" click before seeing anything. Saving to a named, reusable profile is a fully separate,
+  optional action — per the user's real use case: sometimes you just want to see how a pick looks,
+  not build a reusable profile. The main window also shows a hover magnifier (a small always-on-top
+  `QWidget` that follows the cursor, `gui/main_window.py::Magnifier`) and draws picked-point markers
+  directly in `ImageView.paintEvent`, plus a collapsible "Details" section to visualize
+  `calibration/auto.py`'s own neutral-candidate selection (`_neutral_candidate_mask`) so a manual
+  pick can be cross-checked against the independent statistical method. Verified working via real
+  interactive testing (Xvfb + xdotool, see "Interactive GUI testing" below), not just code review.
 - **`halide invert --pick` opens a standalone calibration picker inline for a single, one-shot
   run** (`gui/quick_pick.py::run_quick_pick`, wired into `cli/_calibration_args.py::
   resolve_density_profile` as a fourth mutually-exclusive calibration source alongside
   `--profile`/manual/`--auto-density`). Addresses a real workflow gap: nothing connected a
   first-time user to `halide calibrate`, and a user who just wanted to manually pick values for
-  one image had to go through the full profile-naming app. Reuses `calibrate_screen.build`/
-  `CalibrateScreen` as-is (`build(show_path_input=False)` hides the now-redundant TIFF-path field
-  since the path is already known from the CLI arg) — the only new code is the blocking entry
-  point itself, which runs a manual `dpg.render_dearpygui_frame()` loop instead of
-  `dpg.start_dearpygui()` so it can return the picked `DensityProfile` (or `None` if the window
-  was closed without picking) to its caller instead of running until the process exits. This is
-  new territory for this codebase's GUI code (every other entry point runs the full event loop
-  and exits the process) — verified via real interactive testing, not just code review. Saving a
-  named profile (`--save-profile-as`) still works unmodified in combination with `--pick` — using
-  a calibration for this run and persisting it for later remain orthogonal, as everywhere else in
-  this project.
+  one image had to go through the full profile-naming app. Reuses `gui/main_window.py::MainWindow`
+  as-is via its `is_pick_session=True` mode (hides the load controls since the path is already
+  known from the CLI arg, and relabels the primary button "Develop") — the only new code is the
+  blocking entry point itself, which runs a local `QEventLoop` instead of `QApplication.exec()` so
+  it can return the picked `(DensityProfile, ToneCurveParams | None)` (or `None` if the window was
+  closed without picking) to its caller instead of running until the process exits. This is new
+  territory for this codebase's GUI code (every other entry point runs the full event loop and
+  exits the process) — verified via real interactive testing, not just code review, including a
+  full real `halide invert --pick` run through to a written output file. Saving a named profile
+  (`--save-profile-as`) still works unmodified in combination with `--pick` — using a calibration
+  for this run and persisting it for later remain orthogonal, as everywhere else in this project.
+- **A saved profile can optionally carry an exposure/contrast override alongside its density
+  calibration** (`calibration/profile_store.py`'s `tone` sidecar in the profile JSON, written by
+  the Calibrate picker's Preview popup's opt-in "Fine-tune" controls). Deliberately kept as a
+  sidecar rather than a field on `DensityProfile` itself (`core/types.py` stays untouched) — density
+  calibration and tone-rendering choices are conceptually different things, and `ToneCurveParams`'s
+  own docstrings already explain why exposure defaults to per-image auto-computation rather than a
+  fixed value. Precedence in `cli/_calibration_args.py::resolve_tone_params`: an explicit CLI flag
+  wins, then a saved override, then the built-in default. Linear-output mode is deliberately
+  **never** part of this override — it stays a CLI-flag/popup-preview-only choice, since silently
+  changing a future run's output format based on a saved profile felt like the wrong kind of thing
+  for a profile to do by default.
+- **The GUI moved from dearpygui to PySide6/Qt** (a full rewrite, not an incremental port) after the
+  first dearpygui-based redesign still felt "thrown together" — its default auto-stacked widget flow
+  made a reasonably-sized window need scrolling to see everything, which the user explicitly didn't
+  want, and the two-tab structure (Calibrate/Preview) read as confusing rather than purposeful.
+  Qt's real floating windows (the Preview popup, save-name dialog), QSS theming, and hand-positioned
+  layout gave a genuinely small (fixed size, ~25% of screen, computed from
+  `QGuiApplication.primaryScreen()`), non-scrolling, purpose-built window instead. `gui/sampling.py`
+  (all the actual pixel-math/coordinate logic) needed zero changes across this rewrite — it was
+  already framework-independent. Note for anyone testing a fresh environment: this sandbox needed
+  several system libraries installed (`libegl1`, `libxcb-cursor0`, `libxkbcommon-x11-0`,
+  `libxcb-icccm4`, `libxcb-keysyms1`, `libxcb-shape0`, `libxcb-xkb1`) before Qt would even import —
+  a normal desktop Linux machine almost certainly already has these.
+- **Deferred, deliberately**: a skeuomorphic "enlarger controller" skin for the GUI's buttons (grey
+  rounded body panels, chunky black secondary buttons, a large red circular primary button, a small
+  red LED-style digit readout) modeled on a reference photo (`enlarger-controller.png`, repo root,
+  gitignored) of a real Durst enlarger timer. The current theme (`gui/theme.py`) only takes the
+  cheap, immediate step of reserving red for one primary button per window as a nod to this — the
+  full custom-painted-widget version needs its own separate plan.
 - **The "no calibration source" error names the actual missing step** instead of just listing
   flags: it now says to run `halide calibrate --save-profile-as NAME` to produce a `--profile`
   source, and (only on `invert`, where it's wired up) mentions `--pick` as the immediate one-shot
@@ -326,13 +336,13 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
 
 The GUI has no automated test coverage for actual rendering/interaction (only `gui/sampling.py`'s
 pure logic is unit-tested) — verify real interaction changes with a virtual display and synthetic
-mouse input rather than trusting code review alone, especially for anything DPG-specific
-(drawlists, hover handlers, dynamic textures) that has no prior precedent to compare against.
-`Xvfb`, `xdotool`, and `import` (screenshot capture) are installed in this environment:
+mouse input rather than trusting code review alone, especially for anything with no prior precedent
+to compare against (a new widget, a new popup/dialog, a new interaction pattern). `Xvfb`, `xdotool`,
+and `import` (screenshot capture) are installed in this environment:
 
 ```bash
 Xvfb :99 -screen 0 1280x1024x24 &
-DISPLAY=:99 .venv/bin/python -m halide.cli.main calibrate <test.tif> &
+DISPLAY=:99 QT_QPA_PLATFORM=xcb .venv/bin/python -m halide.cli.main calibrate <test.tif> &
 # find/activate the window, then drive it:
 xdotool search --name halide windowactivate
 xdotool mousemove --window <id> <x> <y>
@@ -340,6 +350,11 @@ xdotool click 1
 # capture and actually look at the result (don't just check "no crash"):
 import -window <id> /tmp/check.png    # or -root for the whole virtual screen
 ```
+
+For a pure static render (no interaction needed — e.g. checking a theme/layout change), Qt's
+`QT_QPA_PLATFORM=offscreen` plus a widget's own `.grab().save(path)` is faster and doesn't need
+Xvfb at all; reach for Xvfb + xdotool specifically when the thing being verified is an interaction
+(a click, a hover, a popup opening) rather than a static look.
 
 Always tear down both the app process and the `Xvfb` process afterward — neither self-terminates.
 This is naturally background/forked-subagent work given the volume of trial-and-error interaction
