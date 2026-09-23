@@ -19,12 +19,13 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 
 from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask, auto_density_balance
-from halide.calibration.profile_store import save_named_profile
+from halide.calibration.profile_store import default_profiles_dir, save_named_profile
 from halide.core.density import apply_density_balance, apply_white_balance, solve_density_balance
 from halide.core.invert import invert
 from halide.core.pipeline import run_pipeline
 from halide.core.tone_render import estimate_exposure
 from halide.core.types import DensityProfile, ToneCurveParams
+from halide.gui import theme
 from halide.gui.sampling import (
     apply_stretch,
     compute_stretch_bounds,
@@ -47,6 +48,10 @@ _PREVIEW_TEXTURE_TAG = "calibrate_preview_texture"
 _PREVIEW_IMAGE_TAG = "calibrate_preview_image"
 _SHADOW_MARKER_TAG = "calibrate_shadow_marker"
 _HIGHLIGHT_MARKER_TAG = "calibrate_highlight_marker"
+_IMAGE_PLACEHOLDER_TAG = "calibrate_image_placeholder"
+_PREVIEW_PLACEHOLDER_TAG = "calibrate_preview_placeholder"
+_OVERWRITE_MODAL_TAG = "calibrate_overwrite_modal"
+_FILE_DIALOG_TAG = "calibrate_file_dialog"
 
 # Must fit inside the image_container child_window's fixed height (see build(), below) — a
 # displayed image taller than its container silently makes the bottom portion unclickable rather
@@ -62,10 +67,15 @@ _MAGNIFIER_SIZE = (2 * _MAGNIFIER_RADIUS + 1) * _MAGNIFIER_ZOOM  # 200
 
 _PREVIEW_CONTAINER_HEIGHT = 220
 
-# The single source of truth for these labels — used by the radio button, the click handler's mode
-# check, and nowhere else, so there's exactly one place that can go stale.
-_SHADOW_MODE = "Shadow point - a scene shadow (dark in real life); looks LIGHT on this raw negative"
-_HIGHLIGHT_MODE = "Highlight point - a scene highlight (bright in real life); looks DARK on this raw negative"
+# The single source of truth for these labels - used by the radio button, the click handler's mode
+# check, and nowhere else, so there's exactly one place that can go stale. The radio button itself
+# only carries the short name (a paragraph-length sentence crammed into a radio option reads as
+# unstyled/generic, not a clean mode selector) - the explicit LIGHT/DARK safety statement CLAUDE.md
+# requires still renders immediately below the radio group, always visible, never a tooltip.
+_SHADOW_MODE = "Shadow point"
+_HIGHLIGHT_MODE = "Highlight point"
+_SHADOW_EXPLANATION = "a scene shadow (dark in real life); looks LIGHT/thin on this raw negative"
+_HIGHLIGHT_EXPLANATION = "a scene highlight (bright in real life); looks DARK/dense on this raw negative"
 
 _SHADOW_MARKER_COLOR = (255, 90, 90, 255)
 _HIGHLIGHT_MARKER_COLOR = (90, 160, 255, 255)
@@ -88,6 +98,8 @@ class CalibrateScreen:
         self.auto_profile: DensityProfile | None = None  # independent statistical estimate, for comparison
         self.auto_candidate_mask: np.ndarray | None = None  # (H, W) bool, same shape as preview_working
         self._stretch_bounds: tuple[float, float] = (0.0, 1.0)
+        self._saved: bool = False  # whether live_profile has been saved since it was last (re)solved
+        self._pending_save_name: str | None = None  # set while the overwrite-confirmation modal is open
 
     def _status(self, message: str) -> None:
         dpg.set_value("status_text", message)
@@ -124,6 +136,8 @@ class CalibrateScreen:
         if not path:
             self._status("Enter a TIFF path first.")
             return
+        self._status(f"Loading {path}...")
+        dpg.render_dearpygui_frame()  # flush that status onto screen before the blocking read below
         try:
             working = load_working_space_image(path)
         except ScanColorError as exc:
@@ -179,6 +193,8 @@ class CalibrateScreen:
         be a different size; anything that only changes pixel *values* uses _refresh_main_image."""
         rgba, width, height = self._build_main_image_rgba()
 
+        if dpg.does_item_exist(_IMAGE_PLACEHOLDER_TAG):
+            dpg.delete_item(_IMAGE_PLACEHOLDER_TAG)
         if dpg.does_item_exist(_DRAWLIST_TAG):
             dpg.delete_item(_DRAWLIST_TAG)  # also deletes its child markers
         if dpg.does_item_exist(_TEXTURE_TAG):
@@ -201,7 +217,10 @@ class CalibrateScreen:
     def toggle_auto_overlay(self, sender, app_data) -> None:
         if self.preview_working is None:
             return
-        self._refresh_main_image()
+        try:
+            self._refresh_main_image()
+        except Exception as exc:  # noqa: BLE001 - surface it in the UI, don't crash the app
+            self._status(f"Error updating overlay: {exc}")
 
     def _draw_marker(self, tag: str, full_x: int, full_y: int, color: tuple[int, int, int, int]) -> None:
         if dpg.does_item_exist(tag):
@@ -222,6 +241,15 @@ class CalibrateScreen:
             dpg.delete_item(_PREVIEW_IMAGE_TAG)
         if dpg.does_item_exist(_PREVIEW_TEXTURE_TAG):
             dpg.delete_item(_PREVIEW_TEXTURE_TAG)
+        if not dpg.does_item_exist(_PREVIEW_PLACEHOLDER_TAG):
+            dpg.add_text(
+                "Pick a shadow and a highlight point above to see a live preview here.",
+                tag=_PREVIEW_PLACEHOLDER_TAG,
+                color=theme.TEXT_DIM,
+                wrap=_MAX_DISPLAY_WIDTH,
+                parent="calibrate_preview_container",
+            )
+        self._saved = False
         dpg.set_value("solved_text", "")
 
     def on_image_click(self, sender, app_data) -> None:
@@ -230,23 +258,26 @@ class CalibrateScreen:
         if not dpg.is_item_hovered(_DRAWLIST_TAG):
             return
 
-        mouse_x, mouse_y = dpg.get_mouse_pos(local=False)
-        origin_x, origin_y = dpg.get_item_rect_min(_DRAWLIST_TAG)
-        display_x = int(mouse_x - origin_x)
-        display_y = int(mouse_y - origin_y)
+        try:
+            mouse_x, mouse_y = dpg.get_mouse_pos(local=False)
+            origin_x, origin_y = dpg.get_item_rect_min(_DRAWLIST_TAG)
+            display_x = int(mouse_x - origin_x)
+            display_y = int(mouse_y - origin_y)
 
-        h, w = self.full_image.shape[:2]
-        full_x, full_y = display_to_full_res_coords(display_x, display_y, self.stride, w, h)
-        x, y, rgb = snap_to_representative_pixel(self.full_image, full_x, full_y)
+            h, w = self.full_image.shape[:2]
+            full_x, full_y = display_to_full_res_coords(display_x, display_y, self.stride, w, h)
+            x, y, rgb = snap_to_representative_pixel(self.full_image, full_x, full_y)
 
-        if dpg.get_value("pick_mode") == _SHADOW_MODE:
-            self.shadow_point = (x, y, rgb)
-            self._draw_marker(_SHADOW_MARKER_TAG, x, y, _SHADOW_MARKER_COLOR)
-        else:
-            self.highlight_point = (x, y, rgb)
-            self._draw_marker(_HIGHLIGHT_MARKER_TAG, x, y, _HIGHLIGHT_MARKER_COLOR)
-        self._refresh_point_labels()
-        self._maybe_render_live_preview()
+            if dpg.get_value("pick_mode") == _SHADOW_MODE:
+                self.shadow_point = (x, y, rgb)
+                self._draw_marker(_SHADOW_MARKER_TAG, x, y, _SHADOW_MARKER_COLOR)
+            else:
+                self.highlight_point = (x, y, rgb)
+                self._draw_marker(_HIGHLIGHT_MARKER_TAG, x, y, _HIGHLIGHT_MARKER_COLOR)
+            self._refresh_point_labels()
+            self._maybe_render_live_preview()
+        except Exception as exc:  # noqa: BLE001 - surface it in the UI, don't crash the app
+            self._status(f"Error picking point: {exc}")
 
     def on_image_hover(self, sender, app_data) -> None:
         if self.full_image is None or not dpg.does_item_exist(_DRAWLIST_TAG):
@@ -254,25 +285,28 @@ class CalibrateScreen:
         if not dpg.is_item_hovered(_DRAWLIST_TAG):
             return
 
-        mouse_x, mouse_y = dpg.get_mouse_pos(local=False)
-        origin_x, origin_y = dpg.get_item_rect_min(_DRAWLIST_TAG)
-        display_x = int(mouse_x - origin_x)
-        display_y = int(mouse_y - origin_y)
+        try:
+            mouse_x, mouse_y = dpg.get_mouse_pos(local=False)
+            origin_x, origin_y = dpg.get_item_rect_min(_DRAWLIST_TAG)
+            display_x = int(mouse_x - origin_x)
+            display_y = int(mouse_y - origin_y)
 
-        h, w = self.full_image.shape[:2]
-        full_x, full_y = display_to_full_res_coords(display_x, display_y, self.stride, w, h)
+            h, w = self.full_image.shape[:2]
+            full_x, full_y = display_to_full_res_coords(display_x, display_y, self.stride, w, h)
 
-        patch = extract_magnifier_patch(self.full_image, full_x, full_y, radius=_MAGNIFIER_RADIUS)
-        magnified = magnify_patch(apply_stretch(patch, *self._stretch_bounds), zoom=_MAGNIFIER_ZOOM)
-        height, width = magnified.shape[:2]
-        rgba = np.dstack([magnified, np.ones((height, width), dtype=np.float32)]).ravel()
-        dpg.set_value(_MAGNIFIER_TEXTURE_TAG, rgba)
+            patch = extract_magnifier_patch(self.full_image, full_x, full_y, radius=_MAGNIFIER_RADIUS)
+            magnified = magnify_patch(apply_stretch(patch, *self._stretch_bounds), zoom=_MAGNIFIER_ZOOM)
+            height, width = magnified.shape[:2]
+            rgba = np.dstack([magnified, np.ones((height, width), dtype=np.float32)]).ravel()
+            dpg.set_value(_MAGNIFIER_TEXTURE_TAG, rgba)
 
-        raw_rgb = self.full_image[full_y, full_x]
-        dpg.set_value(
-            "hover_readout_text",
-            f"pixel ({full_x},{full_y})  RGB=({raw_rgb[0]:.4f}, {raw_rgb[1]:.4f}, {raw_rgb[2]:.4f})",
-        )
+            raw_rgb = self.full_image[full_y, full_x]
+            dpg.set_value(
+                "hover_readout_text",
+                f"pixel ({full_x},{full_y})  RGB=({raw_rgb[0]:.4f}, {raw_rgb[1]:.4f}, {raw_rgb[2]:.4f})",
+            )
+        except Exception as exc:  # noqa: BLE001 - surface it in the UI, don't crash the app
+            self._status(f"Error reading pixel: {exc}")
 
     def _maybe_render_live_preview(self) -> None:
         if self.shadow_point is None or self.highlight_point is None or self.preview_working is None:
@@ -286,14 +320,20 @@ class CalibrateScreen:
             self._status(f"Could not solve a preview profile: {exc}")
             return
         self.live_profile = replace(profile, source="anchor")
+        self._saved = False
 
-        dpg.set_value(
-            "solved_text",
-            f"Solved from your picks: white_balance={tuple(round(v, 4) for v in self.live_profile.white_balance)}  "
-            f"density_scale={tuple(round(v, 4) for v in self.live_profile.density_scale)}",
-        )
+        dpg.set_value("solved_text", self._solved_text())
         self._render_preview()
-        self._status("Preview updated. Enter a name and click Save Profile to keep this calibration.")
+        self._status("Preview updated. Enter a name and click Save calibration to keep this.")
+
+    def _solved_text(self) -> str:
+        if self.live_profile is None:
+            return ""
+        suffix = "" if self._saved else "  (not yet saved)"
+        return (
+            f"Solved from your picks: white_balance={tuple(round(v, 4) for v in self.live_profile.white_balance)}  "
+            f"density_scale={tuple(round(v, 4) for v in self.live_profile.density_scale)}{suffix}"
+        )
 
     def _render_preview(self) -> None:
         wb = apply_white_balance(self.preview_working, self.live_profile)
@@ -318,6 +358,8 @@ class CalibrateScreen:
         if dpg.does_item_exist(_PREVIEW_TEXTURE_TAG):
             dpg.set_value(_PREVIEW_TEXTURE_TAG, rgba)
         else:
+            if dpg.does_item_exist(_PREVIEW_PLACEHOLDER_TAG):
+                dpg.delete_item(_PREVIEW_PLACEHOLDER_TAG)
             dpg.add_raw_texture(
                 width, height, rgba, tag=_PREVIEW_TEXTURE_TAG, format=dpg.mvFormat_Float_rgba, parent="texture_registry"
             )
@@ -334,8 +376,32 @@ class CalibrateScreen:
         if not name:
             self._status("Enter a profile name to save.")
             return
-        path = save_named_profile(self.live_profile, name)
+
+        if (default_profiles_dir() / f"{name}.json").exists():
+            self._pending_save_name = name
+            dpg.configure_item(_OVERWRITE_MODAL_TAG, show=True)
+            return
+        self._do_save(name)
+
+    def _do_save(self, name: str) -> None:
+        try:
+            path = save_named_profile(self.live_profile, name)
+        except OSError as exc:
+            self._status(f"Error saving profile: {exc}")
+            return
+        self._saved = True
+        dpg.set_value("solved_text", self._solved_text())
         self._status(f"Saved profile {name!r} to {path}")
+
+    def _confirm_overwrite(self, sender, app_data) -> None:
+        dpg.configure_item(_OVERWRITE_MODAL_TAG, show=False)
+        if self._pending_save_name is not None:
+            self._do_save(self._pending_save_name)
+            self._pending_save_name = None
+
+    def _cancel_overwrite(self, sender, app_data) -> None:
+        dpg.configure_item(_OVERWRITE_MODAL_TAG, show=False)
+        self._pending_save_name = None
 
 
 def build(screen: CalibrateScreen | None = None, *, show_path_input: bool = True) -> CalibrateScreen:
@@ -349,6 +415,12 @@ def build(screen: CalibrateScreen | None = None, *, show_path_input: bool = True
     screen = screen or CalibrateScreen()
 
     dpg.add_texture_registry(tag="texture_registry")
+
+    def _load_from_dialog(sender, app_data) -> None:
+        path = app_data.get("file_path_name", "")
+        if path:
+            dpg.set_value("path_input", path)
+            screen.load_image(path)
 
     with dpg.group():
         dpg.add_text(
@@ -367,16 +439,40 @@ def build(screen: CalibrateScreen | None = None, *, show_path_input: bool = True
             "are actually neutral in real life, and avoid surfaces under noticeably colored or "
             "mixed lighting.",
             wrap=700,
-            color=(230, 180, 80),
+            color=theme.TEXT_WARNING,
         )
+
         if show_path_input:
-            dpg.add_input_text(label="TIFF path", tag="path_input")
-            dpg.add_button(label="Load", callback=lambda s, a: screen.load_image(dpg.get_value("path_input")))
-        dpg.add_radio_button([_SHADOW_MODE, _HIGHLIGHT_MODE], tag="pick_mode", default_value=_SHADOW_MODE)
+            theme.section_break("Load negative")
+            with dpg.file_dialog(
+                directory_selector=False, show=False, tag=_FILE_DIALOG_TAG,
+                callback=_load_from_dialog, width=700, height=400,
+            ):
+                dpg.add_file_extension(".tif", color=theme.AMBER_HOVER)
+                dpg.add_file_extension(".tiff", color=theme.AMBER_HOVER)
+                dpg.add_file_extension(".*")
+            with dpg.group(horizontal=True):
+                dpg.add_input_text(label="TIFF path", tag="path_input", width=400)
+                dpg.add_button(label="Browse...", callback=lambda s, a: dpg.show_item(_FILE_DIALOG_TAG))
+                dpg.add_button(
+                    label="Load negative", callback=lambda s, a: screen.load_image(dpg.get_value("path_input"))
+                )
+
+        theme.section_break("Pick points")
+        dpg.add_radio_button(
+            [_SHADOW_MODE, _HIGHLIGHT_MODE], tag="pick_mode", default_value=_SHADOW_MODE, horizontal=True
+        )
+        dpg.add_text(f"{_SHADOW_MODE}: {_SHADOW_EXPLANATION}", wrap=700, color=theme.TEXT_DIM)
+        dpg.add_text(f"{_HIGHLIGHT_MODE}: {_HIGHLIGHT_EXPLANATION}", wrap=700, color=theme.TEXT_DIM)
 
         with dpg.group(horizontal=True):
             with dpg.child_window(tag="image_container", width=_MAX_DISPLAY_WIDTH + 20, height=_IMAGE_CONTAINER_HEIGHT):
-                pass
+                dpg.add_text(
+                    "Load a negative above to begin - the raw scan will appear here for point-picking.",
+                    tag=_IMAGE_PLACEHOLDER_TAG,
+                    color=theme.TEXT_DIM,
+                    wrap=_MAX_DISPLAY_WIDTH,
+                )
             with dpg.group():
                 with dpg.child_window(
                     tag="magnifier_container", width=_MAGNIFIER_SIZE + 20, height=_MAGNIFIER_SIZE + 20
@@ -390,6 +486,7 @@ def build(screen: CalibrateScreen | None = None, *, show_path_input: bool = True
                 dpg.add_text("Shadow point: not picked", tag="shadow_text", wrap=260)
                 dpg.add_text("Highlight point: not picked", tag="highlight_text", wrap=260)
 
+        theme.section_break("Preview")
         dpg.add_text("", tag="solved_text")
         dpg.add_text("", tag="auto_comparison_text", wrap=700)
         dpg.add_checkbox(
@@ -399,10 +496,27 @@ def build(screen: CalibrateScreen | None = None, *, show_path_input: bool = True
             callback=screen.toggle_auto_overlay,
         )
         with dpg.child_window(tag="calibrate_preview_container", height=_PREVIEW_CONTAINER_HEIGHT):
-            pass
+            dpg.add_text(
+                "Pick a shadow and a highlight point above to see a live preview here.",
+                tag=_PREVIEW_PLACEHOLDER_TAG,
+                color=theme.TEXT_DIM,
+                wrap=_MAX_DISPLAY_WIDTH,
+            )
+
+        theme.section_break("Save calibration")
         dpg.add_input_text(label="Save as (profile name)", tag="profile_name")
-        dpg.add_button(label="Save Profile", callback=screen.save_profile)
+        dpg.add_button(label="Save calibration", callback=screen.save_profile)
         dpg.add_text("", tag="status_text")
+
+    with dpg.window(
+        tag=_OVERWRITE_MODAL_TAG, modal=True, show=False, no_title_bar=True, no_move=True,
+        width=360, height=110, pos=(320, 460),
+    ):
+        dpg.add_text("A profile with this name already exists.")
+        dpg.add_text("Overwrite it?")
+        with dpg.group(horizontal=True):
+            dpg.add_button(label="Overwrite", callback=screen._confirm_overwrite)
+            dpg.add_button(label="Cancel", callback=screen._cancel_overwrite)
 
     with dpg.handler_registry():
         dpg.add_mouse_click_handler(callback=screen.on_image_click)

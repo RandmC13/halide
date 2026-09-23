@@ -14,7 +14,7 @@ from __future__ import annotations
 import dearpygui.dearpygui as dpg
 
 from halide.core.types import DensityProfile
-from halide.gui import calibrate_screen
+from halide.gui import calibrate_screen, theme
 
 
 def run_quick_pick(path: str) -> DensityProfile | None:
@@ -28,7 +28,8 @@ def run_quick_pick(path: str) -> DensityProfile | None:
     exits the process), verified via real interactive testing, not just code review.
     """
     dpg.create_context()
-    dpg.create_viewport(title="halide - quick calibrate", width=1000, height=1050)
+    theme.apply()
+    dpg.create_viewport(title="halide · quick calibrate", width=1000, height=1050)
     dpg.setup_dearpygui()
 
     state = {"profile": None, "done": False}
@@ -41,9 +42,12 @@ def run_quick_pick(path: str) -> DensityProfile | None:
         screen = calibrate_screen.build(show_path_input=False)
         dpg.add_button(label="Use these values for this run", callback=on_continue)
 
-    screen.load_image(path)
     dpg.set_primary_window("quick_pick_window", True)
     dpg.show_viewport()
+    # Must come after show_viewport(): load_image() forces a frame render to flush its "Loading..."
+    # status onto screen before the blocking read, which needs a real, shown viewport window to
+    # render into (found via a real GLFW null-window crash on this exact path).
+    screen.load_image(path)
     while dpg.is_dearpygui_running() and not state["done"]:
         dpg.render_dearpygui_frame()
     dpg.destroy_context()
