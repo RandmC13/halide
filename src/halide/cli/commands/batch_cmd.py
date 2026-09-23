@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from halide.batch.orchestrator import default_worker_count, discover_jobs, memory_budget_warning, run_batch
+from halide.batch.orchestrator import BatchJob, default_worker_count, discover_jobs, memory_budget_warning, run_batch
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
@@ -21,12 +23,26 @@ from halide.cli._calibration_args import (
     resolve_stage,
     resolve_tone_params,
 )
+from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
+from halide.io.contact_sheet import check_sheet_path
 from halide.processing import ScanColorError, Stage, estimate_roll_density_profile, read_roll_scan_metadata
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("input_dir", help="Directory of input linear TIFF scans")
-    parser.add_argument("output_dir", help="Directory to write output TIFFs into")
+    parser.add_argument(
+        "output_dir", nargs="?",
+        help="Directory to write output TIFFs into. Optional with --contact-sheet: leave it out to "
+        "preview settings as a contact sheet without keeping any full-size TIFFs",
+    )
+    parser.add_argument(
+        "--contact-sheet", metavar="SHEET",
+        help="Also write a high-resolution contact sheet of the roll (.jpg or .png), each frame "
+        "captioned with its print settings — for comparing settings. Without an output directory "
+        "this is a preview: frames are developed exactly as a real run would, but only small "
+        "thumbnails are kept (in a temporary folder, deleted afterwards)",
+    )
+    add_contact_layout_arguments(parser)
     parser.add_argument("--suffix", default="", help="Suffix to append to output filenames")
 
     add_stage_arguments(parser)
@@ -83,20 +99,66 @@ def _match_scan_exposure(jobs, metadata, reference, roll_estimate: bool):
     return matched, reference
 
 
+def _settings_summary(args: argparse.Namespace, stage: Stage, tone_params, scan_reference, matched: bool) -> str:
+    """The settings a run used, for a contact sheet's header — so two sheets can be told apart."""
+    if stage is Stage.INVERT_ONLY:
+        source = "no density balance"
+    elif args.profile:
+        source = f"profile {Path(args.profile).stem}"
+    elif args.auto_density_roll:
+        source = "auto (roll)"
+    elif args.auto_density:
+        source = "auto (per frame)"
+    else:
+        source = "manual calibration"
+    bits = [source]
+    if tone_params.mode == "linear":
+        bits.append("flat (linear)")
+    else:
+        bits.append("print")
+        bits.append(f"grade {tone_params.contrast:.2f}" if tone_params.contrast is not None else "grade fitted")
+        bits.append(f"exposure {tone_params.exposure:+.2f}" if tone_params.exposure is not None else "exposure fitted")
+    if matched and scan_reference is not None:
+        bits.append(f"scan exposure matched to {scan_reference.describe()}")
+    return " · ".join(bits)
+
+
 def run(args: argparse.Namespace) -> int:
     stage = resolve_stage(args)
 
     input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir)
     if not input_dir.exists():
         raise SystemExit(f"input directory not found: {input_dir}")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if args.output_dir is None and not args.contact_sheet:
+        raise SystemExit("give an output directory, --contact-sheet SHEET (a preview), or both")
+    if args.contact_sheet:
+        try:
+            check_sheet_path(args.contact_sheet)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
 
-    jobs = discover_jobs(input_dir, output_dir, suffix=args.suffix)
+    if args.output_dir is not None:
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        jobs = discover_jobs(input_dir, output_dir, suffix=args.suffix)
+    else:
+        jobs = [BatchJob(input_path=job.input_path, output_path=None)
+                for job in discover_jobs(input_dir, input_dir, suffix=args.suffix)]
     if not jobs:
         print(f"No TIFF files found in {input_dir}")
         return 1
 
+    thumbnails = Path(tempfile.mkdtemp(prefix="halide-contact-")) if args.contact_sheet else None
+    try:
+        if thumbnails is not None:
+            jobs = [replace(job, thumbnail_path=thumbnails / f"{i:04d}.png") for i, job in enumerate(jobs)]
+        return _run(args, stage, input_dir, jobs)
+    finally:
+        if thumbnails is not None:
+            shutil.rmtree(thumbnails, ignore_errors=True)
+
+
+def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob]) -> int:
     manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
     other_source_given = bool(args.profile) or manual_given or args.auto_density
     if args.auto_density_roll and other_source_given:
@@ -169,6 +231,7 @@ def run(args: argparse.Namespace) -> int:
         max_workers=workers,
         on_result=on_result,
         on_start=on_start,
+        thumbnail_long_edge=args.frame_width,
     )
 
     cancelled = len(results) < len(jobs)
@@ -188,4 +251,7 @@ def run(args: argparse.Namespace) -> int:
 
     if cancelled:
         return 130
+    if args.contact_sheet:
+        settings = _settings_summary(args, stage, tone_params, scan_reference, args.match_scan_exposure)
+        write_contact_sheet(args, jobs, results, args.contact_sheet, input_dir.name, settings)
     return 1 if failures else 0

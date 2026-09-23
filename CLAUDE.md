@@ -50,6 +50,8 @@ halide invert <negative.tif> <positive.tif> [--profile NAME | --rm/--bm/--rs/--b
 halide batch <in_dir> <out_dir> [--auto-density-roll] [--save-profile-as NAME] [--output print|flat]
 halide print <flat.tif|dir> <print.tif|dir>    # print stage only, for a flat positive edited elsewhere
 halide check <roll_dir>                        # were the scans made consistently? (headers only)
+halide contact <processed_dir> <sheet.jpg>     # high-res contact sheet of TIFF or exported PNG/JPEG output
+halide batch <in_dir> --contact-sheet s.jpg    # preview: sheet only, no full-size TIFFs kept (add out_dir to keep them)
   (invert/batch also take --match-scan-exposure [--scan-reference FRAME])
 halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sRGB PNG/JPEG
 halide profile list|show|rename|delete
@@ -159,6 +161,20 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   and "as shot" white balance was the camera's auto WB (14 distinct values, R ±5%, B ±7%); one
   frame had shadows & highlights active. Not yet validated against a real two-exposure scan of one
   frame (see TONE_OUTPUT_PLAN.md follow-ups).
+- **Contact sheets are a feature, not just a test aid** (`io/contact_sheet.py`, `halide contact`,
+  `halide batch --contact-sheet`) — asked for after proof sheets kept proving the most useful way to
+  compare settings across a real roll. Decisions: (1) the batch *preview* develops every frame at
+  full resolution exactly as a real run (including the per-frame print fit — fitting on a
+  downsampled frame would give slightly different grades), but keeps only a thumbnail per frame in a
+  temporary folder that's always deleted — not full TIFFs in a temp folder, which for a real roll is
+  ~5 GB (more than this sandbox had free). (2) Thumbnails are block-averaged in *linear* light
+  before sRGB encoding, so fine detail doesn't darken. (3) Each frame is captioned with its recorded
+  printing decision (grade, exposure, scan gain — from the provenance JSON) and the sheet header
+  with the run's settings, so sheets from different settings are self-describing. (4) Sheets are
+  marked (JPEG comment / PNG text) and skipped by `halide contact`: found via testing, a sheet
+  written into the folder it proofs became an extra "frame" on the next sheet. (5) Captions use a
+  plain "x", not "×" — Pillow's built-in font has no multiplication sign (it drew an empty box).
+  Layout mirrors the terminal progress display: strips of six, sprocket holes, short last strip.
 - **`halide print` exists for the flat -> darktable -> print round trip, and range-setting belongs
   to it, not to the editor.** The contract: edits between `--output flat` and `print` stay linear
   and scene-referred (crop, spot removal, lens, denoise, global exposure; no filmic/sigmoid, curves,
