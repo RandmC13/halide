@@ -55,8 +55,8 @@ SPROCKET = "▫"  # ▫
 # be "Printing" too, back when no separate print step existed; now that `halide print` is the real
 # printing step (paper exposure + grade + paper curve), `export` is just a format conversion and
 # says so, so the two can't be confused.
-VERB = {"invert": "Developing", "export": "Exporting", "batch": "Developing", "print": "Printing"}
-VERB_PAST = {"invert": "Developed", "export": "Exported", "batch": "Developed", "print": "Printed"}
+VERB = {"invert": "Developing", "export": "Exporting", "batch": "Developing", "print": "Printing", "proof": "Proofing"}
+VERB_PAST = {"invert": "Developed", "export": "Exported", "batch": "Developed", "print": "Printed", "proof": "Proofed"}
 
 # manual/auto/anchor/colorchecker — see core.types.CalibrationSource.
 SOURCE_COLOR = {
@@ -188,6 +188,7 @@ def welcome_screen() -> str:
             "    halide invert negative.tif positive.tif   develop a single scan",
             "    halide check  in_dir/                     check a roll was scanned consistently",
             "    halide batch  in_dir/ out_dir/            develop a whole roll",
+            "    halide batch  in_dir/ --contact-sheet s.jpg  preview settings as a contact sheet",
             "",
             "  Editing yourself? Develop flat, edit in darktable, then print:",
             "    halide invert negative.tif flat.tif --output flat",
