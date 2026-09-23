@@ -11,10 +11,12 @@ import sys
 from halide.calibration.profile_store import (
     list_profiles,
     load_profile,
+    load_scan_reference,
     load_tone_override,
     resolve_profile_path,
     save_named_profile,
 )
+from halide.io.scan_metadata import ScanSettings, read_scan_metadata
 from halide.cli import console
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.processing import Stage
@@ -106,6 +108,41 @@ def add_tone_arguments(parser: argparse.ArgumentParser, *, allow_output_mode: bo
         "fitted per image so the negative's density range fills the paper's range (capped at 1.0), "
         "or a value saved into the resolved --profile's calibration if it has one.",
     )
+
+
+def add_scan_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--match-scan-exposure",
+        action="store_true",
+        help="Correct for frames digitized at a different camera exposure (shutter/aperture/ISO, "
+        "from EXIF) than the profile was calibrated at, by rescaling each frame to the profile's "
+        "scan exposure before calibration. Exact for a linear scan, but it can't fix a differing "
+        "raw white balance — scanning every frame with the same manual settings is better "
+        "(see `halide check`)",
+    )
+    parser.add_argument(
+        "--scan-reference",
+        metavar="FRAME",
+        help="With --match-scan-exposure: the scan the profile was calibrated on, for a profile "
+        "saved without its scan settings (or use `halide profile set-scan-reference` once)",
+    )
+
+
+def resolve_scan_reference(args: argparse.Namespace) -> ScanSettings | None:
+    """The scan exposure the calibration in use was solved at: an explicit --scan-reference frame
+    wins, then the --profile's recorded reference. None if neither is known."""
+    reference_frame = getattr(args, "scan_reference", None)
+    if reference_frame:
+        settings, _ = read_scan_metadata(reference_frame)
+        if settings is None:
+            raise SystemExit(f"--scan-reference {reference_frame}: no camera exposure settings (EXIF) found in it")
+        return settings
+    if getattr(args, "profile", None):
+        try:
+            return load_scan_reference(resolve_profile_path(args.profile))
+        except FileNotFoundError:
+            return None
+    return None
 
 
 def resolve_stage(args: argparse.Namespace) -> Stage:
@@ -220,7 +257,10 @@ def resolve_density_profile(
 
 
 def maybe_save_profile(
-    args: argparse.Namespace, profile: DensityProfile | None, tone: ToneCurveParams | None = None
+    args: argparse.Namespace,
+    profile: DensityProfile | None,
+    tone: ToneCurveParams | None = None,
+    scan: ScanSettings | None = None,
 ) -> None:
     """Save the resolved profile under --save-profile-as, if given. `profile=None` means no
     single profile was computed here (per-frame --auto-density produces a different profile per
@@ -236,5 +276,5 @@ def maybe_save_profile(
             "skips density balance entirely — use --auto-density-roll in `batch` for a single "
             "shared automatic profile, or a manual/--profile source instead)"
         )
-    path = save_named_profile(profile, save_as, tone=tone)
+    path = save_named_profile(profile, save_as, tone=tone, scan=scan)
     print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))

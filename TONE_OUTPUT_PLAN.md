@@ -313,3 +313,26 @@ works like `export` (bulk, with the existing worker-pool/memory logic reused).
 - It does not attempt to make the print step accept arbitrary darktable-graded images: the
   contract is "linear, scene-referred, tone untouched", enforced by validation where possible and
   documented where it can't be (darktable module choices).
+
+
+---
+
+## Follow-ups (after testing on a real roll, Roll 16)
+
+Done on this branch since the plan: `halide check`, `--match-scan-exposure` (+ profile scan
+reference), batch consistency warnings. Per-frame grade kept (roll grade tested and rejected; see
+CLAUDE.md).
+
+Open:
+
+1. **Highlight anchor.** 99.9 (current) vs 99.5 vs 99.0 — greyscale proof sheets of the whole roll
+   were made for the user to decide. Specular-heavy frames (IMG_0158) print dark at 99.9.
+2. **Validate --match-scan-exposure against a real two-exposure scan**: digitize one frame twice at
+   different shutter speeds (e.g. 1/40 and 1/20), identical darktable export, and confirm the
+   matched outputs agree (and quantify the unmatched colour shift). The algebra is exact and tested
+   synthetically; this is the real-hardware check (shutter accuracy, sensor linearity near clipping).
+3. **README (when written) must lead with scanning practice**, not bury it: manual camera exposure
+   fixed per roll (film base as bright as possible without clipping), fixed white balance (not
+   auto — "as shot" is only fixed if the camera's WB was), same raw white balance on export, no
+   tone/colour modules, linear profile-embedded TIFF. Same text as
+   `calibration/scan_consistency.py::SCANNING_GUIDANCE`.

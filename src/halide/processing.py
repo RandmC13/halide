@@ -25,6 +25,7 @@ from halide.io.icc import (
     parse_linear_rgb_profile,
 )
 from halide.io.raster import write_delivery_image
+from halide.io.scan_metadata import DarktableState, ScanSettings, read_scan_metadata
 from halide.io.tiff import copy_exif_metadata, read_tiff, set_description, write_tiff
 
 IDENTITY_PROFILE = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0))
@@ -63,7 +64,7 @@ def _halide_version() -> str:
         return "unknown"
 
 
-def provenance_json(resolved: ResolvedTone, profile: DensityProfile | None) -> str:
+def provenance_json(resolved: ResolvedTone, profile: DensityProfile | None, scan_gain: float = 1.0) -> str:
     """What was done to produce an output file, written into its TIFF ImageDescription: the
     printing decision (fitted or pinned) and, where known, the calibration. For reproducibility,
     and so `halide print` can exactly undo a flat output's exposure scale when the file comes back
@@ -78,6 +79,8 @@ def provenance_json(resolved: ResolvedTone, profile: DensityProfile | None) -> s
     if profile is not None:
         record["white_balance"] = [float(v) for v in profile.white_balance]
         record["density_scale"] = [float(v) for v in profile.density_scale]
+    if scan_gain != 1.0:
+        record["scan_gain"] = float(scan_gain)
     return json.dumps({_PROVENANCE_KEY: record})
 
 
@@ -118,8 +121,13 @@ def process_scan(
     stage: Stage,
     density_profile: DensityProfile | None,
     tone_params: ToneCurveParams,
+    scan_gain: float = 1.0,
 ) -> ResolvedTone | None:
     """Process one negative scan end to end and write the result.
+
+    `scan_gain` (from --match-scan-exposure, see calibration/scan_consistency.py) multiplies the
+    linear scan before calibration, putting a frame digitized at a different camera exposure back at
+    the exposure its profile was solved at. 1.0 = untouched.
 
     `density_profile=None` means "compute a per-frame automatic profile from this image" — not
     valid combined with `stage=Stage.INVERT_ONLY`, which always uses the identity profile.
@@ -127,6 +135,8 @@ def process_scan(
     Returns the tone values actually used (None for Stage.DENSITY_ONLY, which has no tone stage).
     """
     working_image = load_working_space_image(input_path)
+    if scan_gain != 1.0:
+        working_image *= np.asarray(scan_gain, dtype=working_image.dtype)
 
     if stage is Stage.INVERT_ONLY:
         profile = IDENTITY_PROFILE
@@ -146,7 +156,7 @@ def process_scan(
     # the ACEScg tag we just wrote with the source's own ICC bytes.
     copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
     if resolved is not None:
-        set_description(output_path, provenance_json(resolved, profile))
+        set_description(output_path, provenance_json(resolved, profile, scan_gain))
     return resolved
 
 
@@ -226,7 +236,9 @@ def export_delivery_image(input_path: str | Path, output_path: str | Path, quali
     return warning
 
 
-def estimate_roll_density_profile(input_paths: list[str | Path], stride: int = 8) -> DensityProfile:
+def estimate_roll_density_profile(
+    input_paths: list[str | Path], stride: int = 8, scan_gains: dict[str, float] | None = None
+) -> DensityProfile:
     """Estimate one shared density-balance profile from a whole roll's worth of input files, for
     --auto-density-roll batch mode. Reads every file (downsampled by `stride` for speed/memory —
     a roll's worth of full-resolution scans held in memory at once would be wasteful for what is
@@ -248,9 +260,17 @@ def estimate_roll_density_profile(input_paths: list[str | Path], stride: int = 8
     images = []
     for path in input_paths:
         try:
-            images.append(load_working_space_image(path)[::stride, ::stride, :])
+            image = load_working_space_image(path)[::stride, ::stride, :]
+            gain = (scan_gains or {}).get(str(path), 1.0)
+            images.append(image * np.asarray(gain, dtype=image.dtype) if gain != 1.0 else image)
         except Exception as exc:  # noqa: BLE001 — one corrupt frame must not abort the roll estimate
             print(f"Warning: skipping {path} while estimating roll density balance ({exc})")
     if not images:
         raise ScanColorError("no readable frames found to estimate a roll density-balance profile from")
     return roll_auto_density_balance(images)
+
+
+def read_roll_scan_metadata(paths: list[str | Path]) -> dict[str, tuple[ScanSettings | None, DarktableState | None]]:
+    """Scan settings + darktable export state for each file, from headers only (see
+    io/scan_metadata.py) — cheap enough to run over a whole roll before processing starts."""
+    return {str(path): read_scan_metadata(path) for path in paths}

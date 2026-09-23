@@ -49,8 +49,10 @@ halide invert <negative.tif> <positive.tif> [--profile NAME | --rm/--bm/--rs/--b
                                                [--output print|flat] [--exposure E] [--contrast C]
 halide batch <in_dir> <out_dir> [--auto-density-roll] [--save-profile-as NAME] [--output print|flat]
 halide print <flat.tif|dir> <print.tif|dir>    # print stage only, for a flat positive edited elsewhere
+halide check <roll_dir>                        # were the scans made consistently? (headers only)
+  (invert/batch also take --match-scan-exposure [--scan-reference FRAME])
 halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sRGB PNG/JPEG
-halide profile list|show|rename|delete
+halide profile list|show|rename|delete|set-scan-reference
 halide calibrate [negative.tif]                # Dear PyGui: anchor-frame picker + live preview;
                                                 # auto-loads the given TIFF if a path is passed
 ```
@@ -129,6 +131,33 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   deliberately; don't re-tune it from one image. Every output records its decision (fitted or
   pinned) as JSON in the TIFF ImageDescription (`processing.py::provenance_json`), and `invert`
   prints it.
+- **Per-frame grade (not a per-roll grade) was re-confirmed on a full real roll, and the roll's
+  "odd contrast" turned out to be bad crops, not the fit.** On Roll 16 (37 frames), three frames
+  had a ~3-stop bright tail from an opaque edge strip (film holder) left in the crop, which dropped
+  their fitted grade to ~0.46; re-cropped, the tails were 0.14-0.29 stops and the fit behaved. A
+  roll grade (median of per-frame fits) was tried and rejected: 21/37 frames sit at the 1.0 cap,
+  so the "roll grade" is just the paper's own grade, and it only differs from per-frame on the
+  genuinely long-range negatives, which a printer *would* print softer. The highlight anchor
+  (99.9th percentile) is the open question: on specular-heavy frames (chrome, IMG_0158: top 1% spans
+  ~1 stop) it darkens the whole print. Greyscale proof sheets at 99.9/99.5/99.0 were made for the
+  user to choose from — don't change the anchor without their decision.
+- **Scan consistency matters for colour, not just brightness, and is checked from file headers
+  (`halide check`, and automatically at the start of `batch`).** Density balance is a per-channel
+  power function, so a frame digitized brighter by k comes out scaled by k**density_scale — a
+  colour shift. Measured on Roll 16 with one fixed profile: frames digitized at 1/50 and 1/60 vs a
+  1/25 calibration frame printed ~0.13 and ~0.22 density bluer once matched (i.e. that much
+  warmer uncorrected) — CC13-CC22, clearly visible. `--match-scan-exposure` corrects it exactly
+  from EXIF (one global multiply on linear sensor data commutes with every colour matrix; verified
+  end to end in tests/unit/test_scan_consistency.py), against the profile's recorded scan settings
+  (profiles now carry a "scan" sidecar; `halide profile set-scan-reference` for older ones; batch
+  falls back to the roll's most common setting with a warning). Deliberately **not** corrected:
+  per-frame raw white balance (a per-channel multiply in the camera's own colour space, before the
+  raw converter's camera matrix — not invertible from the export without that matrix, so it's
+  reported, never approximated) and active tone/colour modules in darktable's embedded history
+  (the export isn't linear). Found on the same roll: the camera was metering each frame (1/25-1/60)
+  and "as shot" white balance was the camera's auto WB (14 distinct values, R ±5%, B ±7%); one
+  frame had shadows & highlights active. Not yet validated against a real two-exposure scan of one
+  frame (see TONE_OUTPUT_PLAN.md follow-ups).
 - **`halide print` exists for the flat -> darktable -> print round trip, and range-setting belongs
   to it, not to the editor.** The contract: edits between `--output flat` and `print` stay linear
   and scene-referred (crop, spot removal, lens, denoise, global exposure; no filmic/sigmoid, curves,
