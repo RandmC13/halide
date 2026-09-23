@@ -6,6 +6,7 @@ orchestrator (which calls this once per file inside a process pool) don't duplic
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -303,7 +304,10 @@ def export_delivery_image(input_path: str | Path, output_path: str | Path, quali
 
 
 def estimate_roll_density_profile(
-    input_paths: list[str | Path], stride: int = 8, scan_gains: dict[str, float] | None = None
+    input_paths: list[str | Path],
+    stride: int = 8,
+    scan_gains: dict[str, float] | None = None,
+    on_skip: Callable[[Path, Exception], None] | None = None,
 ) -> DensityProfile:
     """Estimate one shared density-balance profile from a whole roll's worth of input files, for
     --auto-density-roll batch mode. Reads every file (downsampled by `stride` for speed/memory —
@@ -313,7 +317,8 @@ def estimate_roll_density_profile(
     Runs in the main process, ahead of (and outside) the per-worker try/except in
     batch.orchestrator — so a single unreadable/malformed file here must not abort the whole roll
     estimate any more than it aborts the rest of the batch. Unreadable files are skipped with a
-    warning; the actual per-file error still surfaces normally when that file is processed for
+    warning (printed, or passed to `on_skip` so a caller mid-display can show it its own way); the
+    actual per-file error still surfaces normally when that file is processed for
     real in the worker pool.
 
     Catches broad `Exception`, not just `ScanColorError` — found via testing with a genuinely
@@ -333,7 +338,10 @@ def estimate_roll_density_profile(
             gain = (scan_gains or {}).get(str(path), 1.0)
             images.append(image * np.asarray(gain, dtype=image.dtype) if gain != 1.0 else image)
         except Exception as exc:  # noqa: BLE001 — one corrupt frame must not abort the roll estimate
-            print(f"Warning: skipping {path} while estimating roll density balance ({exc})")
+            if on_skip is not None:
+                on_skip(Path(path), exc)
+            else:
+                print(f"Warning: skipping {path} while estimating roll density balance ({exc})")
     if not images:
         raise ScanColorError("no readable frames found to estimate a roll density-balance profile from")
     return roll_auto_density_balance(images)

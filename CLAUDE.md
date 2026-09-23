@@ -469,6 +469,17 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   height, and the status line is trimmed rather than allowed to wrap — both because the in-place
   redraw's cursor-up counts logical lines, and a taller-than-screen or wrapped frame leaves stale
   rows behind (verified by replaying real `halide batch` pty output into a virtual terminal).
+- **Everything `batch`/`export`/`print` decides before developing is one aligned "run sheet"**
+  (`console.RunSheet`, rows shared via `cli/_run_sheet.py`): Roll, Scans, Scan exposure,
+  Calibration, Output, Workers — a label column, values/warnings wrapped with a hanging indent,
+  framed by sprocket rules per the sizing convention. It replaced a run of unrelated sentences
+  (roll warnings, scan-exposure lines, "Auto-selected N workers…") that blended together. Rows are
+  held until the sheet closes so prompts come before it, not inside it; the roll estimate shows a
+  spinner row. `--quiet` still prints warnings, as plain lines. Fixed on the way: the scan-exposure
+  reference was announced twice, the exposure warning told you to pass `--match-scan-exposure`
+  when it already was, the "profile doesn't record its scan exposure" warning appeared for manual
+  `--rm/--bm` values (no profile involved), and an explicit `--workers` over the memory budget
+  printed "Warning: Warning:".
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 

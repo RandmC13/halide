@@ -75,6 +75,9 @@ def test_assess_roll_reports_each_kind_of_inconsistency():
     assert report.white_balance_inconsistent
     assert report.tonal_modules == {"c": ("rgbcurve",)}
     assert len(report.summary_lines()) == 3
+    # A run already evening out the exposures with --match-scan-exposure doesn't re-warn about them.
+    corrected = report.summary_lines(exposure_corrected=True)
+    assert len(corrected) == 2 and not any("exposure" in line for line in corrected)
 
 
 def _negative(tmp_path, name, scale):
