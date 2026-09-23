@@ -34,7 +34,7 @@ DEFAULT_NEUTRAL_FRACTION = 0.5  # fraction of least-saturated pixels kept as cal
 DEFAULT_SHADOW_PERCENTILE = 99.9  # highest transmittance among candidates -> shadow after invert
 DEFAULT_HIGHLIGHT_PERCENTILE = 0.1  # lowest transmittance among candidates -> highlight after invert
 
-DEFAULT_DENSITY_BINS = 20  # target number of density-local reference bins (see _density_reference)
+DEFAULT_DENSITY_BINS = 20  # target number of density-local reference bins (see _density_local_saturation)
 MIN_PIXELS_PER_BIN = 200  # below this, a bin's own median is too noisy to trust as a local reference
 
 # A single global per-channel median (the original approach) is only a valid stand-in for the
@@ -45,7 +45,7 @@ MIN_PIXELS_PER_BIN = 200  # below this, a bin's own median is too noisy to trust
 # raw color (there is little image-forming density left to differentiate it). Confirmed via real
 # testing (see CLAUDE.md): a genuinely neutral black object and a head of dark (non-neutral) hair
 # had near-identical raw RGB and both passed the old global-median filter, while a genuinely
-# neutral, properly-exposed white object was excluded. _density_reference fixes the "compared
+# neutral, properly-exposed white object was excluded. _density_local_saturation fixes the "compared
 # against the wrong density level" half of that bug by computing a LOCAL reference per density
 # bin instead of one global one. It does not fix the separate, harder problem that
 # _shadow_and_highlight_from_candidates still extracts from the extreme percentiles of whatever
@@ -55,26 +55,44 @@ MIN_PIXELS_PER_BIN = 200  # below this, a bin's own median is too noisy to trust
 MIN_DENSITY_SEPARATION = 0.1  # log10 density units; deliberately conservative, see _check_density_separation
 
 
-def _density_reference(pixels: np.ndarray, target_bins: int = DEFAULT_DENSITY_BINS) -> np.ndarray:
-    """For each pixel, the per-channel median of *other pixels at a similar density* (luminance-
-    sorted, equal-population bins) — the local stand-in for "the film's systematic imbalance at
-    this pixel's own density level," replacing a single frame-wide median. Bin count adapts down
-    (to as low as 1, i.e. the original single-global-median behavior) when there aren't enough
-    pixels to support MIN_PIXELS_PER_BIN per bin, so small inputs (a handful of pixels, as in some
-    unit tests) degrade gracefully rather than producing noisy per-bin medians from a handful of
-    pixels each.
+def _density_local_saturation(pixels: np.ndarray, target_bins: int = DEFAULT_DENSITY_BINS) -> np.ndarray:
+    """Each pixel's `_saturation`, judged against the per-channel median of *other pixels at a
+    similar density* (luminance-sorted, equal-population bins) — the local stand-in for "the film's
+    systematic imbalance at this pixel's own density level," replacing a single frame-wide median.
+    Bin count adapts down (to as low as 1, i.e. the original single-global-median behavior) when
+    there aren't enough pixels to support MIN_PIXELS_PER_BIN per bin, so small inputs (a handful of
+    pixels, as in some unit tests) degrade gracefully rather than producing noisy per-bin medians
+    from a handful of pixels each.
+
+    Computed bin by bin, so no full-frame reference or normalized array is ever built: on a real
+    full-resolution frame the old two-step form (a per-pixel reference array, then `_saturation`
+    over all of it, plus an int64 `np.arange` just to split the sort order) held ~500 MiB of
+    scratch. Same bins, same medians, same arithmetic per pixel — the result is bit-identical
+    (tests/unit/test_auto_calibration.py keeps the old form as an oracle).
     """
     n = len(pixels)
     n_bins = max(1, min(target_bins, n // MIN_PIXELS_PER_BIN))
     if n_bins == 1:
-        return np.broadcast_to(np.median(pixels, axis=0), pixels.shape)
+        return _saturation(pixels, np.broadcast_to(np.median(pixels, axis=0), pixels.shape))
 
     order = np.argsort(pixels.mean(axis=1))
-    reference = np.empty_like(pixels)
-    for bin_positions in np.array_split(np.arange(n), n_bins):
-        bin_indices = order[bin_positions]
-        reference[bin_indices] = np.median(pixels[bin_indices], axis=0)
-    return reference
+    saturation = None
+    # The same contiguous runs of `order` np.array_split(np.arange(n), n_bins) gives: the first
+    # n % n_bins bins one element longer — as slices, without materializing the index array.
+    base, extra = divmod(n, n_bins)
+    start = 0
+    for bin_number in range(n_bins):
+        stop = start + base + (1 if bin_number < extra else 0)
+        bin_indices = order[start:stop]
+        bin_pixels = pixels[bin_indices]
+        # Cast as the old per-pixel reference array (np.empty_like(pixels)) did on assignment.
+        median = np.median(bin_pixels, axis=0).astype(pixels.dtype, copy=False)
+        bin_saturation = _saturation(bin_pixels, np.broadcast_to(median, bin_pixels.shape))
+        if saturation is None:
+            saturation = np.empty(n, dtype=bin_saturation.dtype)
+        saturation[bin_indices] = bin_saturation
+        start = stop
+    return saturation
 
 
 def _saturation(pixels: np.ndarray, reference: np.ndarray | None = None) -> np.ndarray:
@@ -86,7 +104,7 @@ def _saturation(pixels: np.ndarray, reference: np.ndarray | None = None) -> np.n
     dye density that density balance exists to correct (e.g. the reference shadow/highlight
     calibration patches from abpy/color-neg-resources — (.094,.131,.050) and (.048,.054,.016) —
     score 0.62 and 0.70 on that naive metric, nowhere near "low saturation"). Dividing each channel
-    by a reference (see `_density_reference` — per-pixel, density-local by default) first removes
+    by a reference (see `_density_local_saturation` — per-pixel, density-local) first removes
     that *systematic* per-channel imbalance (the same thing density balance corrects) before
     measuring spread, so what survives is genuine hue variation relative to what's typical at that
     pixel's own density — not an artifact of the film's own dye imbalance being mistaken for "this
@@ -133,8 +151,7 @@ def _neutral_candidate_mask(image: np.ndarray, neutral_fraction: float) -> np.nd
     show — the location of each candidate pixel is exactly what a flat, reordered array discards.
     """
     flat = image.reshape(-1, 3)
-    reference = _density_reference(flat)
-    saturation = _saturation(flat, reference)
+    saturation = _density_local_saturation(flat)
     threshold = np.percentile(saturation, neutral_fraction * 100)
     return (saturation <= threshold).reshape(image.shape[:2])
 
@@ -142,7 +159,7 @@ def _neutral_candidate_mask(image: np.ndarray, neutral_fraction: float) -> np.nd
 def _neutral_candidates(image: np.ndarray, neutral_fraction: float) -> np.ndarray:
     """The least-saturated `neutral_fraction` of a single image's own pixels — saturation judged
     relative to a reference local to *that pixel's own density*, within *that image's own* pixels
-    (see `_saturation`/`_density_reference`).
+    (see `_saturation`/`_density_local_saturation`).
 
     Deliberately scoped to one image at a time. Normalizing against a frame's own pixels is what
     makes `_saturation` measure "how neutral is this pixel relative to the film's systematic

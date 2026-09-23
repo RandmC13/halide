@@ -16,6 +16,13 @@ import tifffile
 
 _ICC_TAG = 34675  # TIFF InterColorProfile / ICC Profile tag
 
+# How much compressed strip data tifffile reads at once. Its default (256 MiB) exceeds a whole real
+# scan (~120 MiB on disk — float data barely compresses), so the entire file sat in memory next to
+# the decoded frame. 16 MiB keeps decoding multithreaded and costs ~0.15 s per full-resolution frame
+# for ~55 MiB less peak memory (single-threaded decoding saved only 17 MiB more, for 0.6 s).
+# Decoding is deterministic: the pixels are identical either way.
+_READ_BUFFER_BYTES = 16 * 1024**2
+
 
 @dataclass(frozen=True)
 class RawScan:
@@ -29,7 +36,7 @@ def read_tiff(path: str | Path) -> RawScan:
     space — the returned image is still in whatever RGB space the file's ICC tag (if any)
     describes; pass it through halide.io.icc before feeding it to the core pipeline."""
     with tifffile.TiffFile(path) as tif:
-        raw = tif.asarray()
+        raw = tif.asarray(buffersize=_READ_BUFFER_BYTES)
         icc_tag = tif.pages[0].tags.get(_ICC_TAG)
         icc_profile = icc_tag.value if icc_tag is not None else None
         description = tif.pages[0].description or None
