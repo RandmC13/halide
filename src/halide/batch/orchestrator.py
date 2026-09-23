@@ -27,7 +27,7 @@ from typing import Callable
 import tifffile
 
 from halide.core.types import DensityProfile, ToneCurveParams
-from halide.processing import Stage, export_delivery_image, process_scan
+from halide.processing import Stage, export_delivery_image, print_scan, process_scan
 
 TIFF_SUFFIXES = (".tif", ".tiff")
 
@@ -60,6 +60,7 @@ _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 class BatchJob:
     input_path: Path
     output_path: Path
+    scan_gain: float = 1.0  # see processing.process_scan / --match-scan-exposure
 
 
 @dataclass(frozen=True)
@@ -202,7 +203,7 @@ def _worker(
     tone_params: ToneCurveParams,
 ) -> BatchResult:
     try:
-        process_scan(job.input_path, job.output_path, stage, density_profile, tone_params)
+        process_scan(job.input_path, job.output_path, stage, density_profile, tone_params, scan_gain=job.scan_gain)
         return BatchResult(job=job, error=None)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc))
@@ -211,6 +212,14 @@ def _worker(
 def _export_worker(job: BatchJob, quality: int) -> BatchResult:
     try:
         warning = export_delivery_image(job.input_path, job.output_path, quality=quality)
+        return BatchResult(job=job, error=None, warning=warning)
+    except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
+        return BatchResult(job=job, error=str(exc))
+
+
+def _print_worker(job: BatchJob, tone_params: ToneCurveParams) -> BatchResult:
+    try:
+        _, warning = print_scan(job.input_path, job.output_path, tone_params)
         return BatchResult(job=job, error=None, warning=warning)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc))
@@ -356,3 +365,18 @@ def run_export_batch(
     defaults to default_export_worker_count(jobs) if not given."""
     workers = max_workers if max_workers is not None else default_export_worker_count(jobs)
     return _run_pool(jobs, _export_worker, (quality,), workers, on_result=on_result, on_start=on_start)
+
+
+def run_print_batch(
+    jobs: list[BatchJob],
+    tone_params: ToneCurveParams,
+    max_workers: int | None = None,
+    on_result: Callable[[BatchResult], None] | None = None,
+    on_start: Callable[[BatchJob], None] | None = None,
+) -> list[BatchResult]:
+    """`halide print` every job (flat positive -> print) in a process pool — see _run_pool for the
+    shared failure-handling and progress-callback behavior. `max_workers` defaults to
+    default_worker_count(jobs): the full-pipeline memory estimate, a safe upper bound for the print
+    stage alone (which is the tail of that same pipeline)."""
+    workers = max_workers if max_workers is not None else default_worker_count(jobs)
+    return _run_pool(jobs, _print_worker, (tone_params,), workers, on_result=on_result, on_start=on_start)

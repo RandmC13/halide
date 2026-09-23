@@ -35,6 +35,7 @@ from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate
 from halide.calibration.profile_store import default_profiles_dir, save_named_profile
 from halide.core.density import solve_density_balance
 from halide.core.types import DensityProfile, ToneCurveParams
+from halide.io.scan_metadata import ScanSettings, read_scan_metadata
 from halide.gui import theme
 from halide.gui.preview_popup import PreviewPopup
 from halide.gui.sampling import (
@@ -225,12 +226,15 @@ class SaveProfileDialog(QDialog):
 
     saved = Signal(str)
 
-    def __init__(self, parent: QWidget, profile: DensityProfile, tone: ToneCurveParams | None) -> None:
+    def __init__(
+        self, parent: QWidget, profile: DensityProfile, tone: ToneCurveParams | None, scan: ScanSettings | None = None
+    ) -> None:
         super().__init__(parent, Qt.WindowType.Dialog)
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setWindowTitle("Save calibration profile")
         self._profile = profile
         self._tone = tone
+        self._scan = scan
         self._pending_overwrite_name: str | None = None
 
         layout = QVBoxLayout(self)
@@ -265,7 +269,7 @@ class SaveProfileDialog(QDialog):
             self._save_button.setText("Overwrite")
             return
 
-        path = save_named_profile(self._profile, name, tone=self._tone)
+        path = save_named_profile(self._profile, name, tone=self._tone, scan=self._scan)
         self.saved.emit(f"Saved calibration profile '{name}' to {path}")
         self.accept()
 
@@ -480,7 +484,9 @@ class MainWindow(QWidget):
             self.close()
             return
 
-        dialog = SaveProfileDialog(self, profile, self.pending_tone_override)
+        # The calibration frame's scan exposure travels with the profile (see profile_store.save_profile).
+        scan, _ = read_scan_metadata(self.negative_path) if self.negative_path else (None, None)
+        dialog = SaveProfileDialog(self, profile, self.pending_tone_override, scan)
         dialog.saved.connect(self._status)
         dialog.exec()
 

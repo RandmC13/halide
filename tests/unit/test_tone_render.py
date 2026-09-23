@@ -4,10 +4,14 @@ import pytest
 from halide.core.invert import invert
 from halide.core.tone_render import (
     _DEFAULT_CURVE_PATH,
+    MAX_PRINT_CONTRAST,
     _load_curve,
-    estimate_exposure,
     estimate_linear_scale,
+    fit_print,
     linear_passthrough,
+    negative_density_range,
+    paper_exposure_range,
+    resolve_tone,
     tone_render,
 )
 from halide.core.types import ToneCurveParams
@@ -120,32 +124,103 @@ def test_contrast_zero_is_a_flat_constant_at_the_pivot():
     assert result == pytest.approx(np.full_like(result, pivot_value), abs=1e-9)
 
 
-def test_estimate_exposure_positions_the_shadow_percentile_at_the_target_density():
-    # A synthetic "positive" whose 1st percentile density is known exactly (density = log10(x)).
-    rng = np.random.default_rng(0)
-    shadow_density = 0.6
-    bulk = 10.0 ** rng.uniform(shadow_density + 0.5, shadow_density + 2.0, size=9700)
-    # A 3% flat tail safely straddles the 1st percentile regardless of interpolation method.
-    shadow_tail = np.full(300, 10.0**shadow_density)
-    positive = np.concatenate([shadow_tail, bulk])
-
-    exposure = estimate_exposure(positive, shadow_percentile=1.0, target_density=1.0)
-    density_after = np.log10(np.percentile(positive, 1.0)) + exposure
-    assert density_after == pytest.approx(1.0, abs=1e-6)
+def _curve():
+    return _load_curve(str(_DEFAULT_CURVE_PATH))
 
 
-def test_estimate_exposure_differs_per_image_rather_than_using_one_constant():
-    # Two images with genuinely different density ranges must get genuinely different exposures —
-    # this is the entire point (see ToneCurveParams' docstring: a fixed constant does not correctly
-    # position every scan).
-    dense_image = np.full((10, 10), 10.0**0.5)  # a "denser" (lower-transmittance) shadow
-    thin_image = np.full((10, 10), 10.0**1.5)  # a "thinner" (higher-transmittance) shadow
-    assert estimate_exposure(dense_image) != pytest.approx(estimate_exposure(thin_image))
+def _synthetic_positive(d_lo: float, d_hi: float, n: int = 20_000) -> np.ndarray:
+    """A neutral RGB "positive" whose luminance density (log10) spans exactly [d_lo, d_hi] — so
+    its robust percentiles (see negative_density_range) sit a hair inside those, at known values."""
+    density = np.linspace(d_lo, d_hi, n)
+    return np.repeat((10.0**density)[:, None], 3, axis=1)
 
 
-def test_tone_render_defaults_to_auto_exposure_when_none_given():
-    x = np.geomspace(1e-2, 1e2, num=50)
-    positive = invert(x)
-    auto_result = tone_render(positive, ToneCurveParams())  # exposure=None by default
-    explicit_result = tone_render(positive, ToneCurveParams(exposure=estimate_exposure(positive)))
-    assert auto_result == pytest.approx(explicit_result)
+def test_paper_exposure_range_hits_the_iso_6846_densities_on_the_curve():
+    # ISO 6846: highlight point = 0.04 above paper white, shadow point = 90% of D-max.
+    curve = _curve()
+    shadow, highlight = paper_exposure_range(curve)
+    d_max = -np.log10(curve.values.min())
+    assert -np.log10(curve.lookup(np.array([highlight]))[0]) == pytest.approx(0.04, abs=1e-6)
+    assert -np.log10(curve.lookup(np.array([shadow]))[0]) == pytest.approx(0.9 * d_max, abs=1e-6)
+    assert shadow < highlight
+
+
+def test_fit_print_fills_the_paper_range_from_the_negatives_own_range():
+    # A normal-contrast negative (range ~0.95, like the real test scans): the fitted grade must put
+    # its robust highlight on the paper's highlight point and its robust shadow on the shadow point.
+    curve = _curve()
+    positive = _synthetic_positive(0.7, 1.65)
+    exposure, contrast = fit_print(positive, curve)
+    shadow, highlight = paper_exposure_range(curve)
+    assert contrast < MAX_PRINT_CONTRAST  # this range is wide enough not to hit the cap
+
+    d_lo, d_hi = negative_density_range(positive)
+    rendered = tone_render(np.array([10.0**d_lo, 10.0**d_hi]), ToneCurveParams(exposure=exposure, contrast=contrast))
+    expected = curve.lookup(np.array([shadow, highlight]))
+    assert rendered == pytest.approx(expected, rel=1e-5)
+
+
+def test_fit_print_caps_the_grade_at_the_real_paper_for_a_low_contrast_negative():
+    # A foggy/overcast negative: filling the paper would need a harder grade than the real paper
+    # has. It must print soft (as it really was) — highlights still placed, shadows NOT forced to black.
+    curve = _curve()
+    positive = _synthetic_positive(1.0, 1.3)
+    exposure, contrast = fit_print(positive, curve)
+    assert contrast == MAX_PRINT_CONTRAST
+    shadow, highlight = paper_exposure_range(curve)
+    d_lo, d_hi = negative_density_range(positive)
+    rendered = tone_render(np.array([10.0**d_lo, 10.0**d_hi]), ToneCurveParams(exposure=exposure, contrast=contrast))
+    assert rendered[1] == pytest.approx(curve.lookup(np.array([highlight]))[0], rel=1e-5)
+    assert rendered[0] > curve.lookup(np.array([shadow]))[0] * 10  # well above paper black
+
+
+def test_fitted_print_keeps_neutral_pixels_exactly_neutral():
+    # The fit is two scalars applied identically to every channel before a channel-identical curve:
+    # it can decide where on the paper the image sits, never what colour anything is.
+    rng = np.random.default_rng(1)
+    positive = 10.0 ** rng.uniform(0.6, 1.7, size=(64, 64, 1)).repeat(3, axis=2)
+    result = tone_render(positive, ToneCurveParams())
+    assert np.array_equal(result[..., 0], result[..., 1])
+    assert np.array_equal(result[..., 1], result[..., 2])
+
+
+def test_fitted_print_is_invariant_to_a_global_exposure_multiply():
+    # What makes `halide print` on an exposure-adjusted flat positive well-defined: a multiply is a
+    # constant density offset, which the fitted exposure absorbs exactly.
+    rng = np.random.default_rng(2)
+    positive = 10.0 ** rng.uniform(0.6, 1.7, size=(64, 64, 3))
+    reference = tone_render(positive, ToneCurveParams())
+    for factor in (0.013, 0.8, 37.0):
+        assert tone_render(positive * factor, ToneCurveParams()) == pytest.approx(reference, rel=1e-6, abs=1e-9)
+
+
+def test_pinned_contrast_fits_only_exposure_to_the_highlight_point():
+    curve = _curve()
+    positive = _synthetic_positive(0.7, 1.65)
+    exposure, contrast = fit_print(positive, curve, contrast=0.5)
+    assert contrast == 0.5
+    _, highlight = paper_exposure_range(curve)
+    _, d_hi = negative_density_range(positive)
+    rendered = tone_render(np.array([10.0**d_hi]), ToneCurveParams(exposure=exposure, contrast=0.5))
+    assert rendered[0] == pytest.approx(curve.lookup(np.array([highlight]))[0], rel=1e-5)
+
+
+def test_fit_differs_per_image_rather_than_using_one_constant():
+    curve = _curve()
+    soft = fit_print(_synthetic_positive(0.7, 1.9), curve)
+    hard = fit_print(_synthetic_positive(0.7, 1.5), curve)
+    assert soft[1] < hard[1]  # the wider-range negative gets the softer grade
+
+
+def test_resolve_tone_reports_what_tone_render_uses():
+    rng = np.random.default_rng(3)
+    positive = 10.0 ** rng.uniform(0.6, 1.7, size=(32, 32, 3))
+    resolved = resolve_tone(positive, ToneCurveParams())
+    explicit = tone_render(positive, ToneCurveParams(exposure=resolved.exposure, contrast=resolved.contrast))
+    assert tone_render(positive, ToneCurveParams()) == pytest.approx(explicit)
+
+    pinned = resolve_tone(positive, ToneCurveParams(exposure=0.3, contrast=0.7))
+    assert (pinned.exposure, pinned.contrast) == (0.3, 0.7)
+
+    linear = resolve_tone(positive, ToneCurveParams(mode="linear"))
+    assert linear.linear_scale == pytest.approx(estimate_linear_scale(positive))

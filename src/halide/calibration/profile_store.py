@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from halide.core.types import DensityProfile, ToneCurveParams
+from halide.io.scan_metadata import ScanSettings
 
 
 def default_profiles_dir() -> Path:
@@ -23,16 +24,29 @@ def default_profiles_dir() -> Path:
     return base / "halide" / "profiles"
 
 
-def save_profile(profile: DensityProfile, path: str | Path, *, tone: ToneCurveParams | None = None) -> None:
+def save_profile(
+    profile: DensityProfile,
+    path: str | Path,
+    *,
+    tone: ToneCurveParams | None = None,
+    scan: ScanSettings | None = None,
+) -> None:
     """`tone`, if given, is a GUI-picked exposure/contrast override (see gui/preview_popup.py's
     Fine-tune controls) saved as an extra "tone" sidecar key alongside the profile's own fields -
     deliberately not merged into DensityProfile itself (see calibration_args.py/core/types.py: the
     density profile stays a pure calibration concept, tone stays a separate, optional per-run
     rendering choice that a profile can merely *suggest* a default for). Linear-output mode is
-    deliberately never included here - see load_tone_override's docstring."""
+    deliberately never included here - see load_tone_override's docstring.
+
+    `scan`, if given, is the digitizing camera exposure the calibration frame was scanned at (a
+    "scan" sidecar, same reasoning as "tone"): a profile is only exactly valid at the scan exposure
+    it was solved at, and --match-scan-exposure needs this reference to correct other frames to it
+    (see calibration/scan_consistency.py)."""
     data = asdict(profile)
     if tone is not None:
         data["tone"] = {"exposure": tone.exposure, "contrast": tone.contrast}
+    if scan is not None:
+        data["scan"] = asdict(scan)
     Path(path).write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -73,15 +87,19 @@ def resolve_profile_path(name_or_path: str | Path, profiles_dir: Path | None = N
 
 
 def save_named_profile(
-    profile: DensityProfile, name: str, profiles_dir: Path | None = None, tone: ToneCurveParams | None = None
+    profile: DensityProfile,
+    name: str,
+    profiles_dir: Path | None = None,
+    tone: ToneCurveParams | None = None,
+    scan: ScanSettings | None = None,
 ) -> Path:
     """Save `profile` under `name` in the profiles directory, stamping its name and creation time.
-    `tone` is an optional exposure/contrast override to save alongside it - see save_profile."""
+    `tone`/`scan` are optional sidecars to save alongside it - see save_profile."""
     directory = profiles_dir or default_profiles_dir()
     directory.mkdir(parents=True, exist_ok=True)
     stamped = replace(profile, name=name, created_at=datetime.now(timezone.utc).isoformat())
     path = directory / f"{name}.json"
-    save_profile(stamped, path, tone=tone)
+    save_profile(stamped, path, tone=tone, scan=scan)
     return path
 
 
@@ -96,6 +114,23 @@ def load_tone_override(path: str | Path) -> ToneCurveParams | None:
     if tone_data is None:
         return None
     return ToneCurveParams(mode="paper", exposure=tone_data["exposure"], contrast=tone_data["contrast"])
+
+
+def load_scan_reference(path: str | Path) -> ScanSettings | None:
+    """The scan exposure a profile was calibrated at, if recorded (profiles saved before this
+    existed have none — see set_scan_reference to add it)."""
+    scan = json.loads(Path(path).read_text()).get("scan")
+    if not scan:
+        return None
+    return ScanSettings(exposure_time=scan["exposure_time"], f_number=scan["f_number"], iso=scan["iso"])
+
+
+def set_scan_reference(path: str | Path, scan: ScanSettings) -> None:
+    """Record (or replace) a saved profile's scan reference, leaving every other field untouched."""
+    path = Path(path)
+    data = json.loads(path.read_text())
+    data["scan"] = asdict(scan)
+    path.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityProfile]]:
@@ -122,8 +157,11 @@ def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = Non
     if new_path.exists():
         raise FileExistsError(f"a profile named {new_name!r} already exists in {directory}")
 
-    stamped = replace(load_profile(old_path), name=new_name)
-    save_profile(stamped, new_path)
+    # Rewrites the raw JSON rather than round-tripping through DensityProfile, so the optional
+    # "tone"/"scan" sidecars survive a rename (round-tripping used to silently drop "tone").
+    data = json.loads(old_path.read_text())
+    data["name"] = new_name
+    new_path.write_text(json.dumps(data, indent=2) + "\n")
     old_path.unlink()
     return new_path
 

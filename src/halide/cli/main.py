@@ -4,9 +4,17 @@ import argparse
 import sys
 
 from halide.cli import console
-from halide.cli.commands import batch_cmd, calibrate_cmd, export_cmd, invert_cmd, profile_cmd
+from halide.cli.commands import (
+    batch_cmd,
+    calibrate_cmd,
+    check_cmd,
+    export_cmd,
+    invert_cmd,
+    print_cmd,
+    profile_cmd,
+)
 
-_SUBCOMMANDS = ("invert", "batch", "export", "profile", "calibrate")
+_SUBCOMMANDS = ("invert", "batch", "print", "export", "check", "profile", "calibrate")
 
 
 def _is_top_level_help(argv: list[str]) -> bool:
@@ -43,10 +51,22 @@ def build_parser() -> argparse.ArgumentParser:
     batch_parser = subparsers.add_parser("batch", help="Invert a directory of negative scans in parallel")
     batch_cmd.add_arguments(batch_parser)
 
+    print_parser = subparsers.add_parser(
+        "print",
+        help="Print a flat positive (from `invert --output flat`, optionally edited in darktable) "
+        "onto the paper curve",
+    )
+    print_cmd.add_arguments(print_parser)
+
     export_parser = subparsers.add_parser(
         "export", help="Convert a processed ACEScg TIFF into a delivery-ready sRGB PNG/JPEG"
     )
     export_cmd.add_arguments(export_parser)
+
+    check_parser = subparsers.add_parser(
+        "check", help="Check a roll's scans were made consistently (camera settings, white balance, edits)"
+    )
+    check_cmd.add_arguments(check_parser)
 
     profile_parser = subparsers.add_parser("profile", help="Manage saved calibration profiles")
     profile_cmd.add_arguments(profile_parser)
@@ -75,8 +95,12 @@ def main(argv: list[str] | None = None) -> int:
         return invert_cmd.run(args)
     if args.command == "batch":
         return batch_cmd.run(args)
+    if args.command == "print":
+        return print_cmd.run(args)
     if args.command == "export":
         return export_cmd.run(args)
+    if args.command == "check":
+        return check_cmd.run(args)
     if args.command == "profile":
         return profile_cmd.run(args)
     if args.command == "calibrate":

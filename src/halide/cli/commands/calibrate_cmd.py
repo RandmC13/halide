@@ -39,9 +39,7 @@ def run(args: argparse.Namespace) -> int:
         main as run_gui,
     )  # deferred: don't require Qt/a display for the rest of the CLI
 
-    print(
-        f"{console.rule(14)}\n{console.Style.BOLD}halide{console.Style.RESET} · calibration picker\n{console.rule(14)}"
-    )
+    print(console.framed([f"{console.Style.BOLD}halide{console.Style.RESET} · calibration picker"]))
     try:
         run_gui(initial_calibrate_path=args.path)
     except Exception as exc:  # noqa: BLE001 -- a GUI-toolkit failure, not a domain error

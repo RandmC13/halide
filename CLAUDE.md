@@ -46,9 +46,13 @@ without being asked.
 CLI (installed as the `halide` console script, or run via `.venv/bin/python -m halide.cli.main`):
 ```bash
 halide invert <negative.tif> <positive.tif> [--profile NAME | --rm/--bm/--rs/--bs | --auto-density | --pick]
-halide batch <in_dir> <out_dir> [--auto-density-roll] [--save-profile-as NAME]
+                                               [--output print|flat] [--exposure E] [--contrast C]
+halide batch <in_dir> <out_dir> [--auto-density-roll] [--save-profile-as NAME] [--output print|flat]
+halide print <flat.tif|dir> <print.tif|dir>    # print stage only, for a flat positive edited elsewhere
+halide check <roll_dir>                        # were the scans made consistently? (headers only)
+  (invert/batch also take --match-scan-exposure [--scan-reference FRAME])
 halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sRGB PNG/JPEG
-halide profile list|show|rename|delete
+halide profile list|show|rename|delete|set-scan-reference
 halide calibrate [negative.tif]                # Dear PyGui: anchor-frame picker + live preview;
                                                 # auto-loads the given TIFF if a path is passed
 ```
@@ -105,12 +109,74 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   Pillow is still a dependency, but only for `io/raster.py`'s PNG/JPEG writing — an unrelated job.
 - **The default tone-render curve is a vendored real paper response curve** (`assets/tone_curves`,
   from `abpy/color-neg-resources`, MIT), not an invented analytic curve — deliberately, to keep the
-  "faithful over flashy" priority. `ToneCurveParams.contrast` (default 0.5, not the curve's native
-  1.0) and `exposure` (default `None` = auto-computed per image, see
-  `core/tone_render.py::estimate_exposure`) both exist because of real bugs found by testing
-  against actual scans, not speculative options — see their docstrings for the specific failure
-  each one fixes. Don't "simplify" them back to fixed constants.
-- **`mode="linear"` output is scaled, not a bare unbounded passthrough** (`estimate_linear_scale`
+  "faithful over flashy" priority. `ToneCurveParams.exposure` (enlarger exposure) and `contrast`
+  (paper grade) both default to `None` = **fitted per image** by `core/tone_render.py::fit_print`,
+  and both exist because of real bugs found on actual scans — see `ToneCurveParams`' docstring for
+  the history. Don't "simplify" them back to fixed constants.
+- **The print fit matches paper grade to the negative, before the curve — never a post-curve
+  stretch.** Found via real use: the previous defaults (fixed `contrast=0.5`, plus a shadow-only
+  `estimate_exposure`, now removed) covered only about half the paper on all three real scans —
+  blacks at sRGB ~45, whites ~220-233, against the paper's own ~11/255 — so the user was tempted to
+  stretch levels in darktable, which is a second, non-physical tone curve on top of the paper
+  (a linear-light black point reshapes the paper's toe; unlinked levels would also overwrite the
+  density balance). `fit_print` instead measures this frame's robust luminance density range
+  (0.1/99.5th percentiles) and solves exactly for the grade that fills the paper's ISO 6846 range
+  (computed from the curve file itself: 0.04 above paper white to 90% of D-max) and the exposure
+  that puts the highlights on the paper's highlight point. Grade is capped at 1.0 (the real paper)
+  so a genuinely flat scene prints soft rather than being normalised. The two scalars are applied
+  identically to every channel, so the fit can't create a cast — but a harder grade (~0.8-0.9 on the
+  real scans vs 0.5) makes an existing calibration residual ~1.7x more visible. Known, accepted
+  trade-off of highlight anchoring: highlight-heavy frames print with dark midtones (IMG_0151's
+  shaded crowd, IMG_0158's rider: median sRGB ~80 -> ~40). The anchor is 99.5 (see next entry)
+  — don't re-tune it from one image. Every output records its decision (fitted or
+  pinned) as JSON in the TIFF ImageDescription (`processing.py::provenance_json`), and `invert`
+  prints it.
+- **Per-frame grade (not a per-roll grade) was re-confirmed on a full real roll, and the roll's
+  "odd contrast" turned out to be bad crops, not the fit.** On Roll 16 (37 frames), three frames
+  had a ~3-stop bright tail from an opaque edge strip (film holder) left in the crop, which dropped
+  their fitted grade to ~0.46; re-cropped, the tails were 0.14-0.29 stops and the fit behaved. A
+  roll grade (median of per-frame fits) was tried and rejected: 21/37 frames sit at the 1.0 cap,
+  so the "roll grade" is just the paper's own grade, and it only differs from per-frame on the
+  genuinely long-range negatives, which a printer *would* print softer. The highlight anchor
+  moved from the 99.9th to the 99.5th percentile by the user's choice from greyscale proof sheets
+  of the whole roll at 99.9/99.5/99.0: at 99.9, specular-heavy frames (chrome, IMG_0158: top 1%
+  spans ~1 stop) printed dark; 99.0 pushed high-key frames too close to paper white. Don't change
+  it without the user's say-so.
+- **Scan consistency matters for colour, not just brightness, and is checked from file headers
+  (`halide check`, and automatically at the start of `batch`).** Density balance is a per-channel
+  power function, so a frame digitized brighter by k comes out scaled by k**density_scale — a
+  colour shift. Measured on Roll 16 with one fixed profile: frames digitized at 1/50 and 1/60 vs a
+  1/25 calibration frame printed ~0.13 and ~0.22 density bluer once matched (i.e. that much
+  warmer uncorrected) — CC13-CC22, clearly visible. `--match-scan-exposure` corrects it exactly
+  from EXIF (one global multiply on linear sensor data commutes with every colour matrix; verified
+  end to end in tests/unit/test_scan_consistency.py), against the profile's recorded scan settings
+  (profiles now carry a "scan" sidecar; `halide profile set-scan-reference` for older ones; batch
+  falls back to the roll's most common setting with a warning). Deliberately **not** corrected:
+  per-frame raw white balance (a per-channel multiply in the camera's own colour space, before the
+  raw converter's camera matrix — not invertible from the export without that matrix, so it's
+  reported, never approximated) and active tone/colour modules in darktable's embedded history
+  (the export isn't linear). Found on the same roll: the camera was metering each frame (1/25-1/60)
+  and "as shot" white balance was the camera's auto WB (14 distinct values, R ±5%, B ±7%); one
+  frame had shadows & highlights active. Not yet validated against a real two-exposure scan of one
+  frame (see TONE_OUTPUT_PLAN.md follow-ups).
+- **`halide print` exists for the flat -> darktable -> print round trip, and range-setting belongs
+  to it, not to the editor.** The contract: edits between `--output flat` and `print` stay linear
+  and scene-referred (crop, spot removal, lens, denoise, global exposure; no filmic/sigmoid, curves,
+  levels, local contrast). The fitted print is invariant to a global multiply, so an exposure change
+  in darktable (or losing halide's metadata) doesn't change the print — verified on the real scans:
+  flat -> print matches direct `invert` to ~4e-7, and a +0.6 EV, metadata-stripped copy to within
+  1 8-bit sRGB step. A *pinned* `--exposure` is not scale-invariant: `print` reproduces it exactly
+  only when the flat file's provenance (its exposure scale) survived, otherwise warns and fits.
+  `load_working_space_image` skips ICC conversion when the embedded profile is byte-identical to
+  halide's own ACEScg output profile: the conversion isn't a true identity (the profile's
+  s15Fixed16 matrix round-trips ACEScg only to ~1e-4 per channel), which broke exact round trips.
+  `export`'s console verb became "Exporting" (it was "Printing" before a real print step existed).
+- **`mode="linear"` (`--output flat`, alias `--linear-output`) output is scaled, not a bare
+  unbounded passthrough** — one global multiply is the *only* adjustment, since per the reference
+  blog exposure and white balance are the only operations that keep a flat positive faithful. It
+  looks flat because it is the film's own recorded contrast (negative gamma ~0.6), and its black is
+  the film base, not zero — both are data, not headroom to trim. Undoing film gamma would need a
+  measured gamma (ColorChecker tier), so it is deliberately not guessed. (`estimate_linear_scale`
   in `core/tone_render.py`). Found via real use: a real scan's raw `invert()` reciprocal is
   typically in the tens, so an unscaled passthrough put ~100% of pixels above 1.0 — solid white in
   darktable or any standard viewer. Scaled via a robust highlight percentile (not the true max,
@@ -126,6 +192,9 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   whole `ProcessPoolExecutor` and every other pending future raises `BrokenProcessPool` too —
   discarding every already-completed result and surfacing a bare traceback. Each crashed future is
   now recorded as its own `BatchResult` with an actionable message instead. `estimate_roll_density_profile`
+  also had to `.copy()` its downsampled frames: a strided slice is a view that pins the whole
+  full-resolution parent (~180 MiB per real scan), and a real 37-frame `--auto-density-roll` got the
+  main process OOM-killed (exit 137) before any worker started. It
   similarly needed to catch broad `Exception`, not just `ScanColorError` — a genuinely corrupt (not
   just unsupported-ICC) file raises straight from `tifffile` and was aborting the whole roll estimate.
 - **`batch.orchestrator.default_worker_count` sizes the worker pool from available RAM, not just

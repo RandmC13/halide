@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import shutil
 import signal
 import sys
@@ -50,11 +51,12 @@ ICON_WARN = "⚠"  # ⚠
 SPROCKET = "▫"  # ▫
 
 # Real darkroom terms mapped onto what each command actually does, so headers/spinners/finish
-# banners read consistently instead of each command inventing its own wording. `export` maps to
-# "print" deliberately — producing a delivery image from a processed negative is, in the real
-# darkroom process this tool is modeled on, literally what printing is.
-VERB = {"invert": "Developing", "export": "Printing", "batch": "Developing"}
-VERB_PAST = {"invert": "Developed", "export": "Printed", "batch": "Developed"}
+# banners read consistently instead of each command inventing its own wording. `export` used to
+# be "Printing" too, back when no separate print step existed; now that `halide print` is the real
+# printing step (paper exposure + grade + paper curve), `export` is just a format conversion and
+# says so, so the two can't be confused.
+VERB = {"invert": "Developing", "export": "Exporting", "batch": "Developing", "print": "Printing"}
+VERB_PAST = {"invert": "Developed", "export": "Exported", "batch": "Developed", "print": "Printed"}
 
 # manual/auto/anchor/colorchecker — see core.types.CalibrationSource.
 SOURCE_COLOR = {
@@ -122,8 +124,42 @@ def dim(message: str) -> str:
 
 def rule(columns: int = 20) -> str:
     """A dim row of sprocket-hole ticks, used as a section divider that doubles as a light
-    filmstrip motif — e.g. framing `profile list` or a batch run's header/footer."""
-    return f"{Style.DIM}{(SPROCKET + ' ') * max(1, columns)}{Style.RESET}".rstrip()
+    filmstrip motif — e.g. framing `profile list` or a batch run's header/footer.
+
+    Sizing convention (the user's, keep to it): framing one or two lines of output, the rule is as
+    wide as the text so it neatly wraps it; framing longer output, it spans the whole terminal line
+    — a fixed-width rule over long output looks like it stops abruptly. Use framed() /
+    rule_fitting() / full_width_rule() rather than guessing a column count."""
+    # Strip the trailing space *inside* the style codes: stripping the whole string never removed
+    # it (the RESET code came after it), so every rule was one character wider than _rule_width().
+    ticks = ((SPROCKET + " ") * max(1, columns)).rstrip()
+    return f"{Style.DIM}{ticks}{Style.RESET}"
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def visible_width(text: str) -> int:
+    return len(_ANSI_ESCAPE.sub("", text))
+
+
+def rule_fitting(width: int) -> str:
+    """A rule as wide as `width` visible characters (one over for an even width, since the ticks
+    alternate with spaces) — for framing short output so the ticks neatly wrap the text."""
+    return rule(max(1, (width + 2) // 2))
+
+
+def full_width_rule() -> str:
+    """A rule spanning one whole terminal line — for framing long output, where a short rule would
+    stop abruptly partway across."""
+    return rule(max(1, (shutil.get_terminal_size((80, 24)).columns + 1) // 2))
+
+
+def framed(lines: list[str]) -> str:
+    """Sprocket-rule framing, following the house convention: output of one or two lines gets rules
+    sized to the text itself; anything longer gets rules spanning the whole terminal line."""
+    top = rule_fitting(max(map(visible_width, lines), default=1)) if len(lines) <= 2 else full_width_rule()
+    return "\n".join([top, *lines, top])
 
 
 def _rule_width(columns: int = 20) -> int:
@@ -150,7 +186,12 @@ def welcome_screen() -> str:
             "  New here? Start with:",
             "    halide calibrate --save-profile-as NAME   solve a calibration once",
             "    halide invert negative.tif positive.tif   develop a single scan",
+            "    halide check  in_dir/                     check a roll was scanned consistently",
             "    halide batch  in_dir/ out_dir/            develop a whole roll",
+            "",
+            "  Editing yourself? Develop flat, edit in darktable, then print:",
+            "    halide invert negative.tif flat.tif --output flat",
+            "    halide print  flat_edited.tif print.tif",
             "",
             "  Run `halide --help` for the full command list.",
         ]
