@@ -14,8 +14,8 @@ import time
 from halide.batch.orchestrator import BatchResult
 from halide.cli.console import SPROCKET, VERB, VERB_PAST, Style, human_time
 
-_BLOCK = "██"
-_HOLLOW = "░░"
+_FRAME = "███"  # three cells wide by one tall ≈ a 3:2 35mm frame at a terminal's ~1:2 glyph aspect
+_HOLLOW = "░░░"
 
 # Color states read as an actual developing process, brightest to darkest: pending frames look like
 # undeveloped film (a light, uniform orange base), an active frame pulses between two orange shades
@@ -40,88 +40,138 @@ _TERMINAL_STATES = ("done", "error", "cancelled")
 
 
 class GridProgressRenderer:
-    """A single row of frames — a window onto a longer strip of film — framed top and bottom by a
-    dense row of sprocket-hole ticks, redrawn in place as jobs start and complete. Real film frames
-    are in sequence, so the window shows jobs in true left-to-right order (no shuffling): jobs
-    `[window_start : window_start + window_width]`. Once every cell currently in the window is
-    terminal (done/error/cancelled) and more jobs remain, the window advances to the next slice,
-    via a short left-to-right reveal rather than an instant cut.
+    """The whole batch drawn at once as a contact sheet: the roll cut into strips of (up to) six
+    frames, each strip edged above and below by a row of sprocket holes, redrawn in place as jobs
+    start and complete. Frames stay in true job order, left-to-right then top-to-bottom, exactly as a
+    proofed roll reads. The last strip is only as long as the frames left over, like a real roll's
+    short end strip.
 
-    `_states` still tracks every job by its real index regardless of what's currently visible, so
-    `finish()`'s totals/elapsed/ETA are always accurate — windowing only changes what's drawn, not
-    what's tracked.
+    Nothing moves between strips — an earlier version showed one strip-sized window at a time and
+    wiped across to the next slice when it finished, which read as busy rather than as film. Here the
+    only motion is per-frame: an active frame pulses, a finished one briefly fades before settling
+    to near-black. The sheet itself develops in place.
 
-    Sprocket rows are sized from the row content's own *visible* width (computed analytically from
-    the window size and the fixed per-cell layout, not from `len()` of a string that may contain
-    invisible ANSI color codes) — this is what keeps them pixel-aligned with the content row at any
-    window size, unlike an earlier version that sized them from a separate `columns` count.
+    The layout is chosen once, at construction, from the terminal size, and then held fixed so every
+    redraw has the same height (the in-place redraw only clears the lines it writes, so a frame that
+    shrank would leave stale lines behind, and one taller than the screen corrupts the cursor-up
+    redraw entirely). In order of preference:
+      - "full": each strip gets its own top and bottom sprocket rows, with a blank gap between
+        strips — the actual contact-sheet look.
+      - "compact": adjacent strips share one sprocket row and there are no gaps.
+      - "scroll": compact, but only as many strips as fit are shown, starting from the first strip
+        with anything still undeveloped — so finished strips drop off the top as work proceeds —
+        with a dim count of the frames hidden above and below.
+    Strips shorten below six frames only when the terminal is too narrow for six.
 
-    Both the per-cell finishing fade and the window-to-window transition are synchronous (small
-    `time.sleep()` calls on whatever thread is calling `report()`/`mark_processing()` — there's no
-    background thread here, deliberately, matching this renderer's existing callback-driven design),
-    so they add a small fixed delay — roughly ~100ms per completed job, ~300-400ms per window
-    transition — to when the caller (halide.batch.orchestrator's job-dispatch loop) can submit the
-    next job. For this tool's real workload (several seconds per full-resolution frame), that's
-    proportionally negligible; it would matter for a batch of very fast/tiny jobs, which isn't this
-    tool's use case.
+    `_states` tracks every job by its real index regardless of what's visible, so the status line
+    and `finish()` totals are always accurate.
 
-    The window transition reveals the new window cell-by-cell (a wipe) rather than crossfading the
-    row character-by-character: each cell's rendered text already contains ANSI color codes, and a
-    literal character-level slide (like halide.cli.console.slide_strings, used safely elsewhere for
-    plain uncolored text) would risk slicing through an escape sequence mid-code, corrupting the
-    terminal's color state. A whole-cell reveal sidesteps that entirely and arguably reads better
-    anyway — a real film frame doesn't partially exist mid-transition.
+    Sprocket rows are sized from the strip's *visible* width (computed from the per-cell layout, not
+    from `len()` of a string containing invisible ANSI color codes), which keeps them aligned with
+    the frame row. Each redraw builds the whole frame as one string and derives the next cursor-up
+    distance from that string's own line count — hand-maintained line counting drifted in an
+    earlier version.
 
-    Each redraw rebuilds the whole frame as one string first and derives how far to move the cursor
-    up for the *next* redraw from that string's own line count, rather than maintaining a separate
-    expected-line-count calculation that has to be kept in exact sync by hand — that drift was a
-    real bug in an earlier version of this renderer.
+    The per-frame finishing fade is a small synchronous `time.sleep()` (~80ms per completed job) on
+    whatever thread calls `report()` — no background thread, deliberately — which is negligible
+    against several seconds per full-resolution frame.
     """
 
-    _CELL_VISIBLE_WIDTH = 5  # " XX │" per cell, visible width only (excludes ANSI color codes)
+    _CELL_VISIBLE_WIDTH = 6  # " ███ │" per cell, visible width only (excludes ANSI color codes)
+    _MAX_STRIP_LENGTH = 6  # real 35mm negatives are cut and sleeved in strips of six
+    _INDENT = "    "
 
-    def __init__(self, total: int, verb: str = "invert"):
+    def __init__(self, total: int, verb: str = "invert", terminal_size: tuple[int, int] | None = None):
         self.total = total
         self.verb = verb
         self.completed = 0
         self.failures: list[tuple[str, str]] = []  # (filename, error message)
         self._states = ["pending"] * total
-        self.window_start = 0
-        self.window_width = self._compute_window_width(total)
         self._start_time: float | None = None
         self._last_frame_lines = 0
         self._tick = 0
 
-    @classmethod
-    def _compute_window_width(cls, remaining: int) -> int:
-        # A window wide enough to feel like a strip, narrow enough to read at a glance, but never
-        # wider than what the terminal can actually show pixel-aligned, and never wider than the
-        # number of jobs actually left to display.
-        columns, _ = shutil.get_terminal_size(fallback=(80, 24))
-        cells_that_fit = max(1, (columns - 8) // cls._CELL_VISIBLE_WIDTH)
-        return max(1, min(7, cells_that_fit, max(remaining, 1)))
+        columns, rows = terminal_size or shutil.get_terminal_size(fallback=(80, 24))
+        self._columns = columns
+        self.strip_length = max(1, min(self._MAX_STRIP_LENGTH, (columns - 8) // self._CELL_VISIBLE_WIDTH))
+        self._strips = [
+            range(start, min(start + self.strip_length, total)) for start in range(0, total, self.strip_length)
+        ] or [range(0)]
+        self.layout, self.visible_strips = self._choose_layout(len(self._strips), max_lines=rows - 2)
 
-    def _window_jobs(self) -> range:
-        w = min(self.window_width, self.total - self.window_start)
-        return range(self.window_start, self.window_start + w)
+    @staticmethod
+    def _choose_layout(n_strips: int, max_lines: int) -> tuple[str, int]:
+        # Line counts include the blank line + status line under the sheet. `max_lines` already
+        # leaves room for the header line above the sheet and the cursor's own line below it.
+        if 4 * n_strips + 1 <= max_lines:
+            return "full", n_strips
+        if 2 * n_strips + 3 <= max_lines:
+            return "compact", n_strips
+        return "scroll", max(1, min(n_strips, (max_lines - 5) // 2))
+
+    def _first_visible_strip(self) -> int:
+        if self.layout != "scroll":
+            return 0
+        first_undeveloped = next(
+            (
+                i
+                for i, strip in enumerate(self._strips)
+                if any(self._states[j] not in _TERMINAL_STATES for j in strip)
+            ),
+            len(self._strips),
+        )
+        return max(0, min(first_undeveloped, len(self._strips) - self.visible_strips))
 
     def _cell_glyph(self, job_index: int) -> str:
         state = self._states[job_index]
         if state == "processing":
-            return f"{_PROCESSING_COLORS[self._tick % 2]}{_BLOCK}{Style.RESET}"
-        glyph = _HOLLOW if state == "cancelled" else _BLOCK
+            return f"{_PROCESSING_COLORS[self._tick % 2]}{_FRAME}{Style.RESET}"
+        glyph = _HOLLOW if state == "cancelled" else _FRAME
         return f"{_STATE_COLOR[state]}{glyph}{Style.RESET}"
 
-    def _window_cells(self) -> list[str]:
-        return [self._cell_glyph(j) for j in self._window_jobs()]
+    def _content_row(self, strip: range) -> str:
+        return "│" + "│".join(f" {self._cell_glyph(j)} " for j in strip) + "│"
+
+    def _visible_width(self, strip: range) -> int:
+        return 1 + len(strip) * self._CELL_VISIBLE_WIDTH
 
     @staticmethod
-    def _content_row(cells: list[str]) -> str:
-        return "│" + "│".join(f" {c} " for c in cells) + "│"
-
-    def _sprocket_row(self, visible_width: int) -> str:
+    def _sprocket_row(visible_width: int) -> str:
         pattern = (SPROCKET + " ") * (visible_width // 2 + 1)
         return f"{Style.DIM}{pattern[:visible_width]}{Style.RESET}"
+
+    def _sheet_lines(self) -> list[str]:
+        first = self._first_visible_strip()
+        strips = self._strips[first : first + self.visible_strips]
+        lines: list[str] = []
+        if self.layout == "full":
+            for i, strip in enumerate(strips):
+                sprocket = self._sprocket_row(self._visible_width(strip))
+                lines += ([""] if i else []) + [sprocket, self._content_row(strip), sprocket]
+            return lines
+
+        # Compact/scroll: one sprocket row between neighbours, as wide as the wider of the two (only
+        # ever the short final strip differs).
+        widths = [self._visible_width(strip) for strip in strips]
+        lines.append(self._sprocket_row(widths[0]))
+        for i, strip in enumerate(strips):
+            lines.append(self._content_row(strip))
+            below = max(widths[i], widths[i + 1]) if i + 1 < len(strips) else widths[i]
+            lines.append(self._sprocket_row(below))
+        if self.layout == "scroll":
+            above = strips[0].start if strips else 0
+            below = self.total - (strips[-1].stop if strips else 0)
+            lines.insert(0, self._hidden_note(above, "above"))
+            lines.append(self._hidden_note(below, "below"))
+        return lines
+
+    def _hidden_note(self, count: int, where: str) -> str:
+        if not count:
+            return ""
+        text = f"{SPROCKET} {count} frames {where}"
+        if len(self._INDENT) + len(text) >= self._columns:
+            text = f"{SPROCKET} {count} {where}"
+        return f"{Style.DIM}{text}{Style.RESET}"
 
     def _status_text(self) -> str:
         verb_past = VERB_PAST.get(self.verb, "Processed")
@@ -138,11 +188,16 @@ class GridProgressRenderer:
                 text += f" · {human_time(elapsed)} elapsed"
         return text
 
-    def _frame_from_cells(self, cells: list[str]) -> str:
-        content = self._content_row(cells)
-        visible_width = 1 + len(cells) * self._CELL_VISIBLE_WIDTH
-        sprocket = self._sprocket_row(visible_width)
-        lines = [f"    {sprocket}", f"    {content}", f"    {sprocket}", "", f"    [ {self._status_text()} ]"]
+    def _fit_status(self, text: str) -> str:
+        # A wrapped line takes two terminal rows but counts as one for the next redraw's cursor-up,
+        # which strands stale rows above the sheet — so the status line (the only one whose length
+        # isn't bounded by the layout) is trimmed to fit rather than allowed to wrap.
+        room = self._columns - 1 - len(self._INDENT) - len("[  ]")
+        return text if len(text) <= room else text[: max(0, room - 1)] + "…"
+
+    def _frame(self) -> str:
+        lines = [f"{self._INDENT}{line}" if line else "" for line in self._sheet_lines()]
+        lines += ["", f"{self._INDENT}[ {self._fit_status(self._status_text())} ]"]
         return "\n".join(lines) + "\n"
 
     def _draw(self, frame: str) -> None:
@@ -156,23 +211,15 @@ class GridProgressRenderer:
         self._start_time = time.monotonic()
         verb = VERB.get(self.verb, "Processing")
         print(f"{Style.BOLD}{verb} {self.total} frame(s)...{Style.RESET}")
-        self._redraw()  # draw the initial all-pending window immediately, not on the first report()
+        self._redraw()  # draw the initial all-pending sheet immediately, not on the first report()
 
     def _redraw(self) -> None:
         self._tick += 1
-        self._draw(self._frame_from_cells(self._window_cells()))
+        self._draw(self._frame())
 
     def mark_processing(self, index: int) -> None:
         self._states[index] = "processing"
         self._redraw()
-
-    def _slide_to_new_window(self, old_cells: list[str], new_cells: list[str]) -> None:
-        if len(old_cells) != len(new_cells):
-            self._redraw()  # window width changed between windows (e.g. a resize) — just cut
-            return
-        for revealed in range(1, len(new_cells) + 1):
-            self._draw(self._frame_from_cells(new_cells[:revealed] + old_cells[revealed:]))
-            time.sleep(0.06)
 
     def report(self, index: int, result: BatchResult) -> None:
         if result.error:
@@ -186,21 +233,10 @@ class GridProgressRenderer:
         self.completed += 1
         self._redraw()
 
-        job_indices = list(self._window_jobs())
-        if job_indices and all(self._states[j] in _TERMINAL_STATES for j in job_indices):
-            next_start = job_indices[-1] + 1
-            if next_start < self.total:
-                old_cells = self._window_cells()
-                self.window_start = next_start
-                self.window_width = self._compute_window_width(self.total - next_start)
-                new_cells = self._window_cells()
-                self._slide_to_new_window(old_cells, new_cells)
 
     def cancel(self, indices: list[int]) -> None:
         """Mark jobs that never got a result (not started, or in flight when Ctrl+C landed) as
-        cancelled and redraw one final time — called instead of report() for those indices. Indices
-        outside the currently-visible window are also marked (harmless — they just aren't drawn),
-        so callers don't need to know about windowing at all."""
+        cancelled and redraw one final time — called instead of report() for those indices."""
         for i in indices:
             self._states[i] = "cancelled"
         self._redraw()
