@@ -14,6 +14,8 @@ import colour
 import numpy as np
 from PIL import Image, ImageCms
 
+from halide.banding import map_in_bands
+
 _SRGB_ICC_BYTES = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
 
 
@@ -38,7 +40,10 @@ def to_srgb_8bit(acescg_image: np.ndarray) -> np.ndarray:
 def write_delivery_image(path: str | Path, acescg_image: np.ndarray, quality: int = 95) -> None:
     """Write a PNG or JPEG (chosen by `path`'s extension) with an embedded sRGB ICC profile."""
     path = Path(path)
-    srgb_8bit = to_srgb_8bit(acescg_image)
+    # Band by band into one 8-bit buffer (a quarter of the float frame): colour-science converts in
+    # float64 internally, and doing the whole frame at once held several float64 copies of it — the
+    # single heaviest step halide had (~2.6 GiB on a real scan). Per-pixel, so bit-identical.
+    srgb_8bit = map_in_bands(acescg_image, to_srgb_8bit, out=np.empty(acescg_image.shape, dtype=np.uint8))
     image = Image.fromarray(srgb_8bit, mode="RGB")
 
     suffix = path.suffix.lower()
