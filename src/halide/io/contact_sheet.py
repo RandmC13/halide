@@ -1,22 +1,26 @@
-"""High-resolution contact sheets: a roll's frames laid out as strips of film on a sheet of paper,
-for comparing the results of different settings at a glance — `halide contact` (from an existing
-folder of processed output) and `halide batch --contact-sheet` (a preview that never writes the
-full-size TIFFs at all).
+"""High-resolution contact sheets: a roll's frames laid out as a real contact print of the roll
+looks, for comparing the results of different settings at a glance — `halide contact` (from an
+existing folder of processed output), `halide batch --contact-sheet` (a preview that never writes
+the full-size TIFFs at all), and the calibration picker's proof window (gui/proof_window.py).
 
 Thumbnails are reduced in *linear* light (block averaging) before being encoded to sRGB, so fine
 detail averages the way light does rather than darkening, as averaging gamma-encoded values would.
 The sheet is sRGB with the profile embedded, the same delivery encoding as `halide export`.
 
-Layout mirrors the terminal progress display (batch/progress.py): strips of up to six frames in job
-order, each edged with sprocket holes, the last strip only as long as the frames left over. Each
-frame's name — and, for halide's own output, the printing decision it records (grade, exposure,
-scan gain) — is printed in the rebate below it, like a film's edge printing, so two sheets made with
-different settings can be compared frame by frame.
+The look follows a real printed contact sheet (the user's own reference, a Portra 400 roll): black
+wherever the film is, frames butted in strips of up to six in job order (the last strip only as
+long as the frames left over), and the film's orange edge printing - frame numbers and the film
+stock above each frame, numbers and edge-code bars below. Under each frame a small dim line gives
+its file name and, for halide's own output, the printing decision it records (grade, exposure, scan
+gain), so two sheets made with different settings can be compared frame by frame. The film stock
+comes from the profile (recorded in each output's provenance); unknown, the edge reads
+"INVERTED BY HALIDE".
 """
 
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,11 +34,10 @@ FRAME_ASPECT = 3 / 2  # a 35mm frame's cell; other shapes are fitted inside it
 DEFAULT_FRAME_WIDTH = 900  # px per frame cell — a 6-across sheet is ~6000 px wide
 DEFAULT_COLUMNS = 6
 
-_PAPER = (239, 236, 230)
-_INK = (42, 42, 42)
-_REBATE = (12, 12, 12)
-_EDGE_PRINT = (224, 160, 96)  # the warm orange of a film's edge printing
-_CAPTION = (150, 150, 150)
+_SHEET = (14, 13, 12)  # film prints black on a contact sheet: rebate, frame lines, the lot
+_TITLE = (225, 215, 200)
+_EDGE_PRINT = (224, 160, 96)  # the warm orange of a film's edge printing (theme.EDGE_PRINT in the GUI)
+_CAPTION = (120, 110, 98)
 _FAILED = (70, 24, 24)
 _THUMBNAIL_KEY = "halide"
 _SHEET_MARKER = "halide contact sheet"
@@ -45,6 +48,7 @@ class Tile:
     name: str
     image: np.ndarray | None  # uint8 sRGB, HxWx3; None for a frame that failed
     caption: str = ""
+    number: int | None = None  # frame number on the edge print; None = its position on the sheet
 
 
 def downsample_linear(image: np.ndarray, target_long_edge: int) -> np.ndarray:
@@ -104,8 +108,113 @@ def load_thumbnail(path: str | Path) -> tuple[np.ndarray, dict | None]:
         return np.asarray(image.convert("RGB")), json.loads(record) if record else None
 
 
-def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+_EDGE_FONT_FILES = ("DejaVuSans-Bold.ttf", "DejaVuSansCondensed-Bold.ttf", "LiberationSans-Bold.ttf")
+_TEXT_FONT_FILES = ("DejaVuSans.ttf", "LiberationSans-Regular.ttf")
+
+
+def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """A system font if there is one (bold for the edge print, like film's own lettering), else
+    Pillow's built-in font, which has no bold but draws everything this sheet needs."""
+    for name in _EDGE_FONT_FILES if bold else _TEXT_FONT_FILES:
+        try:
+            return ImageFont.truetype(name, max(8, size))
+        except OSError:
+            continue
     return ImageFont.load_default(size=max(8, size))
+
+
+def _barcode(draw: ImageDraw.ImageDraw, x0: float, x1: float, y: float, height: float, seed: int, fill) -> None:
+    """Edge-code-style bars between x0 and x1 - decoration in the manner of film's DX edge
+    barcode, fixed per frame number (the same frame always draws the same bars)."""
+    rng = random.Random(seed)
+    unit = max(1.0, (x1 - x0) / 110)
+    x = x0
+    while x < x1:
+        width = unit * rng.choice((1, 1, 2, 3))
+        tall = rng.random() < 0.6
+        top = y if tall else y + height * 0.45
+        right = min(x + width, x1) - 1
+        if right < x:  # no room left for even one pixel (tiny frames)
+            break
+        draw.rectangle([x, top, right, y + height], fill=fill)
+        x += width + unit * rng.choice((1, 1, 2))
+
+
+@dataclass(frozen=True)
+class SheetLayout:
+    """Where everything sits on a sheet of `count` frames - the one place the geometry lives, so
+    the renderer and anything that needs to know where a frame landed (the proof window's hover
+    labels) can't disagree."""
+
+    count: int
+    frame_width: int = DEFAULT_FRAME_WIDTH
+    columns: int = DEFAULT_COLUMNS
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "columns", max(1, self.columns))
+
+    @property
+    def frame_w(self) -> int:
+        return self.frame_width
+
+    @property
+    def frame_h(self) -> int:
+        return round(self.frame_width / FRAME_ASPECT)
+
+    @property
+    def gap(self) -> int:  # frame line between frames on the strip
+        return round(self.frame_width * 0.03)
+
+    @property
+    def top_edge(self) -> int:  # edge print above the frames
+        return round(self.frame_h * 0.11)
+
+    @property
+    def bottom_edge(self) -> int:  # edge print and edge code below
+        return round(self.frame_h * 0.12)
+
+    @property
+    def caption_h(self) -> int:
+        return round(self.frame_h * 0.08)
+
+    @property
+    def strip_h(self) -> int:
+        return self.top_edge + self.frame_h + self.bottom_edge + self.caption_h
+
+    @property
+    def strip_gap(self) -> int:
+        return round(self.frame_h * 0.09)
+
+    @property
+    def margin(self) -> int:
+        return round(self.frame_width * 0.12)
+
+    @property
+    def header_h(self) -> int:
+        return round(self.frame_h * 0.32)
+
+    @property
+    def size(self) -> tuple[int, int]:
+        widest = max(1, min(self.columns, self.count))
+        rows = max(1, -(-self.count // self.columns))
+        width = 2 * self.margin + widest * self.frame_w + (widest - 1) * self.gap
+        height = 2 * self.margin + self.header_h + rows * self.strip_h + (rows - 1) * self.strip_gap
+        return width, height
+
+    def frame_box(self, index: int) -> tuple[int, int, int, int]:
+        """(x, y, width, height) of frame `index`'s cell on the sheet."""
+        row, column = divmod(index, self.columns)
+        x = self.margin + column * (self.frame_w + self.gap)
+        y = self.margin + self.header_h + row * (self.strip_h + self.strip_gap) + self.top_edge
+        return x, y, self.frame_w, self.frame_h
+
+    def frame_at(self, x: float, y: float) -> int | None:
+        """The frame whose cell (with its edge print and caption) contains (x, y), if any."""
+        for index in range(self.count):
+            fx, fy, fw, fh = self.frame_box(index)
+            if fx <= x < fx + fw and fy - self.top_edge <= y < fy + fh + self.bottom_edge + self.caption_h:
+                return index
+        return None
 
 
 def render_sheet(
@@ -114,64 +223,68 @@ def render_sheet(
     subtitle: str = "",
     frame_width: int = DEFAULT_FRAME_WIDTH,
     columns: int = DEFAULT_COLUMNS,
+    film_stock: str | None = None,
 ) -> Image.Image:
-    W = frame_width
-    H = round(W / FRAME_ASPECT)
-    gap = round(W * 0.05)  # rebate between frames in a strip
-    rebate = round(H * 0.2)  # above and below the frames, holding the sprocket holes (and edge print below)
-    strip_h = H + 2 * rebate
-    margin = round(W * 0.2)
-    strip_gap = round(H * 0.14)
-    columns = max(1, columns)
-    header_h = round(H * 0.34)
-
-    widest = max(1, min(columns, len(tiles)))  # a sheet of 2 frames shouldn't be 6 frames wide
-    strip_w_full = widest * W + (widest + 1) * gap
+    """The sheet as a real contact print looks: black wherever the film is (its rebate prints black
+    on paper), frames butted in strips, the film's orange edge printing above and below each frame -
+    frame number and film stock on top ("INVERTED BY HALIDE" when the stock isn't known), the number
+    with its half-frame "A" number and edge-code bars below - and, under that, a small dim line with
+    the frame's file name and the printing decision halide recorded, so sheets from different
+    settings stay self-describing."""
+    layout = SheetLayout(len(tiles), frame_width, columns)
+    W, H, margin, header_h = layout.frame_w, layout.frame_h, layout.margin, layout.header_h
+    top_edge, bottom_edge, caption_h = layout.top_edge, layout.bottom_edge, layout.caption_h
+    columns = layout.columns
     rows = [tiles[i:i + columns] for i in range(0, len(tiles), columns)] or [[]]
-    sheet_w = strip_w_full + 2 * margin
-    sheet_h = margin + header_h + len(rows) * strip_h + (len(rows) - 1) * strip_gap + margin
-    sheet = Image.new("RGB", (sheet_w, sheet_h), _PAPER)
+    sheet = Image.new("RGB", layout.size, _SHEET)
     draw = ImageDraw.Draw(sheet)
 
-    title_font, sub_font = _font(round(H * 0.11)), _font(round(H * 0.055))
-    draw.text((margin, margin), title, fill=_INK, font=title_font)
+    draw.text((margin, margin), title, fill=_TITLE, font=_font(round(H * 0.1)))
     if subtitle:
-        draw.text((margin, margin + round(H * 0.15)), subtitle, fill=_INK, font=sub_font)
+        draw.text((margin, margin + round(H * 0.14)), subtitle, fill=_CAPTION, font=_font(round(H * 0.05)))
 
-    edge_font = _font(round(H * 0.055))
-    hole_w, hole_h = round(W * 0.045), round(rebate * 0.34)
-    holes_per_frame = 8  # a 35mm frame has eight perforations each side
+    edge_font = _font(round(H * 0.046), bold=True)
+    caption_font = _font(round(H * 0.045))
+    stock = (film_stock or "Inverted by halide").upper()
     for r, row in enumerate(rows):
-        x0 = margin
-        y0 = margin + header_h + r * (strip_h + strip_gap)
-        strip_w = len(row) * W + (len(row) + 1) * gap
-        draw.rectangle([x0, y0, x0 + strip_w - 1, y0 + strip_h - 1], fill=_REBATE)
-
-        pitch = (W + gap) / holes_per_frame
-        n_holes = int((strip_w - gap) // pitch)
-        for k in range(n_holes):
-            hx = x0 + gap / 2 + k * pitch + (pitch - hole_w) / 2
-            for hy in (y0 + round(rebate * 0.18), y0 + strip_h - round(rebate * 0.18) - hole_h):
-                draw.rounded_rectangle([hx, hy, hx + hole_w, hy + hole_h], radius=max(1, hole_h // 4), fill=_PAPER)
-
+        frames_y = layout.frame_box(r * columns)[1]
+        y0 = frames_y - top_edge
         for c, tile in enumerate(row):
-            cx = x0 + gap + c * (W + gap)
-            cy = y0 + rebate
+            number = tile.number if tile.number is not None else r * columns + c + 1
+            x = layout.frame_box(r * columns + c)[0]
             if tile.image is None:
-                draw.rectangle([cx, cy, cx + W - 1, cy + H - 1], fill=_FAILED)
-                draw.text((cx + W // 2, cy + H // 2), "failed", fill=_EDGE_PRINT, font=title_font, anchor="mm")
+                draw.rectangle([x, frames_y, x + W - 1, frames_y + H - 1], fill=_FAILED)
+                draw.text((x + W // 2, frames_y + H // 2), "failed", fill=_EDGE_PRINT, font=edge_font, anchor="mm")
             else:
                 frame = Image.fromarray(tile.image)
                 scale = min(W / frame.width, H / frame.height)
                 size = (max(1, round(frame.width * scale)), max(1, round(frame.height * scale)))
                 if size != frame.size:
                     frame = frame.resize(size, Image.LANCZOS)
-                sheet.paste(frame, (cx + (W - size[0]) // 2, cy + (H - size[1]) // 2))
-            text_y = cy + H + round(rebate * 0.12)
-            draw.text((cx, text_y), tile.name, fill=_EDGE_PRINT, font=edge_font)
-            if tile.caption:
-                name_w = draw.textlength(tile.name + "   ", font=edge_font)
-                draw.text((cx + name_w, text_y), tile.caption, fill=_CAPTION, font=edge_font)
+                sheet.paste(frame, (x + (W - size[0]) // 2, frames_y + (H - size[1]) // 2))
+
+            # top edge: frame number, then the stock
+            top_mid = y0 + top_edge // 2
+            draw.text((x + round(W * 0.03), top_mid), str(number), fill=_EDGE_PRINT, font=edge_font, anchor="lm")
+            draw.text((x + round(W * 0.30), top_mid), stock, fill=_EDGE_PRINT, font=edge_font, anchor="lm")
+
+            # bottom edge: number + code, half-frame number + code
+            code_y = frames_y + H + round(bottom_edge * 0.3)
+            code_h = round(bottom_edge * 0.38)
+            code_mid = code_y + code_h // 2
+            for label, start, end, seed in (
+                (str(number), 0.03, 0.46, number * 2),
+                (f"{number}A", 0.52, 0.97, number * 2 + 1),
+            ):
+                lx = x + round(W * start)
+                draw.text((lx, code_mid), label, fill=_EDGE_PRINT, font=edge_font, anchor="lm")
+                text_end = lx + draw.textlength(label, font=edge_font) + W * 0.015
+                _barcode(draw, text_end, x + W * end, code_y, code_h, seed, _EDGE_PRINT)
+
+            # the frame's file name and recorded printing decision, dim, below the film
+            caption = f"{tile.name}   {tile.caption}" if tile.caption else tile.name
+            draw.text((x + round(W * 0.03), frames_y + H + bottom_edge + caption_h // 2), caption,
+                      fill=_CAPTION, font=caption_font, anchor="lm")
     return sheet
 
 

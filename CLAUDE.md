@@ -54,10 +54,12 @@ halide contact <processed_dir> <sheet.jpg>     # high-res contact sheet of TIFF 
 halide batch <in_dir> --contact-sheet s.jpg    # preview: sheet only, no full-size TIFFs kept (add out_dir to keep them)
   (invert/batch also take --match-scan-exposure [--scan-reference FRAME])
 halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sRGB PNG/JPEG
-halide profile list|show|rename|delete
-halide calibrate [negative.tif]                # Dear PyGui: anchor-frame picker + live preview;
-                                                # auto-loads the given TIFF if a path is passed
+halide profile list|show|edit|rename|delete  # edit: film stock/process/scanner/notes
+halide calibrate [roll_dir | scans… | --profile NAME]  # Qt picker: neutral points on any frames of a
+                                                # roll, fitted together; --profile reopens a saved one
 ```
+With no calibration source given in a terminal, `invert`/`batch` offer the saved profiles (newest
+first), picking (invert) or the automatic estimates, before starting.
 Input TIFFs must be linear (not display/gamma-encoded) with an embedded ICC profile — the tool
 validates this itself and rejects anything else with a specific error (see `io/icc.py`). The
 user's normal workflow produces these via RawTherapee/darktable, exporting linear Rec.2020.
@@ -74,13 +76,16 @@ src/halide/
                # the embedded ICC profile), raster.py (ACEScg -> sRGB delivery export),
                # lut.py (.cube reader, used by tone_render.py at runtime AND by golden tests).
   calibration/ # auto.py (statistical fallback calibration), profile_store.py (named,
-               # reusable DensityProfile JSON files under ~/.config/halide/profiles/).
+               # reusable DensityProfile JSON files under ~/.config/halide/profiles/), anchors.py
+               # (the picker's neutral-point model: scan-gain normalisation, agreement, gates).
   batch/       # orchestrator.py (ProcessPoolExecutor over processing.py, one bad frame doesn't
                # abort the batch), progress.py (terminal rendering only, no math).
   cli/         # main.py + commands/*.py (argparse), _calibration_args.py (shared flag
                # definitions/resolution used by both invert and batch).
-  gui/         # PySide6/Qt app. sampling.py is pure/tested (no Qt import); app.py (entry point),
-               # main_window.py (the picker), preview_popup.py, theme.py hold the widget code.
+  gui/         # PySide6/Qt app. Pure, tested, no Qt: sampling.py (picking math), roll.py (the
+               # session model), render.py (negative/positive display). Widgets: main_window.py
+               # (the picker), filmstrip.py, step_wedge.py, point_list.py, drawers.py,
+               # proof_window.py (contact sheet window), loaders.py (background loading), theme.py.
   processing.py # The glue layer: read -> validate ICC -> convert to working space -> calibrate
                # -> run_pipeline -> write. Both the single-file CLI command and the batch worker
                # call this same function rather than duplicating the chain.
@@ -97,10 +102,17 @@ converts into ACEScg on read, output is always written back tagged with a real A
 ACEScg definition in `tests/unit/test_icc.py` — not hand-authored).
 
 Calibration is three-tier, all producing the same `DensityProfile`: ColorChecker (not yet built),
-anchor-frame manual picking (`gui/main_window.py`, or `--rm/--bm/--rs/--bs` on the CLI), and
+manual picking of neutral points - any number, on any frames of a roll, fitted by least squares
+(`halide calibrate`, `gui/main_window.py`; or `--rm/--bm/--rs/--bs` on the CLI) - and
 statistical auto-detection (`calibration/auto.py`, `--auto-density`/`--auto-density-roll`).
 Profiles are meant to be solved once per film-stock/process/scanner combination and reused
 (`--save-profile-as`, `halide profile`), not re-solved per image.
+
+## Write-ups
+
+Plans, specs and investigations live in `docs/` (`plans/`, `specs/`, `investigations/` - see
+`docs/README.md`), not the repo root, which the user asked to keep uncluttered. This file stays at
+the root. Put new write-ups in the matching folder and add a line to `docs/README.md`.
 
 ## Decisions and why (don't re-litigate these without new evidence)
 
@@ -163,7 +175,7 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   (the export isn't linear). Found on the same roll: the camera was metering each frame (1/25-1/60)
   and "as shot" white balance was the camera's auto WB (14 distinct values, R ±5%, B ±7%); one
   frame had shadows & highlights active. Not yet validated against a real two-exposure scan of one
-  frame (see TONE_OUTPUT_PLAN.md follow-ups).
+  frame (see docs/plans/tone-output.md follow-ups).
 - **Contact sheets are a feature, not just a test aid** (`io/contact_sheet.py`, `halide contact`,
   `halide batch --contact-sheet`) — asked for after proof sheets kept proving the most useful way to
   compare settings across a real roll. Decisions: (1) the batch *preview* develops every frame at
@@ -177,7 +189,15 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   marked (JPEG comment / PNG text) and skipped by `halide contact`: found via testing, a sheet
   written into the folder it proofs became an extra "frame" on the next sheet. (5) Captions use a
   plain "x", not "×" — Pillow's built-in font has no multiplication sign (it drew an empty box).
-  Layout mirrors the terminal progress display: strips of six, sprocket holes, short last strip.
+  (6) The look is a real contact print, after the user's own printed Portra 400 sheet (asked for
+  explicitly): black wherever the film is (rebate and frame lines print black; no sprocket holes
+  show), frames butted in neat strips of six, orange edge print - frame number and film stock above
+  ("INVERTED BY HALIDE" when unknown), number + "A" half-frame number + edge-code bars below - then a
+  dim line with the file name and printing decision. The stock is the profile's `film_stock`,
+  recorded in each output's provenance and printed only when every frame agrees (a mixed folder
+  gets the generic edge print, not a wrong stock). DejaVu Sans Bold for the edge print, Pillow's
+  built-in font as a fallback. One renderer (`render_sheet`, geometry in `SheetLayout`) for `halide
+  contact`, `batch --contact-sheet` and the picker's contact sheet window.
 - **`halide print` exists for the flat -> darktable -> print round trip, and range-setting belongs
   to it, not to the editor.** The contract: edits between `--output flat` and `print` stay linear
   and scene-referred (crop, spot removal, lens, denoise, global exposure; no filmic/sigmoid, curves,
@@ -381,85 +401,124 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
     shadow estimate is structurally more trustworthy than its highlight estimate (shadow-end
     convergence means almost any selected shadow candidate lands close to the true film base
     anyway). For a photo whose best neutral references aren't at the tonal extremes — which is
-    common, not an edge case — anchor-frame manual calibration (`gui/main_window.py`, and its
-    auto-detected-candidate overlay is now a meaningfully better, though still imperfect, sanity
-    check) or a ColorChecker are the reliable options, not further heuristic tuning of the auto tier.
-- **The Calibrate picker's point-picking labels state explicitly which way brightness is
-  inverted, not just "dark"/"bright."** The screen displays the RAW, uninverted negative
-  (`gui/sampling.py::preview_stretch`) — on a raw negative, brightness is backwards from the real
-  scene: a real highlight (bright in life) is a dense, DARK area on the raw negative, and a real
-  shadow (dark in life) is a thin, LIGHT area. The old labels ("Shadow (dark neutral)" / "Highlight
-  (bright neutral)") didn't say which brightness they meant, and a user hunting for a dark-looking
-  spot on the displayed raw negative would click a real highlight instead — a plausible source of
-  genuinely wrong calibration, not just confusing wording. Fixed by stating both framings explicitly
-  in the radio labels and instructional text. Don't revert to shorter/vaguer labels for aesthetics.
-- **The Calibrate picker solves a preview profile automatically once both points are picked**,
-  shown on request via a Preview popup (`gui/preview_popup.py`) rather than requiring a profile name
-  + "Save" click before seeing anything. Saving to a named, reusable profile is a fully separate,
-  optional action — per the user's real use case: sometimes you just want to see how a pick looks,
-  not build a reusable profile. The main window also shows a hover magnifier (a small always-on-top
-  `QWidget` that follows the cursor, `gui/main_window.py::Magnifier`) and draws picked-point markers
-  directly in `ImageView.paintEvent`, plus a collapsible "Details" section to visualize
-  `calibration/auto.py`'s own neutral-candidate selection (`_neutral_candidate_mask`) so a manual
-  pick can be cross-checked against the independent statistical method. Verified working via real
-  interactive testing (Xvfb + xdotool, see "Interactive GUI testing" below), not just code review.
-- **`halide invert --pick` opens a standalone calibration picker inline for a single, one-shot
-  run** (`gui/quick_pick.py::run_quick_pick`, wired into `cli/_calibration_args.py::
-  resolve_density_profile` as a fourth mutually-exclusive calibration source alongside
-  `--profile`/manual/`--auto-density`). Addresses a real workflow gap: nothing connected a
-  first-time user to `halide calibrate`, and a user who just wanted to manually pick values for
-  one image had to go through the full profile-naming app. Reuses `gui/main_window.py::MainWindow`
-  as-is via its `is_pick_session=True` mode (hides the load controls since the path is already
-  known from the CLI arg, and relabels the primary button "Develop") — the only new code is the
-  blocking entry point itself, which runs a local `QEventLoop` instead of `QApplication.exec()` so
-  it can return the picked `(DensityProfile, ToneCurveParams | None)` (or `None` if the window was
-  closed without picking) to its caller instead of running until the process exits. This is new
-  territory for this codebase's GUI code (every other entry point runs the full event loop and
-  exits the process) — verified via real interactive testing, not just code review, including a
-  full real `halide invert --pick` run through to a written output file. Saving a named profile
-  (`--save-profile-as`) still works unmodified in combination with `--pick` — using a calibration
-  for this run and persisting it for later remain orthogonal, as everywhere else in this project.
+    common, not an edge case — manual calibration from neutral points the user vouches for
+    (`halide calibrate`; its Details drawer's auto-detected-candidate overlay is a meaningfully
+    better, though still imperfect, sanity check) or a ColorChecker are the reliable options, not further heuristic tuning of the auto tier.
+- **Manual calibration fits any number of user-picked neutral points, across any frames of a
+  roll** (`core/density.py::fit_density_balance`, `calibration/anchors.py`), not one shadow and one
+  highlight point. Why: the anchor-frame investigation (`docs/investigations/anchor-frame.md`)
+  found the dominant calibration error is whether the object
+  clicked is really neutral, not which frame it's on - on Roll 16 the user's two-point
+  Roll16-Profile1 (trike, IMG_0158) printed ~CC3 warm against a T-shirt and a cloud that agreed with
+  each other, and the Alhambra's "white" wall was cream. How it works and why:
+  - The fit is a least-squares straight line per channel, D_c = a_c + D_G / s_c (the same model
+    as `solve_density_balance`, which it reproduces to float precision for two points).
+  - Each point is normalised to the roll's reference scan exposure first (the multiply
+    `--match-scan-exposure` makes; the reference is saved as the profile's `scan` sidecar).
+    Roll 16 was digitized at 1/25-1/60, and without it mixed-exposure picks fit a wrong profile.
+  - Each point's agreement is judged against the fit through the *other* points (leave-one-out),
+    shown as a colour-printing filter value and direction, "CC 8 R" (Kodak CC = density x 100).
+    Against a fit that includes it, a bad point hides its own error (a point truly CC 3.9 off read
+    CC 2.6 while good points took the blame).
+  - No reading while the others span < 0.1 D (`MIN_DENSITY_SEPARATION`): an extrapolated line
+    accused the trike of "CC 8 M" when the other two points were 0.06 D apart.
+  - Bands: <= CC 5 calm, 5-10 amber, > 10 red. The "was that object really neutral?" hint fires
+    from amber, not red: on Roll 16 the known-suspect objects read amber (cream wall CC 7.9 R,
+    sunlit cloud edge CC 9.6 Y) while trusted whites stayed within CC 4.8. The user confirmed CC 5
+    felt right in use (it mostly fired on shadowed neutrals, plausibly tinted by what casts the
+    shadow).
+  - The hint names one point - the one whose removal leaves the others most consistent, not simply
+    the furthest off: with an outlier among them, a good point at the end of the density range read
+    worse than the outlier. One bad point makes the others read a few CC off in the opposite
+    direction; fix the worst first.
+  - Film base is never added automatically (user's choice: every neutral is one they vouch for;
+    crops have no rebate, so "the clearest pixels" isn't guaranteed to be base).
+  - Profiles record their picks and roll folder (`anchors`/`roll` sidecars) so `halide calibrate
+    --profile NAME` reopens them to add to; points keep their stored RGB (they count even if the
+    roll moved) and re-attach to a moved roll by file name.
+- **The picker's design was chosen by the user, decision by decision** (see the plan
+  `docs/plans/multipoint-picker.md`) - ask the same way before changing it. Landscape,
+  fixed-size window (~55% x 70% of the screen, 900x700 floor; at 62% height opening a drawer
+  squeezed everything), never scrolling except the point list:
+  - A sprocket-edged **filmstrip** of the roll across the top: previews load in the batch forkserver
+    pool (`gui/loaders.py`) and "develop" in; thumbnails follow the view switch; point counts under
+    frames.
+  - **Negative | Positive** switch above the image instead of a Preview popup. The positive is the
+    frame's own auto-density estimate (labelled "rough auto estimate - not your final output")
+    until two separated points exist, then the live fit through the real print stage. A greyscale
+    positive was rejected by the user ("every point will look neutral"). Picks always sample the
+    raw full-resolution negative.
+  - The caption under the image states which way brightness is reversed on the negative ("real
+    whites look DARK here, real shadows look LIGHT") - a user hunting for a dark-looking spot on a
+    raw negative clicks a real highlight. Don't soften it.
+  - Right panel: step-wedge coverage bar (roll's own density range, a tick per point - the variety
+    nudge; near-duplicate picks get a note, never refused); fixed-height scrolling point list
+    (number, frame, density, agreement, remove); Clear frame / Clear all under it (in the header
+    they clipped its title); "Build contact sheet…"; accordion drawers **Extra information** (film
+    stock/process/scanner/notes - renamed from "Roll details" as too close to "Details"), **Print**
+    (the old Fine-tune: exposure/grade sliders following the frame's fit until moved, flat preview,
+    "Back to fitted"), **Details** (expands into spare height - it was a cramped scroll box); one red
+    Save button (Develop in `--pick`).
+  - Clicking a marker selects it (Delete removes); clicking a row jumps to its frame and flashes the
+    marker once the frame has loaded.
+  - **Contact sheet window** (`gui/proof_window.py`): a draft at once from the previews, then every
+    frame at full resolution through batch's own `_worker` (identical to `batch --contact-sheet`),
+    swapped in as they finish; wheel zoom, drag pan, double-click fit, hover names the frame; marks
+    itself out of date when points/print change ("Rebuild contact sheet"); "Save contact sheet…"
+    once complete. Frames go through a temp folder that's always deleted; the sheet is only in
+    memory unless saved. Roll 16: draft ~1 s, full quality ~28 s.
+  - Closing any window stops its worker processes rather than waiting (concurrent.futures has no
+    public terminate, so the pool's private process table): `halide calibrate` otherwise sat ~7 s in
+    the terminal after its window closed.
+  - The auto estimate's "candidates unusually close in density" warning is silenced in the picker
+    only (`gui/roll.py::quiet_auto_estimate`) - it's CLI advice, and printed on every launch.
+- **`halide invert --pick` opens the same picker for one frame** (`gui/quick_pick.py::
+  run_quick_pick`, `MainWindow(is_pick_session=True)`: no filmstrip, roll loading or contact sheet;
+  the red button reads "Develop"). It runs a local `QEventLoop` so it can return the picked
+  `(DensityProfile, ToneCurveParams | None)` - or None if the window was closed - to its caller.
+  `--save-profile-as` still works with it.
 - **A saved profile can optionally carry an exposure/contrast override alongside its density
-  calibration** (`calibration/profile_store.py`'s `tone` sidecar in the profile JSON, written by
-  the Calibrate picker's Preview popup's opt-in "Fine-tune" controls). Deliberately kept as a
-  sidecar rather than a field on `DensityProfile` itself (`core/types.py` stays untouched) — density
-  calibration and tone-rendering choices are conceptually different things, and `ToneCurveParams`'s
-  own docstrings already explain why exposure defaults to per-image auto-computation rather than a
-  fixed value. Precedence in `cli/_calibration_args.py::resolve_tone_params`: an explicit CLI flag
-  wins, then a saved override, then the built-in default. Linear-output mode is deliberately
-  **never** part of this override — it stays a CLI-flag/popup-preview-only choice, since silently
-  changing a future run's output format based on a saved profile felt like the wrong kind of thing
-  for a profile to do by default.
+  calibration** (`calibration/profile_store.py`'s `tone` sidecar, written from the picker's Print
+  drawer). Deliberately a sidecar, not a field on `DensityProfile` (`core/types.py` stays
+  untouched) - density calibration and tone rendering are different things, and exposure defaults
+  to per-image fitting for good reasons (`ToneCurveParams`). Precedence in
+  `cli/_calibration_args.py::resolve_tone_params`: CLI flag, then saved override, then default.
+  Linear-output mode is **never** saved - silently changing a future run's output format from a
+  profile is the wrong kind of thing for a profile to do.
+- **Profiles carry free-text details** (`film_stock`, `process`, `scanner`, `notes`), editable with
+  `halide profile edit` or the picker's Extra information drawer; `film_stock` is what contact
+  sheets print on their edge. `update_profile`/`rename_profile` edit the raw JSON so every sidecar
+  (tone, scan, anchors, roll) survives - round-tripping through `DensityProfile` silently dropped
+  them, and a lost `scan` sidecar breaks `--match-scan-exposure`.
 - **The GUI moved from dearpygui to PySide6/Qt** (a full rewrite, not an incremental port) after the
   first dearpygui-based redesign still felt "thrown together" — its default auto-stacked widget flow
   made a reasonably-sized window need scrolling to see everything, which the user explicitly didn't
   want, and the two-tab structure (Calibrate/Preview) read as confusing rather than purposeful.
-  Qt's real floating windows (the Preview popup, save-name dialog), QSS theming, and hand-positioned
-  layout gave a genuinely small (fixed size, ~25% of screen, computed from
-  `QGuiApplication.primaryScreen()`), non-scrolling, purpose-built window instead. `gui/sampling.py`
-  (all the actual pixel-math/coordinate logic) needed zero changes across this rewrite — it was
-  already framework-independent. Note for anyone testing a fresh environment: this sandbox needed
-  several system libraries installed (`libegl1`, `libxcb-cursor0`, `libxkbcommon-x11-0`,
-  `libxcb-icccm4`, `libxcb-keysyms1`, `libxcb-shape0`, `libxcb-xkb1`) before Qt would even import —
-  a normal desktop Linux machine almost certainly already has these.
+  Qt's real floating windows, QSS theming and hand-positioned layout gave a fixed-size,
+  non-scrolling, purpose-built window. `gui/sampling.py` (the pixel-math/coordinate logic) needed
+  zero changes — it was already framework-independent. Note for anyone testing a fresh environment:
+  this sandbox needed several system libraries installed (`libegl1`, `libxcb-cursor0`,
+  `libxkbcommon-x11-0`, `libxcb-icccm4`, `libxcb-keysyms1`, `libxcb-shape0`, `libxcb-xkb1`) before
+  Qt would even import — a normal desktop Linux machine almost certainly already has these.
 - **Deferred, deliberately**: a skeuomorphic "enlarger controller" skin for the GUI's buttons (grey
   rounded body panels, chunky black secondary buttons, a large red circular primary button, a small
   red LED-style digit readout) modeled on a reference photo (`enlarger-controller.png`, repo root,
-  gitignored) of a real Durst enlarger timer. The current theme (`gui/theme.py`) only takes the
-  cheap, immediate step of reserving red for one primary button per window as a nod to this — the
-  full custom-painted-widget version needs its own separate plan.
-- **The "no calibration source" error names the actual missing step** instead of just listing
-  flags: it now says to run `halide calibrate --save-profile-as NAME` to produce a `--profile`
-  source, and (only on `invert`, where it's wired up) mentions `--pick` as the immediate one-shot
-  alternative. `batch`'s version of the same error deliberately doesn't mention `--pick` — see
-  below, it isn't implemented there yet.
-- **`--pick` is invert-only for now, not implemented on `batch`, deliberately.** `add_calibration_
-  arguments(parser, allow_pick=...)` defaults to `False`; only `invert_cmd.py` passes `True`. A
-  real `batch --pick` needs more than a straight port: unlike `invert`, `batch` has no single input
-  image to pre-load a picker with — a roll's worth of frames — so it will likely need a GUI
-  frame-picker (choose which image in the roll to calibrate against) before the existing
-  shadow/highlight picker makes sense to open at all. Don't wire up `--pick` on `batch` without
-  designing that piece first.
+  gitignored) of a real Durst enlarger timer. The current theme (`gui/theme.py`) only reserves red
+  for one primary button per window (agreement's "red" is a lighter, warmer status colour so it
+  doesn't compete) — the full custom-painted-widget version needs its own plan
+  (`docs/specs/enlarger-skin.md`).
+- **With no calibration source, a terminal run asks for one up front** (`cli/_calibration_args.py::
+  choose_calibration_source`): the saved profiles, newest first (so the one just made in `halide
+  calibrate` is on top), picking points (invert), or the automatic estimates - recorded on `args`
+  as if the flag had been passed. It must run before anything reads `args.profile`: the
+  scan-exposure reference comes from the profile, and invert decides whether the calibration came
+  from the frame itself by whether a profile was given - a profile chosen later would silently lose
+  both. Without a terminal it's an error naming the missing step (pick points in `halide calibrate
+  ROLL_DIR` and save a profile, or `--pick` on invert).
+- **`--pick` is invert-only, deliberately.** `add_calibration_arguments(parser, allow_pick=...)`
+  defaults to `False`; only `invert_cmd.py` passes `True`. The picker now has the roll/frame picker
+  that `batch --pick` would have needed (the filmstrip), but the user left `batch --pick` out of
+  scope - `halide calibrate ROLL_DIR`, save, then `batch` (which offers the new profile) covers it.
 - **The batch/export progress display is a static contact sheet, not a moving strip**
   (`batch/progress.py`). The whole roll is drawn at once in sprocket-edged strips of six 3:2
   frames (`███`); only individual frames animate (pulse while developing, fade to near-black when

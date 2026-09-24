@@ -27,17 +27,19 @@ RED = "#c4342a"
 RED_HOVER = "#e0453a"
 RED_ACTIVE = "#f5584c"
 
-# The single source of truth for "what color is a shadow/highlight pick" - the Shadow/Highlight
-# mode buttons and the markers drawn on the image (gui/main_window.py::ImageView) both read these,
-# so a button's color always tells you what color its picks will draw as, not just which one is
-# currently active.
-SHADOW_POINT_COLOR = "#ff5a5a"
-SHADOW_POINT_MUTED = "#8a3a3a"
-SHADOW_POINT_HOVER = "#b34848"
+# Neutral-point agreement (calibration/anchors.py bands): the markers on the image, the point list
+# and the step wedge's ticks all read these, so a point is the same colour everywhere. AGREE_RED is
+# a status colour, deliberately warmer and lighter than RED - that one stays reserved for the single
+# primary action button per window.
+AGREE_NONE = TEXT  # fewer than 3 points: nothing to agree with yet
+AGREE_CALM = "#8fbf7f"
+AGREE_AMBER = TEXT_WARNING
+AGREE_RED = "#ff6b5a"
 
-HIGHLIGHT_POINT_COLOR = "#5aa0ff"
-HIGHLIGHT_POINT_MUTED = "#355a8a"
-HIGHLIGHT_POINT_HOVER = "#4570b3"
+# Film, as the filmstrip and contact sheets draw it: black rebate, sprocket holes, orange edge print.
+FILM_REBATE = "#0c0c0c"
+FILM_SPROCKET = "#2c2620"
+EDGE_PRINT = "#e0a060"
 
 STYLESHEET = f"""
 QWidget {{
@@ -101,26 +103,37 @@ QPushButton[role="primary"]:disabled {{
     color: {TEXT_DIM};
 }}
 
-QPushButton[role="shadow"] {{
-    background-color: {SHADOW_POINT_MUTED};
+QPushButton[role="segment"] {{
+    background-color: {BACKGROUND_ALT};
+    color: {TEXT_DIM};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 4px 14px;
 }}
-QPushButton[role="shadow"]:hover {{
-    background-color: {SHADOW_POINT_HOVER};
+QPushButton[role="segment"]:hover {{
+    color: {TEXT};
 }}
-QPushButton[role="shadow"]:checked {{
-    background-color: {SHADOW_POINT_COLOR};
-    border: 2px solid {TEXT};
+QPushButton[role="segment"]:checked {{
+    background-color: {AMBER};
+    color: {TEXT};
+    border: 1px solid {AMBER};
 }}
 
-QPushButton[role="highlight"] {{
-    background-color: {HIGHLIGHT_POINT_MUTED};
+QPushButton[role="remove"] {{
+    background: transparent;
+    color: {TEXT_DIM};
+    padding: 0px 5px;
+    border-radius: 3px;
 }}
-QPushButton[role="highlight"]:hover {{
-    background-color: {HIGHLIGHT_POINT_HOVER};
+QPushButton[role="remove"]:hover {{
+    color: {TEXT};
+    background-color: {BORDER};
 }}
-QPushButton[role="highlight"]:checked {{
-    background-color: {HIGHLIGHT_POINT_COLOR};
-    border: 2px solid {TEXT};
+
+QLabel[role="section"] {{
+    color: {TEXT_DIM};
+    font-size: 11px;
+    letter-spacing: 1px;
 }}
 
 QLineEdit {{
@@ -206,6 +219,25 @@ QScrollBar::handle:vertical:hover {{
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
+}}
+QScrollBar:horizontal {{
+    background: {BACKGROUND_ALT};
+    height: 8px;
+    border-radius: 4px;
+}}
+QScrollBar::handle:horizontal {{
+    background: {AMBER};
+    border-radius: 4px;
+    min-width: 30px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {AMBER_HOVER};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+    background: none;
 }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
     background: none;

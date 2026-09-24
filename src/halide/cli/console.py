@@ -292,7 +292,7 @@ def welcome_screen() -> str:
             rule(),
             "",
             "  New here? Start with:",
-            "    halide calibrate --save-profile-as NAME   solve a calibration once",
+            "    halide calibrate in_dir/                  pick neutral points, save a profile",
             "    halide invert negative.tif positive.tif   develop a single scan",
             "    halide check  in_dir/                     check a roll was scanned consistently",
             "    halide batch  in_dir/ out_dir/            develop a whole roll",
@@ -547,6 +547,19 @@ def confirm_overwrite(path: str | Path) -> bool:
     if not sys.stdin.isatty():
         return True
     return confirm(f"{path} already exists — overwrite?")
+
+
+def prompt_line(prompt: str) -> str | None:
+    """TTY-aware single-line free-text prompt. Returns the typed line (possibly empty, meaning
+    "leave as-is" to a caller offering that convention), or None if stdin isn't a real terminal
+    or input was cut off (EOF/Ctrl-D) — distinct from "" so a non-interactive caller can tell
+    "nothing typed" apart from "not interactive at all"."""
+    if not sys.stdin.isatty():
+        return None
+    try:
+        return input(prompt)
+    except EOFError:
+        return None
 
 
 def menu(prompt: str, options: Sequence[tuple[str, str]]) -> str | None:

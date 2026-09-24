@@ -142,6 +142,27 @@ live via Xvfb/xdotool/screenshots at each step, not assumed correct from code al
 design specifically benefits from actually looking at it, more than most of this codebase's other
 work.
 
+## Update: the multi-point picker changed what there is to skin
+
+The picker was restructured (plan: `docs/plans/multipoint-picker.md`):
+calibration now uses any number of neutral points across a roll, and the window is landscape with a
+filmstrip. Some controls this spec names are gone, and there are new ones. The skin work itself is
+still deferred (the user's choice). When it's picked up, skin these instead:
+
+- **Primary (red, domed):** unchanged role — "Save calibration profile" / "Develop".
+- **Secondary (flat, dark, recessed):** "Open profile…", "Load roll…", "Build contact sheet…",
+  "Clear frame" / "Clear all", and in the contact sheet window "Rebuild contact sheet" and "Save
+  contact sheet…". The **Shadow/Highlight toggle buttons and the Preview button no longer exist.**
+- **"One chosen from a set" (the chrome-ringed button):** the Negative | Positive view switch is
+  now the natural fit.
+- **Body panel:** the right-hand control panel as a whole — step wedge, point list, drawers, red
+  button — reads like an enlarger's control face beside the baseboard (the image).
+- **LED digit readout:** it now has natural homes, which this spec said not to force until there
+  were some: the current frame number over the filmstrip (like a frame counter), and the neutral
+  point count. The Print drawer's exposure and grade values are a third candidate.
+- **Filmstrip, step wedge and contact sheets** already use the film's own palette (black rebate,
+  orange edge print, `theme.EDGE_PRINT`). Keep them as they are, not the controller's materials.
+
 ## Where things stand as of this document
 
 - Branch `worktree-gui-qt-rewrite` (merged into `claude-rewrite`) has the full Qt rewrite described

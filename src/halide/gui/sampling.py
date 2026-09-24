@@ -1,6 +1,6 @@
 """Pure, GUI-framework-independent helpers for the anchor-frame calibration picker: patch
 sampling, outlier-robust snapping, and preview stretching. No Qt import here, so this is
-unit-testable without a display — only gui/main_window.py and gui/preview_popup.py touch Qt itself.
+unit-testable without a display — only the widget modules (gui/main_window.py and friends) touch Qt.
 """
 
 from __future__ import annotations

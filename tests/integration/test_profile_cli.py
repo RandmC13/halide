@@ -1,6 +1,8 @@
 """End-to-end tests for `halide profile` and the --save-profile-as / bare-name --profile flags,
 isolated from the real default profiles directory via $XDG_CONFIG_HOME."""
 
+import sys
+
 import numpy as np
 import pytest
 
@@ -93,6 +95,108 @@ def test_profile_list_show_rename_delete(negative_tiff, tmp_path, isolated_profi
     assert not (isolated_profiles_dir / "ektar100-renamed.json").exists()
 
 
+def test_save_profile_as_with_notes(negative_tiff, tmp_path, isolated_profiles_dir):
+    exit_code = main(
+        [
+            "invert", str(negative_tiff), str(tmp_path / "out.tiff"),
+            "--rm", "2.28", "--bm", "1.47", "--rs", "1.32", "--bs", "0.78",
+            "--save-profile-as", "with-notes", "--notes", "shot under a light table",
+        ]
+    )
+    assert exit_code == 0
+    saved = load_profile(isolated_profiles_dir / "with-notes.json")
+    assert saved.notes == "shot under a light table"
+
+
+def test_profile_edit_with_flags(negative_tiff, tmp_path, isolated_profiles_dir, capsys):
+    main(
+        [
+            "invert", str(negative_tiff), str(tmp_path / "out.tiff"),
+            "--rm", "2.28", "--bm", "1.47", "--rs", "1.32", "--bs", "0.78",
+            "--save-profile-as", "editable",
+        ]
+    )
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "profile", "edit", "editable",
+            "--film-stock", "Kodak Ektar 100", "--notes", "anchored on frame 12",
+        ]
+    )
+    assert exit_code == 0
+    updated = load_profile(isolated_profiles_dir / "editable.json")
+    assert updated.film_stock == "Kodak Ektar 100"
+    assert updated.notes == "anchored on frame 12"
+    # profile identity/calibration data untouched
+    assert updated.name == "editable"
+    assert updated.white_balance == pytest.approx((2.28, 1.0, 1.47))
+
+    # clearing a field with an explicit empty string
+    assert main(["profile", "edit", "editable", "--notes", ""]) == 0
+    assert load_profile(isolated_profiles_dir / "editable.json").notes is None
+
+
+def test_profile_edit_interactive_prompts(negative_tiff, tmp_path, isolated_profiles_dir, monkeypatch):
+    main(
+        [
+            "invert", str(negative_tiff), str(tmp_path / "out.tiff"),
+            "--rm", "2.28", "--bm", "1.47", "--rs", "1.32", "--bs", "0.78",
+            "--save-profile-as", "interactive-edit",
+        ]
+    )
+
+    # Simulate a real terminal: film_stock and notes get new values, process/scanner are left
+    # as-is (empty input), matching the order fields are prompted in (_EDIT_FIELD_LABELS).
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    responses = iter(["Kodak Ektar 100", "", "", "developed at home, scanned on a V600"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(responses))
+
+    exit_code = main(["profile", "edit", "interactive-edit"])
+    assert exit_code == 0
+
+    updated = load_profile(isolated_profiles_dir / "interactive-edit.json")
+    assert updated.film_stock == "Kodak Ektar 100"
+    assert updated.notes == "developed at home, scanned on a V600"
+    assert updated.process is None
+    assert updated.scanner is None
+
+
+def test_profile_edit_interactive_no_changes(negative_tiff, tmp_path, isolated_profiles_dir, monkeypatch, capsys):
+    main(
+        [
+            "invert", str(negative_tiff), str(tmp_path / "out.tiff"),
+            "--rm", "2.28", "--bm", "1.47", "--rs", "1.32", "--bs", "0.78",
+            "--save-profile-as", "untouched",
+        ]
+    )
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+
+    exit_code = main(["profile", "edit", "untouched"])
+    assert exit_code == 0
+    assert "No changes made" in capsys.readouterr().out
+
+
+def test_profile_edit_nonexistent_errors():
+    with pytest.raises(SystemExit, match="no saved profile named"):
+        main(["profile", "edit", "nonexistent", "--notes", "x"])
+
+
+def test_profile_edit_non_interactive_without_flags_errors(negative_tiff, tmp_path, isolated_profiles_dir):
+    main(
+        [
+            "invert", str(negative_tiff), str(tmp_path / "out.tiff"),
+            "--rm", "2.28", "--bm", "1.47", "--rs", "1.32", "--bs", "0.78",
+            "--save-profile-as", "editable",
+        ]
+    )
+    with pytest.raises(SystemExit, match="interactive terminal"):
+        main(["profile", "edit", "editable"])
+
+
 def test_profile_list_empty(isolated_profiles_dir, capsys):
     assert main(["profile", "list"]) == 0
     assert "No saved profiles" in capsys.readouterr().out
@@ -119,3 +223,52 @@ def test_batch_save_profile_as_with_auto_density_roll(tmp_path, isolated_profile
     )
     assert exit_code == 0
     assert (isolated_profiles_dir / "roll-cal.json").exists()
+
+
+def _two_saved_profiles(negative_tiff, tmp_path):
+    for name, rm in (("older-roll", 2.0), ("just-made", 2.28)):
+        main(
+            [
+                "invert", str(negative_tiff), str(tmp_path / f"{name}.tiff"),
+                "--rm", str(rm), "--bm", "1.47", "--rs", "1.32", "--bs", "0.78", "--save-profile-as", name,
+            ]
+        )
+
+
+def _output_white_balance(path):
+    from halide.io.tiff import read_tiff_description
+    from halide.processing import read_provenance
+
+    return read_provenance(read_tiff_description(path))["white_balance"]
+
+
+def test_invert_without_a_source_offers_saved_profiles_newest_first(
+    negative_tiff, tmp_path, isolated_profiles_dir, monkeypatch, capsys
+):
+    _two_saved_profiles(negative_tiff, tmp_path)
+    capsys.readouterr()
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+
+    assert main(["invert", str(negative_tiff), str(tmp_path / "out.tiff")]) == 0
+    menu = capsys.readouterr().out
+    assert menu.index("'just-made'") < menu.index("'older-roll'")  # the profile just made is first
+    assert _output_white_balance(tmp_path / "out.tiff")[0] == pytest.approx(2.28)
+
+
+def test_batch_without_a_source_offers_saved_profiles(negative_tiff, tmp_path, isolated_profiles_dir, monkeypatch, capsys):
+    _two_saved_profiles(negative_tiff, tmp_path)
+    roll = tmp_path / "roll"
+    roll.mkdir()
+    (roll / "frame1.tiff").write_bytes(negative_tiff.read_bytes())
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "2")  # the older profile
+
+    assert main(["batch", str(roll), str(tmp_path / "out"), "--quiet"]) == 0
+    assert "Profile 'older-roll'" in capsys.readouterr().out
+    assert _output_white_balance(tmp_path / "out" / "frame1.tiff")[0] == pytest.approx(2.0)
+
+
+def test_without_a_terminal_a_missing_source_is_still_an_actionable_error(negative_tiff, tmp_path, isolated_profiles_dir):
+    with pytest.raises(SystemExit, match="halide calibrate ROLL_DIR"):
+        main(["invert", str(negative_tiff), str(tmp_path / "out.tiff")])
