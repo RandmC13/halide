@@ -63,6 +63,7 @@ def load_profile(path: str | Path) -> DensityProfile:
             scanner=data.get("scanner"),
             created_at=data.get("created_at"),
             source=data.get("source", "manual"),
+            notes=data.get("notes"),
         )
     except KeyError as exc:
         raise ValueError(f"{path}: missing required field {exc}") from exc
@@ -156,6 +157,32 @@ def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = Non
     new_path.write_text(json.dumps(data, indent=2) + "\n")
     old_path.unlink()
     return new_path
+
+
+# Metadata fields `halide profile edit` (and update_profile below) may change. Deliberately
+# excludes the solved calibration data (white_balance/density_scale) and identity fields
+# (name/created_at/source) — those are either produced by a calibration method, not typed by
+# hand, or already have their own dedicated operation (rename_profile).
+EDITABLE_FIELDS = ("film_stock", "process", "scanner", "notes")
+
+
+def update_profile(name: str, profiles_dir: Path | None = None, **fields: str | None) -> Path:
+    """Update one or more editable metadata fields on a saved profile in place. Leaves the
+    calibration data, name, source, and created_at untouched. Raises ValueError for any field
+    not in EDITABLE_FIELDS, and FileNotFoundError if `name` isn't a saved profile."""
+    unknown = set(fields) - set(EDITABLE_FIELDS)
+    if unknown:
+        raise ValueError(f"not an editable profile field: {', '.join(sorted(unknown))}")
+    directory = profiles_dir or default_profiles_dir()
+    path = directory / f"{name}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"no saved profile named {name!r} in {directory}")
+    # Edits the raw JSON rather than round-tripping through DensityProfile (as rename_profile does),
+    # so optional sidecars ("tone", "scan", ...) survive an edit - round-tripping dropped them.
+    data = json.loads(path.read_text())
+    data.update(fields)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return path
 
 
 def delete_profile(name: str, profiles_dir: Path | None = None) -> None:
