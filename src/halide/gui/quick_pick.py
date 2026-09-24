@@ -12,6 +12,7 @@ value, rather than the persistent tabbed app's own event loop (see `gui/app.py`)
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QEventLoop
 from PySide6.QtWidgets import QApplication
@@ -24,7 +25,7 @@ from halide.gui.main_window import MainWindow
 def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None] | None:
     """Open a standalone picker window pre-loaded with `path`, block until the user either clicks
     "Develop" (returns the picked (DensityProfile, tone_override) - tone_override is None unless
-    Fine-tune was used in a Preview popup) or closes the window without doing so (returns None).
+    the Print drawer pinned exposure/grade) or closes the window without doing so (returns None).
 
     Runs a local QEventLoop rather than a full QApplication.exec() so this function can return a
     value once the user's done, rather than exiting the process - new territory for this codebase's
@@ -35,7 +36,7 @@ def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None] |
 
     window = MainWindow(show_load_controls=False, is_pick_session=True)
     window.setWindowTitle("halide · quick calibrate")
-    window.load_image(path)
+    window.load_files([Path(path)])
 
     result_holder: list[tuple[DensityProfile, ToneCurveParams | None] | None] = [None]
     loop = QEventLoop()

@@ -1,4 +1,4 @@
-"""`halide calibrate` — launch the anchor-frame calibration picker GUI."""
+"""`halide calibrate` — launch the calibration picker GUI: pick neutral points on any frames of a roll."""
 
 from __future__ import annotations
 
@@ -11,10 +11,13 @@ from halide.cli import console
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "path",
-        nargs="?",
-        default=None,
-        help="TIFF negative to auto-load on startup (optional)",
+        "inputs",
+        nargs="*",
+        help="a roll folder, or one or more TIFF scans, to load on startup (optional)",
+    )
+    parser.add_argument(
+        "--profile",
+        help="reopen a saved profile (name or path): its neutral points, roll details and roll",
     )
 
 
@@ -41,7 +44,7 @@ def run(args: argparse.Namespace) -> int:
 
     print(console.framed([f"{console.Style.BOLD}halide{console.Style.RESET} · calibration picker"]))
     try:
-        run_gui(initial_calibrate_path=args.path)
+        run_gui(inputs=args.inputs, profile=args.profile)
     except Exception as exc:  # noqa: BLE001 -- a GUI-toolkit failure, not a domain error
         raise SystemExit(
             f"couldn't launch the calibration picker window ({exc})"

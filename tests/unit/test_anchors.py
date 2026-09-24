@@ -68,7 +68,7 @@ def test_agreement_needs_three_points_then_flags_the_odd_one():
     assert wall.cc == pytest.approx(11.4, rel=1e-6)
     assert wall.direction == "R"
     assert wall.band == "red"
-    assert anchors.worst(result) == len(points) - 1
+    assert anchors.worst(points, AT_1_30) == len(points) - 1
 
     # The outlier tilts every other point's leave-one-out fit, so good points read a few CC off in
     # the opposite direction (C) - the lowest, with the most leverage, even reaches amber. That's
@@ -77,7 +77,16 @@ def test_agreement_needs_three_points_then_flags_the_odd_one():
     assert all(a.cc < wall.cc / 2 for a in result[:-1])
     settled = anchors.agreement(points[:-1], AT_1_30)
     assert all(a.band == "calm" and a.cc < 0.5 for a in settled)
-    assert anchors.worst(settled) is None
+    assert anchors.worst(points[:-1], AT_1_30) is None
+
+
+def test_no_agreement_when_the_others_cant_support_a_fit():
+    # Judging the D 1.2 point against two points 0.05 apart would extrapolate a nearly
+    # unconstrained line - no reading rather than a false accusation.
+    points = [_point(1.2), _point(1.45), _point(1.5, deviation=(0.01, 0, 0))]
+    result = anchors.agreement(points, AT_1_30)
+    assert result[0] is None
+    assert result[1] is not None and result[2] is not None
 
 
 @pytest.mark.parametrize("cc, expected", [(0.0, "calm"), (5.0, "calm"), (5.1, "amber"), (10.0, "amber"), (10.1, "red")])
