@@ -24,7 +24,7 @@ import numpy as np
 from halide.calibration.auto import MIN_DENSITY_SEPARATION
 from halide.calibration.scan_consistency import most_common_settings, scan_gain
 from halide.core._constants import MIN_TRANSMITTANCE
-from halide.core.density import describe_cast, fit_density_balance, leave_one_out_residuals
+from halide.core.density import describe_cast, fit_density_balance, leave_one_out_residuals, neutral_residuals
 from halide.core.types import DensityProfile
 from halide.io.scan_metadata import ScanSettings
 
@@ -108,13 +108,18 @@ def band(cc: float) -> str:
 
 def agreement(points: Sequence[NeutralPoint], reference: ScanSettings | None) -> list[Agreement | None]:
     """Per point, how far it is from what the other points agree neutral is. None for every point
-    below MIN_POINTS_FOR_AGREEMENT, and for any point whose others can't be fitted."""
+    below MIN_POINTS_FOR_AGREEMENT, and for any point whose others can't support a fit of their own:
+    fewer than two of them, or spanning less than MIN_DENSITY_SEPARATION (the Save gate's minimum).
+    Without that, a line through two nearly-equal-density points extrapolated to judge a third far
+    away - found on Roll 16, where the trike (D 1.22) read "CC 8 M" against a car and T-shirt only
+    0.06 D apart, an artefact of the extrapolation, not a real disagreement."""
     if len(points) < MIN_POINTS_FOR_AGREEMENT:
         return [None] * len(points)
     residuals = leave_one_out_residuals([normalised_rgb(p, reference) for p in points])
     out: list[Agreement | None] = []
-    for row in residuals:
-        if np.isnan(row).any():
+    for i, row in enumerate(residuals):
+        others = [p for j, p in enumerate(points) if j != i]
+        if np.isnan(row).any() or not can_fit(others, reference):
             out.append(None)
             continue
         cc, direction = describe_cast(row)
@@ -122,15 +127,32 @@ def agreement(points: Sequence[NeutralPoint], reference: ScanSettings | None) ->
     return out
 
 
-def worst(agreements: Sequence[Agreement | None]) -> int | None:
-    """Index of the point to question first: the one furthest from the others, if it's outside the
-    calm band. Only this point gets the picker's "is this really neutral?" hint. One strong outlier
-    tilts every other point's leave-one-out fit, so the good points read a few CC off in the
-    opposite direction - and the one with the most leverage (the end of the density range) can
-    itself reach amber (tests/unit/test_anchors.py). Deal with the worst first and the rest settle;
-    hinting at all of them would send the user after good points."""
-    scored = [(a.cc, i) for i, a in enumerate(agreements) if a is not None and a.band != "calm"]
-    return max(scored)[1] if scored else None
+def _spread_without(points: Sequence[NeutralPoint], index: int, reference: ScanSettings | None) -> float:
+    """RMS disagreement (CC) of every point except `index` against the fit through them."""
+    others = [p for j, p in enumerate(points) if j != index]
+    if not can_fit(others, reference):
+        return float("inf")
+    rgbs = [normalised_rgb(p, reference) for p in others]
+    residuals = neutral_residuals(fit_density_balance(rgbs), rgbs)
+    return float(np.sqrt(np.mean([describe_cast(r)[0] ** 2 for r in residuals])))
+
+
+def worst(points: Sequence[NeutralPoint], reference: ScanSettings | None) -> int | None:
+    """Index of the point to question first - the only one that gets the picker's "was this really
+    neutral?" hint - or None when every point is calm.
+
+    Not simply the point furthest from the others: a point at the end of the density range is
+    judged against a line extrapolated from the rest, so while an outlier sits among those rest the
+    good end point can read further off than the outlier itself (tests/unit/test_gui_roll.py: with
+    three good points and one cream-wall-like outlier, the lowest good point read worst). Instead:
+    of the points outside the calm band, the one whose removal leaves the others agreeing best -
+    remove the real outlier and the rest are consistent; remove a good point and the outlier is
+    still among them. Ties go to the point further from the others."""
+    agreements = agreement(points, reference)
+    candidates = [i for i, a in enumerate(agreements) if a is not None and a.band != "calm"]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda i: (_spread_without(points, i, reference), -agreements[i].cc))
 
 
 def near_duplicate(
