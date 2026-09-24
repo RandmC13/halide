@@ -8,7 +8,7 @@ Layout (landscape, fixed size, never scrolls - see _compute_window_size):
                   markers · the "what to click" caption (states which way brightness is reversed on
                   the negative - see CLAUDE.md, never soften it) · status line
   right panel     step wedge (gui/step_wedge.py) · neutral points list (gui/point_list.py) · notice
-                  line · Proof roll… · Extra information / Print / Details drawers (gui/drawers.py,
+                  line · Build contact sheet… · Extra information / Print / Details drawers (gui/drawers.py,
                   accordion) · the one red primary button: Save calibration profile (Develop in the
                   one-shot `invert --pick` flow)
 
@@ -305,7 +305,7 @@ class SaveProfileDialog(QDialog):
 
 class MainWindow(QWidget):
     """`is_pick_session=True` is the one-shot `invert --pick` variant (see quick_pick.py): one frame,
-    so no filmstrip, roll loading or proof sheet; the red button reads "Develop" and emits
+    so no filmstrip, roll loading or contact sheet; the red button reads "Develop" and emits
     `pickCompleted` with (DensityProfile, tone override) - or None if the window is closed first."""
 
     pickCompleted = Signal(object)
@@ -431,10 +431,19 @@ class MainWindow(QWidget):
         points_title.setProperty("role", "section")
         points_title.setToolTip(CC_EXPLANATION)
         points_header.addWidget(points_title)
+        points_header.addStretch(1)
         self.point_count = QLabel("")
         self.point_count.setProperty("role", "section")
         points_header.addWidget(self.point_count)
-        points_header.addStretch(1)
+        panel.addLayout(points_header)
+        self.point_list = PointList()
+        self.point_list.rowClicked.connect(self._on_row_clicked)
+        self.point_list.removeClicked.connect(self._remove_point)
+        panel.addWidget(self.point_list, stretch=1)
+
+        # Under the list rather than in its header, which they crowded until the title was clipped.
+        clear_row = QHBoxLayout()
+        clear_row.addStretch(1)
         self.clear_frame_button = QPushButton("Clear frame")
         self.clear_frame_button.setToolTip("Remove the points on the frame you're looking at")
         self.clear_frame_button.clicked.connect(self._on_clear_frame)
@@ -443,12 +452,8 @@ class MainWindow(QWidget):
         self.clear_all_button.clicked.connect(self._on_clear_all)
         for button in (self.clear_frame_button, self.clear_all_button):
             button.setProperty("role", "remove")
-            points_header.addWidget(button)
-        panel.addLayout(points_header)
-        self.point_list = PointList()
-        self.point_list.rowClicked.connect(self._on_row_clicked)
-        self.point_list.removeClicked.connect(self._remove_point)
-        panel.addWidget(self.point_list, stretch=1)
+            clear_row.addWidget(button)
+        panel.addLayout(clear_row)
 
         self.notice = QLabel("")
         self.notice.setWordWrap(True)
@@ -461,7 +466,7 @@ class MainWindow(QWidget):
         self._panel_spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         panel.addWidget(self._panel_spacer)  # stretch 0: only what the point list (stretch 1) leaves
 
-        self.proof_button = QPushButton("Proof roll…")
+        self.proof_button = QPushButton("Build contact sheet…")
         self.proof_button.setToolTip("A zoomable contact sheet of the whole roll printed with this calibration")
         self.proof_button.setEnabled(False)
         self.proof_button.setVisible(not self.is_pick_session)
@@ -805,7 +810,8 @@ class MainWindow(QWidget):
         frames = [(f.path, f.preview, self.session.gain(f.scan)) for f in self.session.frames]
         title = self.session.roll_folder.name if self.session.roll_folder else frames[0][0].stem
         self._proof = ProofWindow(
-            self, title, frames, profile, tone, self.session.details.get("film_stock") or None, " · ".join(bits)
+            self, title, frames, profile, tone, self.session.details.get("film_stock") or None, " · ".join(bits),
+            save_dir=self.session.roll_folder,
         )
         self._proof.destroyed.connect(self._on_proof_closed)
         self._proof.show()

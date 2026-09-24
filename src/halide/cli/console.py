@@ -292,7 +292,7 @@ def welcome_screen() -> str:
             rule(),
             "",
             "  New here? Start with:",
-            "    halide calibrate --save-profile-as NAME   solve a calibration once",
+            "    halide calibrate in_dir/                  pick neutral points, save a profile",
             "    halide invert negative.tif positive.tif   develop a single scan",
             "    halide check  in_dir/                     check a roll was scanned consistently",
             "    halide batch  in_dir/ out_dir/            develop a whole roll",
