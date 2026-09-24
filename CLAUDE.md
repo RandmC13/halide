@@ -108,6 +108,12 @@ statistical auto-detection (`calibration/auto.py`, `--auto-density`/`--auto-dens
 Profiles are meant to be solved once per film-stock/process/scanner combination and reused
 (`--save-profile-as`, `halide profile`), not re-solved per image.
 
+## Write-ups
+
+Plans, specs and investigations live in `docs/` (`plans/`, `specs/`, `investigations/` - see
+`docs/README.md`), not the repo root, which the user asked to keep uncluttered. This file stays at
+the root. Put new write-ups in the matching folder and add a line to `docs/README.md`.
+
 ## Decisions and why (don't re-litigate these without new evidence)
 
 - **TIFF-in, not RAW-in.** The user's darktable/RawTherapee export already handles
@@ -169,7 +175,7 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   (the export isn't linear). Found on the same roll: the camera was metering each frame (1/25-1/60)
   and "as shot" white balance was the camera's auto WB (14 distinct values, R ±5%, B ±7%); one
   frame had shadows & highlights active. Not yet validated against a real two-exposure scan of one
-  frame (see TONE_OUTPUT_PLAN.md follow-ups).
+  frame (see docs/plans/tone-output.md follow-ups).
 - **Contact sheets are a feature, not just a test aid** (`io/contact_sheet.py`, `halide contact`,
   `halide batch --contact-sheet`) — asked for after proof sheets kept proving the most useful way to
   compare settings across a real roll. Decisions: (1) the batch *preview* develops every frame at
@@ -400,8 +406,8 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
     better, though still imperfect, sanity check) or a ColorChecker are the reliable options, not further heuristic tuning of the auto tier.
 - **Manual calibration fits any number of user-picked neutral points, across any frames of a
   roll** (`core/density.py::fit_density_balance`, `calibration/anchors.py`), not one shadow and one
-  highlight point. Why: the anchor-frame investigation (branch `worktree-anchor-frame-investigation`,
-  `ANCHOR_FRAME_INVESTIGATION.md`) found the dominant calibration error is whether the object
+  highlight point. Why: the anchor-frame investigation (`docs/investigations/anchor-frame.md`)
+  found the dominant calibration error is whether the object
   clicked is really neutral, not which frame it's on - on Roll 16 the user's two-point
   Roll16-Profile1 (trike, IMG_0158) printed ~CC3 warm against a T-shirt and a cloud that agreed with
   each other, and the Alhambra's "white" wall was cream. How it works and why:
@@ -431,7 +437,7 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
     --profile NAME` reopens them to add to; points keep their stored RGB (they count even if the
     roll moved) and re-attach to a moved roll by file name.
 - **The picker's design was chosen by the user, decision by decision** (see the plan
-  `hidden-popping-crown.md` in ~/.claude/plans) - ask the same way before changing it. Landscape,
+  `docs/plans/multipoint-picker.md`) - ask the same way before changing it. Landscape,
   fixed-size window (~55% x 70% of the screen, 900x700 floor; at 62% height opening a drawer
   squeezed everything), never scrolling except the point list:
   - A sprocket-edged **filmstrip** of the roll across the top: previews load in the batch forkserver
@@ -500,7 +506,7 @@ Profiles are meant to be solved once per film-stock/process/scanner combination 
   gitignored) of a real Durst enlarger timer. The current theme (`gui/theme.py`) only reserves red
   for one primary button per window (agreement's "red" is a lighter, warmer status colour so it
   doesn't compete) — the full custom-painted-widget version needs its own plan
-  (`ENLARGER_SKIN_SPEC.md`).
+  (`docs/specs/enlarger-skin.md`).
 - **With no calibration source, a terminal run asks for one up front** (`cli/_calibration_args.py::
   choose_calibration_source`): the saved profiles, newest first (so the one just made in `halide
   calibrate` is on top), picking points (invert), or the automatic estimates - recorded on `args`

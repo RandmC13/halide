@@ -144,7 +144,7 @@ work.
 
 ## Update: the multi-point picker changed what there is to skin
 
-The picker was restructured (branch `worktree-multipoint-picker`, plan `hidden-popping-crown.md`):
+The picker was restructured (plan: `docs/plans/multipoint-picker.md`):
 calibration now uses any number of neutral points across a roll, and the window is landscape with a
 filmstrip. Some controls this spec names are gone, and there are new ones. The skin work itself is
 still deferred (the user's choice). When it's picked up, skin these instead:
