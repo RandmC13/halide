@@ -88,6 +88,8 @@ def provenance_json(resolved: ResolvedTone, profile: DensityProfile | None, scan
     if profile is not None:
         record["white_balance"] = [float(v) for v in profile.white_balance]
         record["density_scale"] = [float(v) for v in profile.density_scale]
+        if profile.film_stock:
+            record["film_stock"] = profile.film_stock  # for contact sheets' edge print
     if scan_gain != 1.0:
         record["scan_gain"] = float(scan_gain)
     return json.dumps({_PROVENANCE_KEY: record})

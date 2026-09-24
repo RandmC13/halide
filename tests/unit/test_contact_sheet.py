@@ -67,6 +67,32 @@ def test_sheet_lays_frames_out_in_strips_with_a_short_last_strip(tmp_path):
     assert not is_contact_sheet(tmp_path / "export.png")
 
 
+def test_sheet_is_black_like_a_real_contact_print():
+    frame = np.full((60, 90, 3), 128, dtype=np.uint8)
+    tiles = [Tile("IMG_1", frame, "grade 0.90", number=7), Tile("IMG_2", frame)]
+    for stock in ("Kodak Portra 400", None):  # named stock, and the "INVERTED BY HALIDE" fallback
+        sheet = np.asarray(render_sheet(tiles, "Roll", frame_width=300, columns=6, film_stock=stock))
+        assert tuple(sheet[2, 2]) == tuple(sheet[-2, -2]) and max(sheet[2, 2]) < 20  # black margins
+        orange = (sheet[..., 0] > 180) & (sheet[..., 1] > 120) & (sheet[..., 1] < 190) & (sheet[..., 2] < 130)
+        assert orange.sum() > 200  # the edge print is there
+
+
+def test_film_stock_travels_in_provenance_to_the_sheet():
+    from halide.cli._contact_sheet import common_film_stock
+    from halide.core.tone_render import ResolvedTone
+    from halide.core.types import DensityProfile
+    from halide.processing import provenance_json, read_provenance
+
+    profile = DensityProfile((0.7, 1.0, 1.0), (1.1, 1.0, 0.8), film_stock="Kodak Portra 400")
+    record = read_provenance(provenance_json(ResolvedTone(mode="paper", exposure=0.1, contrast=0.9), profile))
+    assert record["film_stock"] == "Kodak Portra 400"
+    assert common_film_stock([record, record]) == "Kodak Portra 400"
+    assert common_film_stock([record, {**record, "film_stock": "Ilford XP2"}]) is None  # mixed rolls
+    assert common_film_stock([record, None]) is None  # a frame without provenance: don't guess
+    unnamed = read_provenance(provenance_json(ResolvedTone(mode="paper", exposure=0.1, contrast=0.9), DensityProfile((1, 1, 1), (1, 1, 1))))
+    assert "film_stock" not in unnamed
+
+
 def test_sheet_format_is_checked_up_front():
     check_sheet_path("sheet.png")
     with pytest.raises(ValueError, match=".jpg, .jpeg or .png"):
