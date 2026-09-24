@@ -60,6 +60,20 @@ def test_remove_keeps_selection_consistent(tmp_path):
     assert session.selected is None
 
 
+def test_clear_points_on_one_frame_or_all(tmp_path):
+    session, paths = _session(tmp_path)
+    session.add_point(_pt(paths[0], 0.9))
+    session.add_point(_pt(paths[1], 1.2))
+    session.add_point(_pt(paths[0], 1.5, x=300))
+    session.selected = 1
+    assert session.clear_points(paths[0]) == 2
+    assert [p.frame for p in session.points] == [paths[1]]
+    assert session.selected == 0  # the selected point survived and moved up
+    assert session.clear_points(paths[2]) == 0
+    assert session.clear_points() == 1
+    assert session.points == [] and session.selected is None
+
+
 def test_point_at_finds_the_nearest_point_on_that_frame_only(tmp_path):
     session, paths = _session(tmp_path)
     session.add_point(_pt(paths[0], 1.0, x=100, y=100))

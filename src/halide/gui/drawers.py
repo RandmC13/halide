@@ -1,4 +1,4 @@
-"""The side panel's collapsible drawers - Roll details, Print, Details - as an accordion: opening
+"""The side panel's collapsible drawers - Extra information, Print, Details - as an accordion: opening
 one closes the others, and each opens to a bounded height, so the fixed-size window never has to
 grow or scroll (the same reason the original Details panel became a fixed-height scroll area).
 """
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QToolButton,
     QVBoxLayout,
@@ -29,11 +30,17 @@ _GRADE_RANGE = (0, 100)  # hundredths, i.e. 0.00..1.00
 
 
 class Drawer(QWidget):
+    """A titled, collapsible section. A fixed drawer opens to exactly its content's height (capped);
+    an expanding one (`expanding=True`, for long reading like Details) opens to take the panel's
+    spare height - the panel lets it (MainWindow._on_drawer_opened) - down to `max_height` as its
+    minimum, scrolling only beyond that."""
+
     toggled = Signal(object, bool)  # (drawer, open)
 
-    def __init__(self, title: str, content: QWidget, max_height: int) -> None:
+    def __init__(self, title: str, content: QWidget, max_height: int, expanding: bool = False) -> None:
         super().__init__()
         self._title = title
+        self.expanding = expanding
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
@@ -46,9 +53,13 @@ class Drawer(QWidget):
         self.body.setWidgetResizable(True)
         self.body.setFrameShape(QFrame.Shape.NoFrame)
         self.body.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Open to exactly the content's own height (capped): a drawer that opens shorter than its
-        # content hides fields behind an inner scrollbar, which reads as broken, not compact.
-        self.body.setFixedHeight(min(max_height, content.sizeHint().height() + 4))
+        if expanding:
+            self.body.setMinimumHeight(max_height)
+            self.body.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        else:
+            # Open to exactly the content's own height (capped): a drawer that opens shorter than its
+            # content hides fields behind an inner scrollbar, which reads as broken, not compact.
+            self.body.setFixedHeight(min(max_height, content.sizeHint().height() + 4))
         layout.addWidget(self.body)
         self.set_open(False)
 
@@ -56,12 +67,22 @@ class Drawer(QWidget):
         self.header.setChecked(open_)
         self.header.setText(("▾ " if open_ else "▸ ") + self._title)
         self.body.setVisible(open_)
+        # Closed, or a fixed drawer: never take more height than it needs - spare panel height
+        # otherwise got shared out as gaps around the drawer headers.
+        vertical = QSizePolicy.Policy.Expanding if (open_ and self.expanding) else QSizePolicy.Policy.Maximum
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, vertical)
 
 
 class Accordion(QWidget):
+    """Opening one drawer closes the others. `openChanged` reports the open drawer (or None), so
+    the panel can hand spare height to an expanding one."""
+
+    openChanged = Signal(object)
+
     def __init__(self, drawers: list[Drawer]) -> None:
         super().__init__()
         self.drawers = drawers
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -72,6 +93,12 @@ class Accordion(QWidget):
     def _on_toggled(self, drawer: Drawer, open_: bool) -> None:
         for other in self.drawers:
             other.set_open(open_ and other is drawer)
+        opened = drawer if open_ else None
+        expanding = opened is not None and opened.expanding
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding if expanding else QSizePolicy.Policy.Maximum
+        )
+        self.openChanged.emit(opened)
 
 
 class RollDetailsForm(QWidget):

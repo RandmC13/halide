@@ -15,7 +15,7 @@ from halide.gui.main_window import MainWindow
 
 def main(inputs: list[str] | None = None, profile: str | None = None) -> None:
     """`inputs`: a roll folder, or one or more scans. `profile`: a saved profile (path or name) to
-    reopen - its points and roll details, and its roll if the folder is still there."""
+    reopen - its points and extra information, and its roll if the folder is still there."""
     app = QApplication.instance() or QApplication(sys.argv)
     theme.apply(app)
 
