@@ -2,7 +2,7 @@
 range without hard-clipping.
 
 The default curve is vendored from abpy/color-neg-resources' `paper_a.cube` (MIT licensed, see
-assets/tone_curves/LICENSE-paper_endura.txt) — an emulation of a real photographic paper's
+src/halide/assets/tone_curves/LICENSE-paper_endura.txt) — an emulation of a real photographic paper's
 characteristic response (Kodak Endura), including its natural toe/shoulder compression. This is
 deliberately *not* an invented/hand-tuned analytic curve: photographic paper response is measured,
 published photographic knowledge, which fits the goal of faithfulness over subjective looks.
@@ -33,7 +33,7 @@ from halide.core.types import ToneCurveParams
 from halide.io.lut import Cube1D, load_1d_cube
 
 _DEFAULT_CURVE_PATH = (
-    Path(__file__).resolve().parents[3] / "assets" / "tone_curves" / "paper_endura.cube"
+    Path(__file__).resolve().parents[1] / "assets" / "tone_curves" / "paper_endura.cube"
 )
 
 

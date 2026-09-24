@@ -2,6 +2,7 @@
 name = "halide"
 version = "0.1.0"
 description = "Colorimetrically accurate inversion of digital scans of color negative film."
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
@@ -27,6 +28,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The vendored ICC profile and paper curve are read at runtime, so they ship inside the package.
+[tool.setuptools.package-data]
+halide = ["assets/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
