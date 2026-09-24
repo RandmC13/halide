@@ -11,6 +11,7 @@ separately, since picks sample full-resolution pixels.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -40,11 +41,20 @@ def load_frame_preview(path: str) -> tuple[np.ndarray | None, DensityProfile | N
         preview = downsample_linear(load_working_space_image(path), PREVIEW_LONG_EDGE)
     except Exception as exc:  # noqa: BLE001 - one unreadable frame shouldn't stop the roll
         return None, None, str(exc)
-    try:
-        estimate = auto_density_balance(preview)
-    except ValueError:
-        estimate = None
-    return preview, estimate, None
+    return preview, quiet_auto_estimate(preview), None
+
+
+def quiet_auto_estimate(image: np.ndarray) -> DensityProfile | None:
+    """calibration/auto.py's estimate for the Positive view before any points exist, or None. Its
+    "candidates unusually close in density" warning is meant for `--auto-density` users on the
+    command line; here the estimate is already labelled a rough estimate in the window, so the
+    warning would only be terminal noise (it printed on launch for some Roll 16 frames)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        try:
+            return auto_density_balance(image)
+        except ValueError:
+            return None
 
 
 @dataclass
@@ -157,6 +167,16 @@ class CalibrationSession:
             elif self.selected > index:
                 self.selected -= 1
 
+    def clear_points(self, frame: Path | None = None) -> int:
+        """Remove every point, or just those on `frame`. Returns how many were removed."""
+        keep = [p for p in self.points if frame is not None and p.frame != frame]
+        removed = len(self.points) - len(keep)
+        if removed:
+            selected = self.points[self.selected] if self.selected is not None else None
+            self.points = keep
+            self.selected = keep.index(selected) if selected in keep else None
+        return removed
+
     def point_at(self, frame: Path, x: int, y: int, radius: int) -> int | None:
         """The point on `frame` within `radius` full-resolution pixels of (x, y) - a click there
         selects it rather than adding a new one. Nearest wins."""
@@ -239,7 +259,7 @@ class CalibrationSession:
         }
 
     def restore(self, profile_path: Path) -> Path | None:
-        """Load a saved profile's picks, roll details, print override and scan reference into this
+        """Load a saved profile's picks, extra information, print override and scan reference into this
         session. Returns the roll folder it recorded, if that folder still exists (the caller loads
         it); points whose frames are gone stay in the fit - their RGB is stored."""
         profile = load_profile(profile_path)

@@ -8,7 +8,7 @@ Layout (landscape, fixed size, never scrolls - see _compute_window_size):
                   markers · the "what to click" caption (states which way brightness is reversed on
                   the negative - see CLAUDE.md, never soften it) · status line
   right panel     step wedge (gui/step_wedge.py) · neutral points list (gui/point_list.py) · notice
-                  line · Proof roll… · Roll details / Print / Details drawers (gui/drawers.py,
+                  line · Proof roll… · Extra information / Print / Details drawers (gui/drawers.py,
                   accordion) · the one red primary button: Save calibration profile (Develop in the
                   one-shot `invert --pick` flow)
 
@@ -34,13 +34,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from halide.batch.orchestrator import TIFF_SUFFIXES
 from halide.calibration.anchors import NeutralPoint
-from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask, auto_density_balance
+from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask
 from halide.calibration.profile_store import default_profiles_dir, save_named_profile
 from halide.core.tone_render import ResolvedTone
 from halide.core.types import DensityProfile, ToneCurveParams
@@ -50,7 +51,7 @@ from halide.gui.filmstrip import Filmstrip
 from halide.gui.loaders import FrameLoader, PreviewLoader
 from halide.gui.point_list import CC_EXPLANATION, PointList, agreement_colour
 from halide.gui.render import negative_display, positive_display, print_patch
-from halide.gui.roll import PREVIEW_LONG_EDGE, CalibrationSession, Frame, PointView
+from halide.gui.roll import PREVIEW_LONG_EDGE, CalibrationSession, Frame, PointView, quiet_auto_estimate
 from halide.gui.sampling import (
     apply_stretch,
     compute_stretch_bounds,
@@ -356,7 +357,7 @@ class MainWindow(QWidget):
         top.addWidget(self.roll_label, stretch=1)
         if self.show_load_controls:
             open_button = QPushButton("Open profile…")
-            open_button.setToolTip("Reopen a saved profile's neutral points and roll details to add to or change them")
+            open_button.setToolTip("Reopen a saved profile's neutral points and extra information to add to or change them")
             open_button.clicked.connect(self._on_open_profile)
             top.addWidget(open_button)
             load_button = QPushButton("Load roll…")
@@ -428,10 +429,19 @@ class MainWindow(QWidget):
         points_title.setProperty("role", "section")
         points_title.setToolTip(CC_EXPLANATION)
         points_header.addWidget(points_title)
-        points_header.addStretch(1)
         self.point_count = QLabel("")
         self.point_count.setProperty("role", "section")
         points_header.addWidget(self.point_count)
+        points_header.addStretch(1)
+        self.clear_frame_button = QPushButton("Clear frame")
+        self.clear_frame_button.setToolTip("Remove the points on the frame you're looking at")
+        self.clear_frame_button.clicked.connect(self._on_clear_frame)
+        self.clear_all_button = QPushButton("Clear all")
+        self.clear_all_button.setToolTip("Remove every point and start the calibration again")
+        self.clear_all_button.clicked.connect(self._on_clear_all)
+        for button in (self.clear_frame_button, self.clear_all_button):
+            button.setProperty("role", "remove")
+            points_header.addWidget(button)
         panel.addLayout(points_header)
         self.point_list = PointList()
         self.point_list.rowClicked.connect(self._on_row_clicked)
@@ -442,6 +452,12 @@ class MainWindow(QWidget):
         self.notice.setWordWrap(True)
         self.notice.setMinimumHeight(30)
         panel.addWidget(self.notice)
+
+        # Spare panel height goes here (not into the drawers as gaps around their headers) - except
+        # while the expanding Details drawer is open, which takes it instead (_on_drawer_opened).
+        self._panel_spacer = QWidget()
+        self._panel_spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        panel.addWidget(self._panel_spacer)  # stretch 0: only what the point list (stretch 1) leaves
 
         self.proof_button = QPushButton("Proof roll…")
         self.proof_button.setToolTip("A zoomable contact sheet of the whole roll printed with this calibration")
@@ -465,11 +481,14 @@ class MainWindow(QWidget):
         details_layout.addWidget(self.auto_overlay)
         details_layout.addWidget(self.details_label)
         self.print_drawer = Drawer("Print", self.print_controls, max_height=150)
-        drawers = [Drawer("Roll details", self.details_form, max_height=140), self.print_drawer]
-        drawers.append(Drawer("Details", details_body, max_height=150))
+        drawers = [Drawer("Extra information", self.details_form, max_height=140), self.print_drawer]
+        drawers.append(Drawer("Details", details_body, max_height=140, expanding=True))
         if self.is_pick_session:
-            drawers = drawers[1:]  # one-shot develop: nothing to save roll details into
-        panel.addWidget(Accordion(drawers))
+            drawers = drawers[1:]  # one-shot develop: nothing to save extra information into
+        self._panel = panel
+        self._accordion = Accordion(drawers)
+        self._accordion.openChanged.connect(self._on_drawer_opened)
+        panel.addWidget(self._accordion)
 
         self.primary_button = QPushButton("Develop" if self.is_pick_session else "Save calibration profile")
         self.primary_button.setProperty("role", "primary")
@@ -624,11 +643,8 @@ class MainWindow(QWidget):
             self._refresh_wedge()
         self.display, self.stride = downsample_for_display(image, *_DISPLAY_BUDGET)
         self._stretch = compute_stretch_bounds(self.display)
-        try:
-            self._display_estimate = auto_density_balance(self.display)
-            self._auto_mask = _neutral_candidate_mask(self.display, DEFAULT_NEUTRAL_FRACTION)
-        except ValueError:
-            self._display_estimate, self._auto_mask = None, None
+        self._display_estimate = quiet_auto_estimate(self.display)
+        self._auto_mask = _neutral_candidate_mask(self.display, DEFAULT_NEUTRAL_FRACTION)
         if self.status_label.text().startswith("Loading"):
             self._status("")  # don't overwrite anything more useful (e.g. "Reopened …")
         self._refresh_image()
@@ -835,6 +851,34 @@ class MainWindow(QWidget):
     def _on_view_changed(self) -> None:
         self._refresh_image()
         self._thumbs_timer.start(0)
+
+    def _on_drawer_opened(self, drawer: Drawer | None) -> None:
+        """An expanding drawer (Details) gets the panel's spare height: the spacer steps aside and
+        the point list shrinks to its minimum while it's open."""
+        expanding = drawer is not None and drawer.expanding
+        self._panel_spacer.setVisible(not expanding)
+        self._panel.setStretchFactor(self.point_list, 0 if expanding else 1)
+        self._panel.setStretchFactor(self._accordion, 1 if expanding else 0)
+
+    def _on_clear_frame(self) -> None:
+        if self._current is None:
+            return
+        frame = self.session.frames[self._current]
+        count = sum(1 for p in self.session.points if p.frame == frame.path)
+        if count and self._confirm(f"Remove the {count} point(s) on {frame.path.name}?"):
+            self.session.clear_points(frame.path)
+            self._nudge = None
+            self._points_changed()
+
+    def _on_clear_all(self) -> None:
+        count = len(self.session.points)
+        if count and self._confirm(f"Remove all {count} point(s) and start the calibration again?"):
+            self.session.clear_points()
+            self._nudge = None
+            self._points_changed()
+
+    def _confirm(self, question: str) -> bool:
+        return QMessageBox.question(self, "Remove points", question) == QMessageBox.StandardButton.Yes
 
     def _on_details_changed(self, values: dict) -> None:
         self.session.details = values
