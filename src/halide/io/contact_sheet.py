@@ -140,6 +140,83 @@ def _barcode(draw: ImageDraw.ImageDraw, x0: float, x1: float, y: float, height: 
         x += width + unit * rng.choice((1, 1, 2))
 
 
+@dataclass(frozen=True)
+class SheetLayout:
+    """Where everything sits on a sheet of `count` frames - the one place the geometry lives, so
+    the renderer and anything that needs to know where a frame landed (the proof window's hover
+    labels) can't disagree."""
+
+    count: int
+    frame_width: int = DEFAULT_FRAME_WIDTH
+    columns: int = DEFAULT_COLUMNS
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "columns", max(1, self.columns))
+
+    @property
+    def frame_w(self) -> int:
+        return self.frame_width
+
+    @property
+    def frame_h(self) -> int:
+        return round(self.frame_width / FRAME_ASPECT)
+
+    @property
+    def gap(self) -> int:  # frame line between frames on the strip
+        return round(self.frame_width * 0.03)
+
+    @property
+    def top_edge(self) -> int:  # edge print above the frames
+        return round(self.frame_h * 0.11)
+
+    @property
+    def bottom_edge(self) -> int:  # edge print and edge code below
+        return round(self.frame_h * 0.12)
+
+    @property
+    def caption_h(self) -> int:
+        return round(self.frame_h * 0.08)
+
+    @property
+    def strip_h(self) -> int:
+        return self.top_edge + self.frame_h + self.bottom_edge + self.caption_h
+
+    @property
+    def strip_gap(self) -> int:
+        return round(self.frame_h * 0.09)
+
+    @property
+    def margin(self) -> int:
+        return round(self.frame_width * 0.12)
+
+    @property
+    def header_h(self) -> int:
+        return round(self.frame_h * 0.32)
+
+    @property
+    def size(self) -> tuple[int, int]:
+        widest = max(1, min(self.columns, self.count))
+        rows = max(1, -(-self.count // self.columns))
+        width = 2 * self.margin + widest * self.frame_w + (widest - 1) * self.gap
+        height = 2 * self.margin + self.header_h + rows * self.strip_h + (rows - 1) * self.strip_gap
+        return width, height
+
+    def frame_box(self, index: int) -> tuple[int, int, int, int]:
+        """(x, y, width, height) of frame `index`'s cell on the sheet."""
+        row, column = divmod(index, self.columns)
+        x = self.margin + column * (self.frame_w + self.gap)
+        y = self.margin + self.header_h + row * (self.strip_h + self.strip_gap) + self.top_edge
+        return x, y, self.frame_w, self.frame_h
+
+    def frame_at(self, x: float, y: float) -> int | None:
+        """The frame whose cell (with its edge print and caption) contains (x, y), if any."""
+        for index in range(self.count):
+            fx, fy, fw, fh = self.frame_box(index)
+            if fx <= x < fx + fw and fy - self.top_edge <= y < fy + fh + self.bottom_edge + self.caption_h:
+                return index
+        return None
+
+
 def render_sheet(
     tiles: list[Tile],
     title: str,
@@ -154,23 +231,12 @@ def render_sheet(
     with its half-frame "A" number and edge-code bars below - and, under that, a small dim line with
     the frame's file name and the printing decision halide recorded, so sheets from different
     settings stay self-describing."""
-    W = frame_width
-    H = round(W / FRAME_ASPECT)
-    gap = round(W * 0.03)  # frame line between frames on the strip
-    top_edge = round(H * 0.11)  # edge print above the frames
-    bottom_edge = round(H * 0.12)  # edge print and edge code below
-    caption_h = round(H * 0.08)
-    strip_h = top_edge + H + bottom_edge + caption_h
-    strip_gap = round(H * 0.09)
-    margin = round(W * 0.12)
-    header_h = round(H * 0.32)
-    columns = max(1, columns)
-
-    widest = max(1, min(columns, len(tiles)))
+    layout = SheetLayout(len(tiles), frame_width, columns)
+    W, H, margin, header_h = layout.frame_w, layout.frame_h, layout.margin, layout.header_h
+    top_edge, bottom_edge, caption_h = layout.top_edge, layout.bottom_edge, layout.caption_h
+    columns = layout.columns
     rows = [tiles[i:i + columns] for i in range(0, len(tiles), columns)] or [[]]
-    sheet_w = 2 * margin + widest * W + (widest - 1) * gap
-    sheet_h = margin + header_h + len(rows) * strip_h + (len(rows) - 1) * strip_gap + margin
-    sheet = Image.new("RGB", (sheet_w, sheet_h), _SHEET)
+    sheet = Image.new("RGB", layout.size, _SHEET)
     draw = ImageDraw.Draw(sheet)
 
     draw.text((margin, margin), title, fill=_TITLE, font=_font(round(H * 0.1)))
@@ -181,11 +247,11 @@ def render_sheet(
     caption_font = _font(round(H * 0.045))
     stock = (film_stock or "Inverted by halide").upper()
     for r, row in enumerate(rows):
-        y0 = margin + header_h + r * (strip_h + strip_gap)
-        frames_y = y0 + top_edge
+        frames_y = layout.frame_box(r * columns)[1]
+        y0 = frames_y - top_edge
         for c, tile in enumerate(row):
             number = tile.number if tile.number is not None else r * columns + c + 1
-            x = margin + c * (W + gap)
+            x = layout.frame_box(r * columns + c)[0]
             if tile.image is None:
                 draw.rectangle([x, frames_y, x + W - 1, frames_y + H - 1], fill=_FAILED)
                 draw.text((x + W // 2, frames_y + H // 2), "failed", fill=_EDGE_PRINT, font=edge_font, anchor="mm")

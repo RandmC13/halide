@@ -50,6 +50,7 @@ from halide.gui.drawers import Accordion, Drawer, PrintControls, RollDetailsForm
 from halide.gui.filmstrip import Filmstrip
 from halide.gui.loaders import FrameLoader, PreviewLoader
 from halide.gui.point_list import CC_EXPLANATION, PointList, agreement_colour
+from halide.gui.proof_window import ProofWindow
 from halide.gui.render import negative_display, positive_display, print_patch
 from halide.gui.roll import PREVIEW_LONG_EDGE, CalibrationSession, Frame, PointView, quiet_auto_estimate
 from halide.gui.sampling import (
@@ -330,6 +331,7 @@ class MainWindow(QWidget):
         self._flat_preview = False
         self._nudge: str | None = None
         self._pending_flash: int | None = None
+        self._proof: ProofWindow | None = None
         self._preview_loader: PreviewLoader | None = None
         self._frame_loader: FrameLoader | None = None
         self._thumbs_timer = QTimer(self)
@@ -463,6 +465,7 @@ class MainWindow(QWidget):
         self.proof_button.setToolTip("A zoomable contact sheet of the whole roll printed with this calibration")
         self.proof_button.setEnabled(False)
         self.proof_button.setVisible(not self.is_pick_session)
+        self.proof_button.clicked.connect(self._on_proof)
         panel.addWidget(self.proof_button)
 
         self.details_form = RollDetailsForm()
@@ -600,7 +603,6 @@ class MainWindow(QWidget):
         if all(f.loaded for f in self.session.frames):
             self._status(f"Roll loaded: {len(self.session.frames)} frames")
         self._refresh_wedge()
-        self.proof_button.setEnabled(False)  # wired up in a later step
 
     def _select_frame(self, index: int) -> None:
         if not (0 <= index < len(self.session.frames)) or index == self._current:
@@ -781,9 +783,39 @@ class MainWindow(QWidget):
     def _points_changed(self) -> None:
         """The fit may have changed: everything that shows it follows."""
         self._refresh_points()
+        self._proof_is_stale()
         if self._positive_mode():
             self._refresh_image()
             self._thumbs_timer.start(0)
+
+    # --- proof sheet ----------------------------------------------------------------------------
+
+    def _on_proof(self) -> None:
+        profile = self.session.profile()
+        if profile is None or not self.session.frames:
+            return
+        if self._proof is not None:
+            self._proof.close()
+        reference = self.session.reference
+        tone = self.session.print_tone()
+        bits = [f"{len(self.session.points)} neutral points"]
+        bits.append("print exposure/grade pinned" if self.session.tone_override else "print fitted per frame")
+        if reference is not None:
+            bits.append(f"scan exposure matched to {reference.describe()}")
+        frames = [(f.path, f.preview, self.session.gain(f.scan)) for f in self.session.frames]
+        title = self.session.roll_folder.name if self.session.roll_folder else frames[0][0].stem
+        self._proof = ProofWindow(
+            self, title, frames, profile, tone, self.session.details.get("film_stock") or None, " · ".join(bits)
+        )
+        self._proof.destroyed.connect(self._on_proof_closed)
+        self._proof.show()
+
+    def _on_proof_closed(self) -> None:
+        self._proof = None
+
+    def _proof_is_stale(self) -> None:
+        if self._proof is not None:
+            self._proof.mark_stale(self._on_proof)
 
     def _refresh_points(self) -> None:
         views = self.session.views()
@@ -796,6 +828,7 @@ class MainWindow(QWidget):
         self._refresh_notice(views)
         self._refresh_details(views)
         self.primary_button.setEnabled(self.session.can_fit())
+        self.proof_button.setEnabled(self.session.can_fit() and bool(self.session.frames))
 
     def _refresh_wedge(self, views: list[PointView] | None = None) -> None:
         views = self.session.views() if views is None else views
@@ -884,8 +917,11 @@ class MainWindow(QWidget):
         self.session.details = values
 
     def _on_print_changed(self, tone: ToneCurveParams | None, flat: bool) -> None:
+        stale = tone != self.session.tone_override
         self.session.tone_override = tone
         self._flat_preview = flat
+        if stale:
+            self._proof_is_stale()
         if self._positive_mode():
             self._refresh_image()
             self._thumbs_timer.start(0)
@@ -933,6 +969,8 @@ class MainWindow(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._stop_loaders(wait=True)
+        if self._proof is not None:
+            self._proof.close()  # stops its full-quality workers too
         if self.is_pick_session and not self._pick_result_emitted:
             self._pick_result_emitted = True
             self.pickCompleted.emit(None)

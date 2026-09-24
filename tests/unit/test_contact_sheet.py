@@ -93,6 +93,21 @@ def test_film_stock_travels_in_provenance_to_the_sheet():
     assert "film_stock" not in unnamed
 
 
+def test_layout_locates_frames_where_the_renderer_draws_them():
+    from halide.io.contact_sheet import SheetLayout
+
+    colours = [np.full((60, 90, 3), 40 + 20 * i, dtype=np.uint8) for i in range(8)]
+    tiles = [Tile(f"IMG_{i}", c) for i, c in enumerate(colours)]
+    sheet = np.asarray(render_sheet(tiles, "Roll", frame_width=300, columns=6))
+    layout = SheetLayout(len(tiles), 300, 6)
+    assert sheet.shape[1::-1] == layout.size
+    for i, colour in enumerate(colours):
+        x, y, w, h = layout.frame_box(i)
+        assert tuple(sheet[y + h // 2, x + w // 2]) == tuple(colour[0, 0])  # the frame's own pixels
+        assert layout.frame_at(x + w // 2, y + h // 2) == i
+    assert layout.frame_at(2, 2) is None  # the margin belongs to no frame
+
+
 def test_sheet_format_is_checked_up_front():
     check_sheet_path("sheet.png")
     with pytest.raises(ValueError, match=".jpg, .jpeg or .png"):
