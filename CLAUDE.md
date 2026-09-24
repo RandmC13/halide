@@ -124,7 +124,7 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   matrix-shaper profile," which is exactly what's needed here. The matrix/TRC subset of the ICC
   spec this project reads is small and precisely documented; no PyPI package does this narrow job.
   Pillow is still a dependency, but only for `io/raster.py`'s PNG/JPEG writing — an unrelated job.
-- **The default tone-render curve is a vendored real paper response curve** (`assets/tone_curves`,
+- **The default tone-render curve is a vendored real paper response curve** (`src/halide/assets/tone_curves`,
   from `abpy/color-neg-resources`, MIT), not an invented analytic curve — deliberately, to keep the
   "faithful over flashy" priority. `ToneCurveParams.exposure` (enlarger exposure) and `contrast`
   (paper grade) both default to `None` = **fitted per image** by `core/tone_render.py::fit_print`,

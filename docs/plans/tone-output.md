@@ -34,7 +34,7 @@ auto-exposure). The sRGB 8-bit values are luminance at the given percentile of p
 (These runs used `--auto-density` profiles because no saved profile was available in this
 environment. The tone-range numbers depend very little on which calibration is used.)
 
-**Why.** In print terms, the paper curve (Endura, `assets/tone_curves/paper_endura.cube`) goes from
+**Why.** In print terms, the paper curve (Endura, `src/halide/assets/tone_curves/paper_endura.cube`) goes from
 highlight detail to deep shadow over about **0.82 log units** of print exposure (computed in §3).
 That is the paper's *exposure scale* (in ISO terms, its "paper range"). A typical negative's scene occupies
 **about 0.94–1.05 log units** of density. `contrast=0.5` halves the negative's density range

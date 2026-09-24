@@ -1,8 +1,17 @@
 *.tif
 *.tiff
 __pycache__/
-.venv/
 *.egg-info/
 build/
 dist/
 .pytest_cache/
+*.egg
+.venv*/
+venv/
+.DS_Store
+
+# Local-only material: scans, reference PDFs/photos, Claude Code worktrees
+Roll16-Testing/
+enlarger-controller.png
+filminversion-ab.pdf
+.claude/

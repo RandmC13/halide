@@ -34,13 +34,13 @@ _LINEARITY_TOLERANCE = 5e-3
 _D50_XY = colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"]
 
 # The output working-space profile: Elle Stone's community-authored linear ACEScg ICC profile
-# (CC BY-SA 3.0, see assets/icc_profiles/LICENSE-elles_icc_profiles.txt), the exact profile the
+# (CC BY-SA 3.0, see src/halide/assets/icc_profiles/LICENSE-elles_icc_profiles.txt), the exact profile the
 # source blog post recommends. Cross-checked in tests/unit/test_icc.py: parsing this file with our
 # own reader and independently computing ACEScg's D50-adapted matrix via colour-science agree to
 # within ICC s15Fixed16 quantization (~2e-4) — i.e. two independent sources of truth agree, rather
 # than us hand-authoring a profile with no independent way to verify it here.
 OUTPUT_PROFILE_PATH = (
-    Path(__file__).resolve().parents[3] / "assets" / "icc_profiles" / "ACEScg-elle-V4-g10.icc"
+    Path(__file__).resolve().parents[1] / "assets" / "icc_profiles" / "ACEScg-elle-V4-g10.icc"
 )
 
 
