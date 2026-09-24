@@ -1,6 +1,12 @@
-"""The proof sheet: the whole roll printed with the session's current calibration, as a zoomable,
-pannable contact sheet - the check that the neutral points picked on a few frames hold up across
-every frame of the roll (the way the A/B contact sheets revealed Roll16-Profile1's warmth).
+"""The contact sheet window ("Build contact sheet…" in the picker): the whole roll printed with the
+session's current calibration, zoomable and pannable - the check that the neutral points picked on
+a few frames hold up across every frame of the roll (the way the A/B contact sheets revealed
+Roll16-Profile1's warmth). Once every frame has developed it can be saved as a file.
+
+Where the full-quality frames live meanwhile: each worker writes its frame's thumbnail PNG into a
+temporary folder (`halide-proof-…` in the system temp directory); each is read into memory as it
+finishes and the folder is deleted when the run ends or the window closes. The assembled sheet only
+ever exists in memory - on disk only if the user saves it.
 
 It opens at once with a *draft*: every frame's small filmstrip preview printed with the current
 fit. Meanwhile the real thing develops in the background - each frame at full resolution through
@@ -26,11 +32,13 @@ from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QToolTip,
@@ -41,7 +49,7 @@ from PySide6.QtWidgets import (
 from halide.batch.orchestrator import BatchJob, _pool_context, _worker, default_worker_count
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.gui.render import positive_display
-from halide.io.contact_sheet import SheetLayout, Tile, caption_from_provenance, load_thumbnail, render_sheet
+from halide.io.contact_sheet import SheetLayout, Tile, caption_from_provenance, load_thumbnail, render_sheet, write_sheet
 from halide.processing import Stage
 
 PROOF_FRAME_WIDTH = 800  # px per frame: plenty to zoom into, and a ~37-frame sheet stays ~5000 px wide
@@ -168,12 +176,15 @@ class ProofWindow(QDialog):
         tone: ToneCurveParams,
         film_stock: str | None,
         settings: str,
+        save_dir: Path | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setWindowTitle("halide · proof sheet")
+        self.setWindowTitle("halide · contact sheet")
         self._title, self._film_stock, self._settings = title, film_stock, settings
+        self._save_dir = save_dir
+        self._sheet = None
         self._names = [path.stem for path, _, _ in frames]
         self._captions = [""] * len(frames)
         self._tiles: list[Tile] = []
@@ -191,13 +202,18 @@ class ProofWindow(QDialog):
         self.progress.setFixedWidth(260)
         self.progress.setTextVisible(False)
         top.addWidget(self.progress)
-        self.stale_note = QLabel("Points or print settings have changed since this proof.")
+        self.stale_note = QLabel("Points or print settings have changed since this sheet was built.")
         self.stale_note.setProperty("role", "warning")
         self.stale_note.setVisible(False)
         top.addWidget(self.stale_note)
-        self.reproof_button = QPushButton("Re-proof")
+        self.reproof_button = QPushButton("Rebuild contact sheet")
         self.reproof_button.setVisible(False)
         top.addWidget(self.reproof_button)
+        self.save_button = QPushButton("Save contact sheet…")
+        self.save_button.setEnabled(False)
+        self.save_button.setToolTip("Available once every frame has developed at full quality")
+        self.save_button.clicked.connect(self._on_save)
+        top.addWidget(self.save_button)
         layout.addLayout(top)
         self.view = SheetView()
         layout.addWidget(self.view, stretch=1)
@@ -238,6 +254,7 @@ class ProofWindow(QDialog):
             subtitle_bits.append(f"draft - developing full quality {self._done}/{len(self._tiles)}")
         sheet = render_sheet(self._tiles, self._title, "  ·  ".join(b for b in subtitle_bits if b),
                              frame_width=PROOF_FRAME_WIDTH, film_stock=self._film_stock)
+        self._sheet = sheet
         rgb = np.ascontiguousarray(np.asarray(sheet))
         h, w = rgb.shape[:2]
         image = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
@@ -269,6 +286,22 @@ class ProofWindow(QDialog):
             failed = f" · {self._failed} failed" if self._failed else ""
             self.status.setText(f"Full quality · {total} frames{failed}")
             self.progress.setVisible(False)
+            self.save_button.setEnabled(True)
+            self.save_button.setToolTip("Save this sheet as a JPEG or PNG (sRGB, like `halide contact` writes)")
+
+    def _on_save(self) -> None:
+        suggested = str((self._save_dir or Path.home()) / f"{self._title}-contact-sheet.jpg")
+        path, _ = QFileDialog.getSaveFileName(self, "Save contact sheet", suggested, "JPEG (*.jpg *.jpeg);;PNG (*.png)")
+        if not path:
+            return
+        if Path(path).suffix.lower() not in (".jpg", ".jpeg", ".png"):
+            path += ".jpg"
+        try:
+            write_sheet(path, self._sheet)  # sRGB-tagged and marked, so `halide contact` skips it
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Couldn't save", str(exc))
+            return
+        self.status.setText(f"Saved {Path(path).name} ({self._sheet.width}×{self._sheet.height} px)")
 
     def mark_stale(self, reproof) -> None:
         """The session changed after this proof was made: say so, and offer a new one."""

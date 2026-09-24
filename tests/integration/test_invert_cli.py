@@ -97,7 +97,7 @@ def test_missing_calibration_source_error_mentions_calibrate_and_pick(negative_t
     # Real workflow gap found via use: nothing pointed a user toward `halide calibrate` or --pick
     # when they hit this error cold — the fix is specifically in the wording, so pin it.
     output = tmp_path / "positive.tiff"
-    with pytest.raises(SystemExit, match=r"halide calibrate --save-profile-as NAME") as exc_info:
+    with pytest.raises(SystemExit, match=r"halide calibrate ROLL_DIR") as exc_info:
         main(["invert", str(negative_tiff), str(output)])
     assert "--pick" in str(exc_info.value)
 

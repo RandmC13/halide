@@ -19,6 +19,7 @@ from halide.cli._calibration_args import (
     add_stage_arguments,
     add_tone_arguments,
     maybe_save_profile,
+    choose_calibration_source,
     resolve_density_profile,
     resolve_scan_reference,
     resolve_stage,
@@ -286,7 +287,9 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
 
 
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob]) -> int:
-    manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
+    if stage is not Stage.INVERT_ONLY:
+        choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
+    manual_given =args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
     other_source_given = bool(args.profile) or manual_given or args.auto_density
     if args.auto_density_roll and other_source_given:
         raise SystemExit(
