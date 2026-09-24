@@ -42,6 +42,13 @@ def _common_decision(records: list[dict | None]) -> str:
     return {"print": "print", "flat": "flat (linear)"}.get(outputs.pop(), "")
 
 
+def common_film_stock(records: list[dict | None]) -> str | None:
+    """The film stock for the sheet's edge print: the one every frame's provenance names, if they
+    agree (a folder of mixed rolls gets the generic edge print rather than a wrong stock)."""
+    stocks = {r.get("film_stock") for r in records if r}
+    return stocks.pop() if len(stocks) == 1 and None not in stocks and len(records) == sum(1 for r in records if r) else None
+
+
 def write_contact_sheet(
     args: argparse.Namespace,
     jobs: list[BatchJob],
@@ -71,7 +78,7 @@ def write_contact_sheet(
     bits.append(f"halide {_halide_version()}")
     sheet = render_sheet(
         tiles, title=args.title or default_title, subtitle="  ·  ".join(bits),
-        frame_width=args.frame_width, columns=args.columns,
+        frame_width=args.frame_width, columns=args.columns, film_stock=common_film_stock(records),
     )
     write_sheet(sheet_path, sheet)
     print(console.success(f"Contact sheet → {sheet_path} ({sheet.width}×{sheet.height} px)"))

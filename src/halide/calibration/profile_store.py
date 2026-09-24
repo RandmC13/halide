@@ -30,9 +30,11 @@ def save_profile(
     *,
     tone: ToneCurveParams | None = None,
     scan: ScanSettings | None = None,
+    anchors: list[dict] | None = None,
+    roll: str | None = None,
 ) -> None:
-    """`tone`, if given, is a GUI-picked exposure/contrast override (see gui/preview_popup.py's
-    Fine-tune controls) saved as an extra "tone" sidecar key alongside the profile's own fields -
+    """`tone`, if given, is a GUI-picked exposure/contrast override (the calibration picker's Print
+    drawer, gui/drawers.py) saved as an extra "tone" sidecar key alongside the profile's own fields -
     deliberately not merged into DensityProfile itself (see calibration_args.py/core/types.py: the
     density profile stays a pure calibration concept, tone stays a separate, optional per-run
     rendering choice that a profile can merely *suggest* a default for). Linear-output mode is
@@ -41,12 +43,21 @@ def save_profile(
     `scan`, if given, is the digitizing camera exposure the calibration frame was scanned at (a
     "scan" sidecar, same reasoning as "tone"): a profile is only exactly valid at the scan exposure
     it was solved at, and --match-scan-exposure needs this reference to correct other frames to it
-    (see calibration/scan_consistency.py)."""
+    (see calibration/scan_consistency.py).
+
+    `anchors`/`roll`, if given, record how the calibration picker built this profile: every neutral
+    point (frame, position, raw RGB, that frame's scan exposure - see
+    calibration/anchors.py::point_to_dict) and the roll folder, so reopening the profile in the
+    picker restores them. Sidecars like the others; nothing else reads them."""
     data = asdict(profile)
     if tone is not None:
         data["tone"] = {"exposure": tone.exposure, "contrast": tone.contrast}
     if scan is not None:
         data["scan"] = asdict(scan)
+    if anchors is not None:
+        data["anchors"] = anchors
+    if roll is not None:
+        data["roll"] = roll
     Path(path).write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -63,6 +74,7 @@ def load_profile(path: str | Path) -> DensityProfile:
             scanner=data.get("scanner"),
             created_at=data.get("created_at"),
             source=data.get("source", "manual"),
+            notes=data.get("notes"),
         )
     except KeyError as exc:
         raise ValueError(f"{path}: missing required field {exc}") from exc
@@ -92,14 +104,16 @@ def save_named_profile(
     profiles_dir: Path | None = None,
     tone: ToneCurveParams | None = None,
     scan: ScanSettings | None = None,
+    anchors: list[dict] | None = None,
+    roll: str | None = None,
 ) -> Path:
     """Save `profile` under `name` in the profiles directory, stamping its name and creation time.
-    `tone`/`scan` are optional sidecars to save alongside it - see save_profile."""
+    `tone`/`scan`/`anchors`/`roll` are optional sidecars to save alongside it - see save_profile."""
     directory = profiles_dir or default_profiles_dir()
     directory.mkdir(parents=True, exist_ok=True)
     stamped = replace(profile, name=name, created_at=datetime.now(timezone.utc).isoformat())
     path = directory / f"{name}.json"
-    save_profile(stamped, path, tone=tone, scan=scan)
+    save_profile(stamped, path, tone=tone, scan=scan, anchors=anchors, roll=roll)
     return path
 
 
@@ -123,6 +137,13 @@ def load_scan_reference(path: str | Path) -> ScanSettings | None:
     if not scan:
         return None
     return ScanSettings(exposure_time=scan["exposure_time"], f_number=scan["f_number"], iso=scan["iso"])
+
+
+def load_anchors(path: str | Path) -> tuple[list[dict], str | None]:
+    """The calibration picker's record of how a profile was built (see save_profile's `anchors`/
+    `roll`): ([], None) for any profile without one - hand-solved, CLI-saved, or older profiles."""
+    data = json.loads(Path(path).read_text())
+    return list(data.get("anchors") or []), data.get("roll")
 
 
 def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityProfile]]:
@@ -156,6 +177,32 @@ def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = Non
     new_path.write_text(json.dumps(data, indent=2) + "\n")
     old_path.unlink()
     return new_path
+
+
+# Metadata fields `halide profile edit` (and update_profile below) may change. Deliberately
+# excludes the solved calibration data (white_balance/density_scale) and identity fields
+# (name/created_at/source) — those are either produced by a calibration method, not typed by
+# hand, or already have their own dedicated operation (rename_profile).
+EDITABLE_FIELDS = ("film_stock", "process", "scanner", "notes")
+
+
+def update_profile(name: str, profiles_dir: Path | None = None, **fields: str | None) -> Path:
+    """Update one or more editable metadata fields on a saved profile in place. Leaves the
+    calibration data, name, source, and created_at untouched. Raises ValueError for any field
+    not in EDITABLE_FIELDS, and FileNotFoundError if `name` isn't a saved profile."""
+    unknown = set(fields) - set(EDITABLE_FIELDS)
+    if unknown:
+        raise ValueError(f"not an editable profile field: {', '.join(sorted(unknown))}")
+    directory = profiles_dir or default_profiles_dir()
+    path = directory / f"{name}.json"
+    if not path.exists():
+        raise FileNotFoundError(f"no saved profile named {name!r} in {directory}")
+    # Edits the raw JSON rather than round-tripping through DensityProfile (as rename_profile does),
+    # so optional sidecars ("tone", "scan", ...) survive an edit - round-tripping dropped them.
+    data = json.loads(path.read_text())
+    data.update(fields)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    return path
 
 
 def delete_profile(name: str, profiles_dir: Path | None = None) -> None:

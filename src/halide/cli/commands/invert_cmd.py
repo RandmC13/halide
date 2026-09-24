@@ -14,6 +14,7 @@ from halide.cli._calibration_args import (
     add_tone_arguments,
     describe_resolved_tone,
     maybe_save_profile,
+    choose_calibration_source,
     resolve_density_profile,
     resolve_scan_reference,
     resolve_stage,
@@ -74,6 +75,7 @@ def run(args: argparse.Namespace) -> int:
     if stage is Stage.INVERT_ONLY:
         density_profile, saved_tone = None, None
     else:
+        choose_calibration_source(args, "this image")  # sets args.profile etc. before anything reads them
         density_profile, saved_tone = resolve_density_profile(args)
     manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
     calibrated_here = stage is not Stage.INVERT_ONLY and not args.profile and not manual_given

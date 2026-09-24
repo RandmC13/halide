@@ -12,6 +12,8 @@ strategy.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
 from halide.core._constants import MIN_TRANSMITTANCE
@@ -72,6 +74,101 @@ def solve_density_balance(
         white_balance=tuple(white_balance.tolist()),
         density_scale=tuple(density_scale.tolist()),
     )
+
+
+def fit_density_balance(neutral_rgbs: Sequence[tuple[float, float, float]]) -> DensityProfile:
+    """Solve white balance + density balance from any number (>= 2) of neutral reference points.
+
+    The same model as solve_density_balance: in log density, a scene-neutral point satisfies
+    D_c = a_c + D_G / s_c for each non-green channel c, i.e. the film's neutral axis is a straight
+    line per channel against green. With two points that line passes through both, exactly as
+    solve_density_balance draws it; with more, it's the least-squares line (D_c regressed on D_G,
+    green being the reference the axis is parameterised by), so one object that isn't quite neutral
+    is averaged against the others instead of passed straight through. Exactly two points give
+    solve_density_balance's result to float precision (tests/unit/test_density.py pins that).
+
+    density_scale_c = 1 / slope_c and white_balance_c = 10 ** intercept_c - the per-channel
+    multiply and power that make every point on that line equal R=G=B.
+    """
+    rgb = np.maximum(np.asarray(neutral_rgbs, dtype=np.float64).reshape(-1, 3), MIN_TRANSMITTANCE)
+    if len(rgb) < 2:
+        raise ValueError("need at least two neutral points to solve density balance")
+    density = np.log10(1.0 / rgb)
+    green = density[:, _REFERENCE_CHANNEL]
+    if np.ptp(green) == 0:
+        raise ValueError(
+            "neutral points must differ in density (all of them have the same green density — "
+            "pick objects of different brightness)"
+        )
+
+    white_balance = np.ones(3)
+    density_scale = np.ones(3)
+    design = np.column_stack([np.ones_like(green), green])
+    for channel in (0, 2):
+        (intercept, slope), *_ = np.linalg.lstsq(design, density[:, channel], rcond=None)
+        if slope <= 0:
+            raise ValueError(
+                "these points don't describe a film response (a channel's density falls as green "
+                "rises) — at least one of them isn't neutral"
+            )
+        density_scale[channel] = 1.0 / slope
+        white_balance[channel] = 10.0**intercept
+    return DensityProfile(white_balance=tuple(white_balance.tolist()), density_scale=tuple(density_scale.tolist()))
+
+
+def neutral_residuals(profile: DensityProfile, rgbs: Sequence[tuple[float, float, float]]) -> np.ndarray:
+    """(N, 3) per-channel deviation of each point from neutral once `profile` is applied, in
+    density, relative to the point's own mean over channels (so each row sums to zero).
+
+    Measured on the density-balanced negative: balanced density = density_scale * (D - log10 wb).
+    A channel with *more* balanced density prints *brighter* in that colour after inversion, so a
+    positive entry means the point would print tinted toward that channel's colour.
+    """
+    rgb = np.maximum(np.asarray(rgbs, dtype=np.float64).reshape(-1, 3), MIN_TRANSMITTANCE)
+    scale = np.asarray(profile.density_scale, dtype=np.float64)
+    wb = np.asarray(profile.white_balance, dtype=np.float64)
+    balanced = scale * (np.log10(1.0 / rgb) - np.log10(wb))
+    return balanced - balanced.mean(axis=1, keepdims=True)
+
+
+def leave_one_out_residuals(rgbs: Sequence[tuple[float, float, float]]) -> np.ndarray:
+    """(N, 3) like neutral_residuals, but each point is judged against the fit through all the
+    *other* points - "how far is this object from what the rest agree neutral is".
+
+    This, not neutral_residuals against the fit that includes the point, is what to show a user
+    checking their picks: a least-squares line bends toward a bad point, so judged against a fit
+    that includes it the bad point looks closer to neutral than it is and the good points pick up
+    part of its error (tests/unit/test_density.py: a point truly CC 3.9 off read CC 2.6, with the
+    good points at CC 1.5). Rows are NaN where the remaining points can't be fitted (fewer than
+    three points in total, or the others all at one density)."""
+    rgb = np.asarray(rgbs, dtype=np.float64).reshape(-1, 3)
+    out = np.full(rgb.shape, np.nan)
+    for i in range(len(rgb)):
+        others = np.delete(rgb, i, axis=0)
+        try:
+            profile = fit_density_balance(others)
+        except ValueError:
+            continue
+        out[i] = neutral_residuals(profile, rgb[i : i + 1])[0]
+    return out
+
+
+_PRIMARY = "RGB"
+_COMPLEMENT = "CMY"  # cyan = minus red, magenta = minus green, yellow = minus blue
+
+
+def describe_cast(deviation: Sequence[float]) -> tuple[float, str]:
+    """A per-channel deviation row (see neutral_residuals) as a colour-printing filter value:
+    (CC units, direction letter). CC is Kodak's Colour Compensating filter scale — density x 100,
+    so CC10 = 0.10 — the unit of a dichroic enlarger head's filter dials. The value is the spread
+    between the most and least dense channel; the direction is the channel that deviates most,
+    named as a primary (R/G/B) if it's in excess or as its complement (C/M/Y) if it's lacking. A
+    0.15 blue deficit reads "CC 15 Y", a 0.15 red excess "CC 15 R"."""
+    d = np.asarray(deviation, dtype=np.float64)
+    magnitude = float((d.max() - d.min()) * 100.0)
+    channel = int(np.argmax(np.abs(d)))
+    direction = _PRIMARY[channel] if d[channel] > 0 else _COMPLEMENT[channel]
+    return magnitude, direction
 
 
 def apply_white_balance(img: np.ndarray, profile: DensityProfile) -> np.ndarray:

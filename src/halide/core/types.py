@@ -26,6 +26,10 @@ class DensityProfile:
     scanner: str | None = None
     created_at: str | None = None
     source: CalibrationSource = "manual"
+    notes: str | None = None
+    """Free-form user text about how this profile was produced (e.g. light source, scanner
+    settings, which frame(s) were used to anchor it) — not read by any pipeline code, purely for
+    the user's own future reference. Editable after the fact via `halide profile edit`."""
 
 
 @dataclass(frozen=True)

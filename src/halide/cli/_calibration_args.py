@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import sys
+from dataclasses import replace
 
 from halide.calibration.profile_store import (
     list_profiles,
@@ -72,6 +73,11 @@ def add_calibration_arguments(
         metavar="NAME",
         help="Save the calibration profile used for this run (however it was obtained — manual, "
         "loaded, automatic, or picked) under NAME for reuse via --profile NAME next time",
+    )
+    parser.add_argument(
+        "--notes",
+        help="Attach a free-text note to the profile saved via --save-profile-as (e.g. how it "
+        "was generated) — ignored without --save-profile-as; edit later with `halide profile edit`",
     )
 
 
@@ -171,6 +177,59 @@ def describe_resolved_tone(resolved) -> str:
     return f"print: grade (--contrast) {resolved.contrast:.3f}, exposure (--exposure) {resolved.exposure:+.3f}"
 
 
+_MENU_PROFILES = 9  # most recent saved profiles offered by the menu; --profile NAME reaches any
+
+
+def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
+    """When no calibration source was given and we're in a terminal, ask for one - a saved profile
+    (newest first, so the one just made in `halide calibrate` is at the top), picking points now
+    (invert only), or an automatic estimate - and record the answer on `args` exactly as if its
+    flag had been passed. It must run before anything reads args.profile: the scan-exposure
+    reference comes from the profile (resolve_scan_reference), and invert decides whether the
+    calibration came from the frame itself by whether a profile was given - a profile chosen
+    later, inside resolve_density_profile, would silently miss both.
+
+    Non-interactive, or with a source already given, this does nothing; resolve_density_profile
+    then raises its actionable "needs a calibration source" error if there's still none."""
+    manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
+    if (
+        args.profile
+        or manual_given
+        or getattr(args, "auto_density", False)
+        or getattr(args, "pick", False)
+        or getattr(args, "auto_density_roll", False)
+        or not sys.stdin.isatty()
+    ):
+        return
+
+    saved = sorted(list_profiles(), key=lambda item: item[1].created_at or "", reverse=True)
+    options: list[tuple[str, str]] = []
+    for stem, profile in saved[:_MENU_PROFILES]:
+        bits = [b for b in (profile.film_stock, (profile.created_at or "")[:10]) if b]
+        options.append((f"profile:{stem}", f"Profile '{stem}'" + (f"  ({' · '.join(bits)})" if bits else "")))
+    if hasattr(args, "pick"):
+        options.append(("pick", "Pick neutral points in the calibration picker now"))
+    options.append(("auto", "Use --auto-density (a quick automatic estimate for each frame)"))
+    if hasattr(args, "auto_density_roll"):
+        options.append(("auto_roll", "Use --auto-density-roll (one automatic estimate for the whole roll)"))
+    options.append(("cancel", "Cancel"))
+
+    prompt = f"No calibration given for {what}. Which would you like to use?"
+    if len(saved) > _MENU_PROFILES:
+        prompt += f" (showing the {_MENU_PROFILES} newest profiles — `--profile NAME` for the others)"
+    choice = console.menu(prompt, options)
+    if choice is None or choice == "cancel":
+        raise SystemExit("no calibration chosen")
+    if choice.startswith("profile:"):
+        args.profile = choice.removeprefix("profile:")
+    elif choice == "pick":
+        args.pick = True
+    elif choice == "auto":
+        args.auto_density = True
+    elif choice == "auto_roll":
+        args.auto_density_roll = True
+
+
 def resolve_density_profile(
     args: argparse.Namespace,
 ) -> tuple[DensityProfile | None, ToneCurveParams | None]:
@@ -223,27 +282,12 @@ def resolve_density_profile(
             raise SystemExit("no calibration picked — closed without using a calibration")
         return result
 
-    if sys.stdin.isatty():
-        options = []
-        if hasattr(args, "pick"):
-            options.append(("pick", "Pick shadow/highlight points interactively now"))
-        options.append(("auto", "Use --auto-density (quick automatic estimate)"))
-        options.append(("cancel", "Cancel"))
-        choice = console.menu("No calibration source given for this image. What would you like to do?", options)
-        if choice == "pick":
-            from halide.gui.quick_pick import run_quick_pick
-
-            result = run_quick_pick(args.input)
-            if result is None:
-                raise SystemExit("no calibration picked — closed without using a calibration")
-            return result
-        if choice == "auto":
-            return None, None
-
+    # Interactive runs were already asked (choose_calibration_source); this is the non-interactive
+    # (or cancelled) path.
     pick_hint = " --pick to choose interactively," if hasattr(args, "pick") else ""
     raise SystemExit(
-        "density balance requires a calibration source: --profile <name-or-path> (see `halide "
-        "calibrate --save-profile-as NAME` to create one), manual overrides "
+        "density balance requires a calibration source: --profile <name-or-path> (make one by "
+        "picking neutral points in `halide calibrate ROLL_DIR` and saving it), manual overrides "
         f"(--rm/--bm/--rs/--bs), --auto-density for a quick approximate guess,{pick_hint} or "
         "--invert-only to skip density balance entirely"
     )
@@ -272,6 +316,9 @@ def maybe_save_profile(
             "skips density balance entirely — use --auto-density-roll in `batch` for a single "
             "shared automatic profile, or a manual/--profile source instead)"
         )
+    notes = getattr(args, "notes", None)
+    if notes:
+        profile = replace(profile, notes=notes)
     path = save_named_profile(profile, save_as, tone=tone, scan=scan)
     if announce:
         print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))
