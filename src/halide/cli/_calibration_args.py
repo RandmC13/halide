@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import sys
+from dataclasses import replace
 
 from halide.calibration.profile_store import (
     list_profiles,
@@ -72,6 +73,11 @@ def add_calibration_arguments(
         metavar="NAME",
         help="Save the calibration profile used for this run (however it was obtained — manual, "
         "loaded, automatic, or picked) under NAME for reuse via --profile NAME next time",
+    )
+    parser.add_argument(
+        "--notes",
+        help="Attach a free-text note to the profile saved via --save-profile-as (e.g. how it "
+        "was generated) — ignored without --save-profile-as; edit later with `halide profile edit`",
     )
 
 
@@ -272,6 +278,9 @@ def maybe_save_profile(
             "skips density balance entirely — use --auto-density-roll in `batch` for a single "
             "shared automatic profile, or a manual/--profile source instead)"
         )
+    notes = getattr(args, "notes", None)
+    if notes:
+        profile = replace(profile, notes=notes)
     path = save_named_profile(profile, save_as, tone=tone, scan=scan)
     if announce:
         print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))

@@ -549,6 +549,19 @@ def confirm_overwrite(path: str | Path) -> bool:
     return confirm(f"{path} already exists — overwrite?")
 
 
+def prompt_line(prompt: str) -> str | None:
+    """TTY-aware single-line free-text prompt. Returns the typed line (possibly empty, meaning
+    "leave as-is" to a caller offering that convention), or None if stdin isn't a real terminal
+    or input was cut off (EOF/Ctrl-D) — distinct from "" so a non-interactive caller can tell
+    "nothing typed" apart from "not interactive at all"."""
+    if not sys.stdin.isatty():
+        return None
+    try:
+        return input(prompt)
+    except EOFError:
+        return None
+
+
 def menu(prompt: str, options: Sequence[tuple[str, str]]) -> str | None:
     """TTY-aware numbered menu. `options` is a list of (key, label) pairs; returns the chosen key,
     or None if not interactive, or the user gave no valid choice (blank input, EOF, out of range)."""
