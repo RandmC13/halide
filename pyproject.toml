@@ -3,6 +3,8 @@ name = "halide"
 version = "0.1.0"
 description = "Colorimetrically accurate inversion of digital scans of color negative film."
 readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
@@ -23,7 +25,7 @@ dev = ["pytest"]
 halide = "halide.cli.main:run_cli"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]  # SPDX `license` string
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

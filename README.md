@@ -178,6 +178,10 @@ halide exists because of other people's generous, openly shared work.
 
 ## License
 
-The bundled third-party files keep their own licenses, which sit next to them:
+halide is free software, released under the [GNU General Public License v3.0 or later](LICENSE).
+You can use, study, share and modify it. If you distribute a modified version, it has to stay open
+under the same licence.
+
+The bundled third-party files keep their own licences, which sit next to them:
 `src/halide/assets/tone_curves/` and `tests/golden/luts/` (MIT, Aaron Buchler), and
 `src/halide/assets/icc_profiles/` (CC BY-SA 3.0, Elle Stone).
