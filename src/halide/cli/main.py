@@ -124,8 +124,9 @@ def run_cli(argv: list[str] | None = None) -> int:
     stays exception-raising/untouched so the integration tests, which call it directly, keep
     exercising its real SystemExit contract.
 
-    Afterwards (so the note never lands inside a command's own output) it keeps zsh tab completion
-    installed and current — see halide.cli.completion for why there's no `completion` command."""
+    Afterwards (so the note never lands inside a command's own output) it keeps tab completion for
+    the shell it was started from (zsh, bash or fish) installed and current — see
+    halide.cli.completion for why there's no `completion` command."""
     from halide.cli.completion import maybe_install_completion
     from halide.cli.console import run_guarded
 
