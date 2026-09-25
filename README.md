@@ -25,8 +25,42 @@ tweaking.
 
 ## Install
 
-You need **Python 3.11 or newer** and **git**. halide is developed and tested on Linux. It is plain
-Python (numpy, Qt via PySide6), so macOS and Windows should work, but they haven't been tested yet.
+The easiest way is [uv](https://docs.astral.sh/uv/). It installs halide as a command you can run
+from anywhere, and fetches a suitable Python for it if you don't have one. You also need
+[git](https://git-scm.com/downloads).
+
+**1. Install uv** (skip this if you already have it):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh                        # macOS and Linux
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"   # Windows
+```
+
+**2. Install halide:**
+
+```bash
+uv tool install git+https://github.com/RandmC13/halide
+```
+
+**3. Check it worked:**
+
+```bash
+halide --help
+```
+
+If your terminal says `halide` isn't found, run `uv tool update-shell` and open a new terminal.
+
+Later, `uv tool upgrade halide` updates to the latest version and `uv tool uninstall halide`
+removes it. Use the full GitHub address above: a different, unrelated package called `halide` is on
+PyPI, so `uv tool install halide` on its own installs the wrong thing.
+
+halide is developed and tested on Linux. It is plain Python (numpy, Qt via PySide6), so macOS and
+Windows should work, but they haven't been tested yet.
+
+<details>
+<summary>Without uv (pip)</summary>
+
+With Python 3.11 or newer:
 
 ```bash
 git clone https://github.com/RandmC13/halide.git
@@ -36,14 +70,8 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install .
 ```
 
-Check it worked:
-
-```bash
-halide --help
-```
-
-The `halide` command works whenever that virtual environment is active. To install it once for your
-user instead, `pipx install .` from the cloned folder does the same thing in a single step.
+The `halide` command then works whenever that virtual environment is active.
+</details>
 
 **Optional:** install [exiftool](https://exiftool.org/) (`sudo apt install libimage-exiftool-perl`,
 `brew install exiftool`) so developed images keep their camera metadata. Without it halide still
