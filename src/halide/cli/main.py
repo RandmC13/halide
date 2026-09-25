@@ -122,10 +122,16 @@ def run_cli(argv: list[str] | None = None) -> int:
     """The installed `halide` console script's actual entry point (see pyproject.toml) — wraps
     main() with clean error/Ctrl+C presentation via halide.cli.console.run_guarded. main() itself
     stays exception-raising/untouched so the integration tests, which call it directly, keep
-    exercising its real SystemExit contract."""
+    exercising its real SystemExit contract.
+
+    Afterwards (so the note never lands inside a command's own output) it keeps zsh tab completion
+    installed and current — see halide.cli.completion for why there's no `completion` command."""
+    from halide.cli.completion import maybe_install_completion
     from halide.cli.console import run_guarded
 
-    return run_guarded(main, argv)
+    code = run_guarded(main, argv)
+    maybe_install_completion(build_parser())
+    return code
 
 
 if __name__ == "__main__":

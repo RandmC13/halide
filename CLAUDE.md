@@ -58,6 +58,7 @@ halide profile list|show|edit|rename|delete  # edit: film stock/process/scanner/
 halide calibrate [roll_dir | scans… | --profile NAME]  # Qt picker: neutral points on any frames of a
                                                 # roll, fitted together; --profile reopens a saved one
 ```
+zsh Tab completion sets itself up on the first run from a zsh terminal (see "Decisions and why").
 With no calibration source given in a terminal, `invert`/`batch` offer the saved profiles (newest
 first), picking (invert) or the automatic estimates, before starting.
 Input TIFFs must be linear (not display/gamma-encoded) with an embedded ICC profile — the tool
@@ -542,6 +543,20 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   when it already was, the "profile doesn't record its scan exposure" warning appeared for manual
   `--rm/--bm` values (no profile involved), and an explicit `--workers` over the memory budget
   printed "Warning: Warning:".
+- **zsh tab completion installs itself; there is deliberately no `halide completion` command**
+  (`cli/completion.py`, called from `run_cli` after the command, so tests calling `main()` never
+  trigger it). The user uses zsh and wanted no extra commands. It's a static script from `shtab`,
+  generated from `build_parser()`, rather than `argcomplete`: argcomplete re-runs halide on every
+  Tab, and importing halide takes ~1.1 s (mostly colour-science). On every run from a zsh terminal
+  (`$SHELL` is zsh and stdin/stdout are ttys), halide rewrites `$XDG_DATA_HOME/halide/zsh/_halide`
+  if it changed (6 ms). The first time, it also appends a marked block to `$ZDOTDIR/.zshrc` and
+  prints one note; the user chose this over printing the line for them to paste. The block uses
+  `compdef` because it lands after `compinit`, and it runs `compinit` itself if the zshrc never
+  does. A stamp file makes the edit one-time (a removed block stays removed);
+  `HALIDE_NO_COMPLETION=1` disables it all; failures are swallowed. Value completers are set by
+  argument `dest` in `_COMPLETERS` (TIFFs, folders, or saved profile names, which zsh lists from
+  the profiles folder itself), so a new file/profile argument needs an entry there. Verified by
+  driving a real `zsh -i` in a pty. bash/fish: not done.
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 
