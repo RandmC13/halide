@@ -16,6 +16,7 @@ dependencies = [
     "pillow",  # delivery-format export only (8-bit PNG/JPEG writing + a synthesized sRGB ICC
                # profile) — NOT used for the ICC-parsing in io/icc.py, see its module docstring
     "psutil",  # cross-platform available-memory query, batch/orchestrator.py's worker-count sizing
+    "shtab",  # generates the zsh tab-completion script from the argparse parser, cli/completion.py
 ]
 
 [project.optional-dependencies]
