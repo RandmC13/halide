@@ -50,11 +50,14 @@ halide --help
 
 If your terminal says `halide` isn't found, run `uv tool update-shell` and open a new terminal.
 
-**Tab completion (zsh)** sets itself up: the first time you run halide from a zsh terminal it adds
-a short, marked block to `~/.zshrc`, and from the next terminal on Tab completes commands, flags,
-saved profile names, and scans (TIFFs only where a scan is expected, folders where a roll is).
-It stays up to date by itself when halide gains new flags. To opt out, delete the block (it won't
-come back) or set `HALIDE_NO_COMPLETION=1`. Other shells don't get completion yet.
+**Tab completion** sets itself up in zsh, bash and fish. The first time you run halide in a
+terminal, it prints a one-line note. From the next terminal you open, Tab completes commands,
+flags, saved profile names, and scans (TIFFs only where a scan is expected, folders where a roll
+is). It stays up to date by itself when halide gains new flags. For zsh and bash, halide adds a
+short, marked block to `~/.zshrc` or `~/.bashrc` (`~/.bash_profile` on macOS). fish needs no
+edit: halide adds `~/.config/fish/completions/halide.fish`. To opt out, delete that block or file
+(it won't come back), or set `HALIDE_NO_COMPLETION=1`. Other shells, such as PowerShell on
+Windows, don't get completion yet.
 
 Later, `uv tool upgrade halide` updates to the latest version and `uv tool uninstall halide`
 removes it. Use the full GitHub address above: a different, unrelated package called `halide` is on
