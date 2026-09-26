@@ -22,7 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -334,6 +334,10 @@ class MainWindow(QWidget):
         self._proof: ProofWindow | None = None
         self._preview_loader: PreviewLoader | None = None
         self._frame_loader: FrameLoader | None = None
+        # Every loader thread until it finishes, including ones replaced by a newer load: Qt aborts
+        # the whole process ("QThread: Destroyed while thread is still running") if the window is
+        # destroyed while any of them runs, so closing waits for them all (closeEvent).
+        self._threads: set[QThread] = set()
         self._thumbs_timer = QTimer(self)
         self._thumbs_timer.setSingleShot(True)
         self._thumbs_timer.timeout.connect(self._refresh_filmstrip_thumbnails)
@@ -537,9 +541,10 @@ class MainWindow(QWidget):
             self.print_controls.set_override(None)
         self._start_roll(paths, folder)
 
-    def load_files(self, paths: list[Path]) -> None:
+    def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
         """Individual scans as a roll of their own (`halide calibrate a.tif b.tif`, `invert --pick`)."""
-        self.session.reset()
+        if not keep_points:
+            self.session.reset()
         self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None)
 
     def _start_roll(self, paths: list[Path], folder: Path | None) -> None:
@@ -561,7 +566,7 @@ class MainWindow(QWidget):
         if not self.is_pick_session:
             self._preview_loader = PreviewLoader(paths, self)
             self._preview_loader.previewReady.connect(self._on_preview_ready)
-            self._preview_loader.start()
+            self._start_thread(self._preview_loader)
         self._select_frame(0)
         self._refresh_points()
 
@@ -584,15 +589,67 @@ class MainWindow(QWidget):
         self._profile_name = path.stem
         self.details_form.set_values(self.session.details)
         self.print_controls.set_override(self.session.tone_override)
+        self._status(f"Reopened '{path.stem}': {len(self.session.points)} point(s)")
+        recorded = self.session.recorded_roll
         if folder is not None:
             self.load_roll(folder, keep_points=True)
-            self._status(f"Reopened '{path.stem}': {len(self.session.points)} point(s)")
+        elif recorded is None and (on_disk := sorted({p.frame for p in self.session.points if p.frame.is_file()})):
+            self.load_files(on_disk, keep_points=True)  # made from single scans, not a roll folder
         else:
             self._refresh_points()
-            self._status(
-                f"Reopened '{path.stem}': {len(self.session.points)} point(s). Its roll folder wasn't "
-                "found - load the roll to see them on their frames (they still count in the fit)."
+        if recorded is not None and folder is None:
+            self._roll_not_found(path.stem, recorded)
+        else:
+            self._warn_missing_frames()
+
+    def _roll_not_found(self, profile_name: str, recorded: Path) -> None:
+        """The reopened profile's roll folder has gone: say so, and offer to point at where it went
+        (points re-attach to the moved scans by file name - CalibrationSession.set_roll)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Roll not found")
+        if recorded.is_absolute():
+            box.setText(f"'{profile_name}' was made from\n{recorded}\nwhich has been moved or deleted.")
+        else:  # an older profile: it recorded the roll relative to wherever `halide calibrate` ran
+            box.setText(
+                f"'{profile_name}' recorded its roll only as '{recorded}', relative to the folder "
+                "halide calibrate was started in - and it isn't in this folder."
             )
+        box.setInformativeText(
+            f"Its {len(self.session.points)} point(s) still count in the fit. Point to the roll's new "
+            "folder to see them on their frames again."
+            if recorded.is_absolute()
+            else f"Its {len(self.session.points)} point(s) still count in the fit. Point to the roll's "
+            "folder to see them on their frames again - saving the profile then records its full path."
+        )
+        box.addButton("Continue without", QMessageBox.ButtonRole.RejectRole)
+        find = box.addButton("Find roll…", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(find)
+        box.exec()
+        if box.clickedButton() is not find:
+            self._status(f"Roll not found: {recorded} - its points still count in the fit")
+            return
+        start = next((str(p) for p in recorded.parents if recorded.is_absolute() and p.is_dir()), str(Path.home()))
+        chosen = QFileDialog.getExistingDirectory(self, "Find the roll (its folder of scans)", start)
+        if chosen:
+            self.load_roll(Path(chosen), keep_points=True)
+            self._warn_missing_frames()
+        else:
+            self._status(f"Roll not found: {recorded} - its points still count in the fit")
+
+    def _warn_missing_frames(self) -> None:
+        """Frames points were picked on that aren't in the loaded roll or on disk any more."""
+        missing = self.session.missing_frames()
+        if not missing:
+            return
+        names = "\n".join(f"  {p.name}" for p in missing[:8]) + (f"\n  …and {len(missing) - 8} more" if len(missing) > 8 else "")
+        count = sum(p.frame in set(missing) for p in self.session.points)
+        QMessageBox.warning(
+            self,
+            "Frames not found",
+            f"{len(missing)} frame(s) you picked on have been moved, renamed or deleted:\n{names}\n\n"
+            f"Their {count} point(s) still count in the fit, but can't be shown on their frames.",
+        )
 
     def _on_preview_ready(self, index: int, preview, estimate, error) -> None:
         if index >= len(self.session.frames):
@@ -627,7 +684,7 @@ class MainWindow(QWidget):
             self._frame_loader.loaded.disconnect()
         self._frame_loader = FrameLoader(frame.path, self)
         self._frame_loader.loaded.connect(self._on_frame_loaded)
-        self._frame_loader.start()
+        self._start_thread(self._frame_loader)
 
     def _show_placeholder_preview(self, frame: Frame) -> None:
         """While the full-resolution frame loads, show its small preview (not clickable yet)."""
@@ -659,13 +716,27 @@ class MainWindow(QWidget):
             self.image_view.flash(self._pending_flash)
             self._pending_flash = None
 
+    def _start_thread(self, thread: QThread) -> None:
+        self._threads.add(thread)
+        thread.finished.connect(lambda: self._threads.discard(thread))
+        thread.start()
+
     def _stop_loaders(self, wait: bool = False) -> None:
+        """Stop the roll's preview loading (a new roll, or the window closing). With `wait`, also
+        wait for every loader thread - a full-resolution frame load can't be interrupted
+        mid-decode, so that means waiting out the current one (about a second on a real scan)."""
         if self._preview_loader is not None:
             self._preview_loader.requestInterruption()
             self._preview_loader.previewReady.disconnect()
-            if wait:
-                self._preview_loader.wait(3000)  # its loop checks for interruption every 0.2 s
             self._preview_loader = None
+        if wait:
+            if self._frame_loader is not None:
+                self._frame_loader.loaded.disconnect()
+                self._frame_loader = None
+            for thread in list(self._threads):
+                thread.requestInterruption()
+                thread.wait()
+            self._threads.clear()
 
     # --- rendering ------------------------------------------------------------------------------
 
@@ -974,6 +1045,7 @@ class MainWindow(QWidget):
         self.status_label.setText(message)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self.hide()  # closing feels instant even while a frame finishes loading
         self._stop_loaders(wait=True)
         if self._proof is not None:
             self._proof.close()  # stops its full-quality workers too

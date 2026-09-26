@@ -272,3 +272,44 @@ def test_batch_without_a_source_offers_saved_profiles(negative_tiff, tmp_path, i
 def test_without_a_terminal_a_missing_source_is_still_an_actionable_error(negative_tiff, tmp_path, isolated_profiles_dir):
     with pytest.raises(SystemExit, match="halide calibrate ROLL_DIR"):
         main(["invert", str(negative_tiff), str(tmp_path / "out.tiff")])
+
+
+def test_show_names_the_roll_and_flags_it_when_moved(tmp_path, capsys, isolated_profiles_dir):
+    from halide.calibration.profile_store import save_named_profile
+    from halide.core.types import DensityProfile
+
+    roll = tmp_path / "Roll16"
+    roll.mkdir()
+    (roll / "a.tif").write_bytes(b"")
+    anchors = [
+        {"frame": str(roll / n), "x": 1, "y": 1, "rgb": [0.1, 0.1, 0.1], "scan": None} for n in ("a.tif", "b.tif")
+    ]
+    profile = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0), name="r16")
+    save_named_profile(profile, "r16", anchors=anchors, roll=str(roll))
+
+    assert main(["profile", "show", "r16"]) == 0
+    out = capsys.readouterr().out
+    assert f"Roll:           {roll}" in out and "not found" not in out
+    assert "Points:         2 on 2 frame(s) (1 missing)" in out
+
+    roll.rename(tmp_path / "Roll16-moved")
+    assert main(["profile", "show", "r16"]) == 0
+    out = capsys.readouterr().out
+    assert "not found - moved or deleted?" in out
+    assert "(2 missing)" in out
+
+
+def test_show_doesnt_invent_a_full_path_for_an_older_relative_roll(tmp_path, capsys, monkeypatch, isolated_profiles_dir):
+    from halide.calibration.profile_store import save_named_profile
+    from halide.core.types import DensityProfile
+
+    anchors = [{"frame": "pre-processed/a.tif", "x": 1, "y": 1, "rgb": [0.1, 0.1, 0.1], "scan": None}]
+    profile = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0), name="old")
+    save_named_profile(profile, "old", anchors=anchors, roll="pre-processed")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["profile", "show", "old"]) == 0
+    out = capsys.readouterr().out
+    assert "Roll:           pre-processed\n" in out
+    assert str(tmp_path / "pre-processed") not in out
+    assert "recorded relative to the folder halide calibrate ran in" in out
