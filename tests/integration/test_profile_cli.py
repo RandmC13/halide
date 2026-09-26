@@ -297,3 +297,19 @@ def test_show_names_the_roll_and_flags_it_when_moved(tmp_path, capsys, isolated_
     out = capsys.readouterr().out
     assert "not found - moved or deleted?" in out
     assert "(2 missing)" in out
+
+
+def test_show_doesnt_invent_a_full_path_for_an_older_relative_roll(tmp_path, capsys, monkeypatch, isolated_profiles_dir):
+    from halide.calibration.profile_store import save_named_profile
+    from halide.core.types import DensityProfile
+
+    anchors = [{"frame": "pre-processed/a.tif", "x": 1, "y": 1, "rgb": [0.1, 0.1, 0.1], "scan": None}]
+    profile = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0), name="old")
+    save_named_profile(profile, "old", anchors=anchors, roll="pre-processed")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["profile", "show", "old"]) == 0
+    out = capsys.readouterr().out
+    assert "Roll:           pre-processed\n" in out
+    assert str(tmp_path / "pre-processed") not in out
+    assert "recorded relative to the folder halide calibrate ran in" in out

@@ -128,8 +128,20 @@ def test_point_dict_roundtrip(tmp_path):
 
 def test_a_relative_frame_is_stored_absolute(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "roll").mkdir()
+    (tmp_path / "roll" / "a.tif").write_bytes(b"")
     relative = NeutralPoint(frame=Path("roll/a.tif"), x=1, y=2, rgb=(0.1, 0.2, 0.3), scan=None)
     assert anchors.point_to_dict(relative)["frame"] == str(tmp_path / "roll" / "a.tif")
+
+
+def test_an_unfound_relative_frame_is_kept_as_recorded_not_guessed(tmp_path, monkeypatch):
+    # An older profile opened from a different folder than it was made in: which folder its relative
+    # path meant is unknowable, so saving must not bake the current folder into it.
+    monkeypatch.chdir(tmp_path)
+    record = {"frame": "pre-processed/a.tif", "x": 1, "y": 2, "rgb": [0.1, 0.2, 0.3], "scan": None}
+    point = anchors.point_from_dict(record)
+    assert point.frame == Path("pre-processed/a.tif")
+    assert anchors.point_to_dict(point)["frame"] == "pre-processed/a.tif"
 
 
 def test_profile_anchors_sidecar_roundtrips_and_survives_edit_and_rename(tmp_path):

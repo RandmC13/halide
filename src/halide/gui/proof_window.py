@@ -69,6 +69,8 @@ class ProofRenderer(QThread):
         self._profile, self._tone = profile, tone
 
     def run(self) -> None:
+        if self.isInterruptionRequested():  # closed before it got going
+            return
         folder = Path(tempfile.mkdtemp(prefix="halide-proof-"))
         jobs = [
             BatchJob(input_path=p, output_path=None, scan_gain=g, thumbnail_path=folder / f"{i:04d}.png")
@@ -76,7 +78,11 @@ class ProofRenderer(QThread):
         ]
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ.setdefault(var, "1")
-        executor = ProcessPoolExecutor(max_workers=default_worker_count(jobs), mp_context=_pool_context())
+        workers = default_worker_count(jobs)  # reads every frame's header
+        if self.isInterruptionRequested():
+            shutil.rmtree(folder, ignore_errors=True)
+            return
+        executor = ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context())
         try:
             pending = {
                 executor.submit(_worker, job, Stage.FULL, self._profile, self._tone, PROOF_FRAME_WIDTH): i
@@ -313,5 +319,7 @@ class ProofWindow(QDialog):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._renderer.requestInterruption()
-        self._renderer.wait(3000)
+        # No timeout: Qt aborts the whole process if a running QThread is destroyed. Stopping is
+        # quick - the loop checks every 0.2 s and terminates its workers rather than waiting on them.
+        self._renderer.wait()
         super().closeEvent(event)
