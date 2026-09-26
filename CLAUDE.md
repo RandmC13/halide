@@ -548,7 +548,7 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   completion` command** (`cli/completion.py`, called from `run_cli` after the command, so tests
   calling `main()` never trigger it). The user wanted no extra commands, and wanted it to work for
   anyone, not just their own zsh. Static scripts, not `argcomplete`: argcomplete re-runs halide on
-  every Tab, and importing halide takes ~1.1 s (mostly colour-science). zsh and bash come from
+  every Tab, and even a lean `halide --help` takes ~0.1 s. zsh and bash come from
   `shtab` (generated from `build_parser()`); shtab can't do fish, so `fish_script` walks the same
   parser, and the fish script carries a small word parser (`__halide_state`) to know which
   subcommand/positional the cursor is at.
@@ -572,13 +572,19 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   - Verified by driving real interactive `zsh -i`, `bash -i` (with and without the bash-completion
     package) and `fish -i` in a pty. Not covered: tcsh, PowerShell/Windows, and the macOS system
     bash 3.2 (untested).
-- **colour-science is imported inside the functions that use it, never at module level**
-  (`io/icc.py::convert_to_working_space`, `io/raster.py::to_srgb_8bit`,
-  `processing.py::_acescg_matrix`). `import colour` drags in scipy and its plotting module and was
-  ~0.95 s of a ~1.3 s startup, paid even by `halide --help`/`profile list`; deferred, those take
-  ~0.2 s (the rest is numpy + tifffile, which every command module imports). Batch workers still get
-  it preloaded: `colour` is listed in `_FORKSERVER_PRELOAD` explicitly. Outputs unchanged
-  bit-for-bit (verified on real scans: invert, export, batch).
+- **Starting the CLI imports no numpy, tifffile, Pillow or colour-science** — they're imported
+  inside the functions that use them. Before, `halide --help`/`profile list` took ~0.75 s in the dev
+  sandbox (over 1 s on the user's machine): `import colour` (it drags in scipy and its plotting
+  module) was ~0.55 s of it, numpy/tifffile/Pillow ~0.15 s. Now ~0.1 s, the rest being Python and
+  the stdlib. How: colour only in `io/icc.py::convert_to_working_space`,
+  `io/raster.py::to_srgb_8bit`, `processing.py::_acescg_matrix`; tifffile only in the header
+  readers (`io/scan_metadata.py`, `batch/orchestrator.py`); the orchestrator's workers import
+  `halide.processing` themselves; CLI commands import `halide.processing`/`io.contact_sheet` in
+  `run()`-level functions; `Stage` moved to `core/types.py` and the sheet defaults to
+  `io/contact_sheet_defaults.py` (both re-exported from their old homes), because the parser needs
+  them. Workers still get everything preloaded: `colour` is listed in `_FORKSERVER_PRELOAD`
+  explicitly. `tests/unit/test_cli_startup.py` fails if building the parser imports any of them
+  again. Outputs unchanged bit-for-bit (verified on real scans: invert, export, batch, contact).
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 

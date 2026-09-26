@@ -11,7 +11,9 @@ from pathlib import Path
 from halide.batch.orchestrator import TIFF_SUFFIXES
 from halide.calibration.scan_consistency import SCANNING_GUIDANCE, assess_roll
 from halide.cli import console
-from halide.processing import read_roll_scan_metadata
+
+# The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
+# building the parser — `halide --help`, tab completion — doesn't load it.
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -36,6 +38,8 @@ def _names(names: list[str], limit: int = 6) -> str:
 
 
 def run(args: argparse.Namespace) -> int:
+    from halide.processing import read_roll_scan_metadata
+
     files = _collect(args.inputs)
     if not files:
         print("No TIFF files found")

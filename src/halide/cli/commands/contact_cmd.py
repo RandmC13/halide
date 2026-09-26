@@ -19,7 +19,9 @@ from halide.batch.orchestrator import (
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
-from halide.io.contact_sheet import check_sheet_path, is_contact_sheet
+
+# The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
+# building the parser — `halide --help`, tab completion — doesn't load it.
 
 _SOURCE_SUFFIXES = TIFF_SUFFIXES + (".png", ".jpg", ".jpeg")
 
@@ -36,6 +38,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _collect(inputs: list[str], sheet: Path) -> list[Path]:
+    from halide.io.contact_sheet import is_contact_sheet
+
     files: list[Path] = []
     for item in map(Path, inputs):
         if item.is_dir():
@@ -53,6 +57,8 @@ def _collect(inputs: list[str], sheet: Path) -> list[Path]:
 
 
 def run(args: argparse.Namespace) -> int:
+    from halide.io.contact_sheet import check_sheet_path
+
     if len(args.inputs) < 2:
         raise SystemExit("usage: halide contact <folder-or-files...> <sheet.jpg|.png>")
     sheet_path = Path(args.inputs[-1])

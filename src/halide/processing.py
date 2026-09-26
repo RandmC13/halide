@@ -8,7 +8,6 @@ from __future__ import annotations
 import functools
 import json
 from collections.abc import Callable
-from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -20,7 +19,7 @@ from halide.calibration.auto import auto_density_balance, roll_auto_density_bala
 from halide.core.density import apply_density_balance, apply_white_balance
 from halide.core.pipeline import negative_to_positive
 from halide.core.tone_render import ResolvedTone, apply_tone, resolve_tone
-from halide.core.types import DensityProfile, ToneCurveParams
+from halide.core.types import DensityProfile, Stage, ToneCurveParams  # noqa: F401 -- Stage re-exported
 from halide.io.icc import (
     UnsupportedICCProfileError,
     convert_to_working_space,
@@ -54,12 +53,6 @@ def _acescg_matrix() -> np.ndarray:
         chromatic_adaptation_transform="Bradford",
         apply_cctf_decoding=False,
     ).T
-
-
-class Stage(Enum):
-    FULL = "full"  # white balance + density balance + invert + tone render
-    INVERT_ONLY = "invert_only"  # skip density balance (identity profile), still invert + tone render
-    DENSITY_ONLY = "density_only"  # white balance + density balance only, no invert/tone render
 
 
 class ScanColorError(Exception):

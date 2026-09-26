@@ -27,8 +27,10 @@ from halide.cli._calibration_args import (
 )
 from halide.cli._run_sheet import choose_workers, frame_count, roll_row
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
-from halide.io.contact_sheet import check_sheet_path
-from halide.processing import ScanColorError, Stage, estimate_roll_density_profile, read_roll_scan_metadata
+from halide.core.types import Stage
+
+# The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
+# building the parser — `halide --help`, tab completion — doesn't load it.
 
 _SEP = console.RunSheet.SEP
 
@@ -187,6 +189,8 @@ def run(args: argparse.Namespace) -> int:
     if args.output_dir is None and not args.contact_sheet:
         raise SystemExit("give an output directory, --contact-sheet SHEET (a preview), or both")
     if args.contact_sheet:
+        from halide.io.contact_sheet import check_sheet_path
+
         try:
             check_sheet_path(args.contact_sheet)
         except ValueError as exc:
@@ -217,6 +221,8 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     """Everything decided before developing starts — scan checks, scan-exposure matching,
     calibration, print settings, worker count — each reported on the run sheet as it's decided.
     Returns (jobs, density_profile, tone_params, scan_reference, workers)."""
+    from halide.processing import ScanColorError, estimate_roll_density_profile, read_roll_scan_metadata
+
     roll_row(sheet, input_dir, len(jobs), _destination(args))
 
     per_frame_auto = args.auto_density and not args.auto_density_roll

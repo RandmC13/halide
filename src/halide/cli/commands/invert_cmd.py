@@ -22,7 +22,10 @@ from halide.cli._calibration_args import (
 )
 from halide.calibration.scan_consistency import scan_gain as compute_scan_gain
 from halide.io.scan_metadata import read_scan_metadata
-from halide.processing import ScanColorError, Stage, process_scan
+from halide.core.types import Stage
+
+# The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
+# building the parser — `halide --help`, tab completion — doesn't load it.
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -67,6 +70,8 @@ def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool) -> tuple
 
 
 def run(args: argparse.Namespace) -> int:
+    from halide.processing import ScanColorError, process_scan
+
     input_path = Path(args.input)
     if not input_path.exists():
         raise SystemExit(f"input file not found: {input_path}")
