@@ -106,13 +106,20 @@ def _show_roll(path: Path) -> None:
     or frames that have been moved or deleted since. Older profiles recorded paths relative to the
     folder the picker was started in; those are read against the current folder, as the picker does."""
     records, roll = load_anchors(path)
+    warn = f"                {console.Style.YELLOW}{console.ICON_WARN} {{}}{console.Style.RESET}"
     if roll:
-        roll_path = Path(os.path.abspath(roll))
-        print(f"Roll:           {roll_path}")
-        if not roll_path.is_dir():
-            print(f"                {console.Style.YELLOW}{console.ICON_WARN} not found - moved or deleted?{console.Style.RESET}")
+        roll_path = Path(roll)
+        if roll_path.is_absolute() or roll_path.is_dir():
+            roll_path = Path(os.path.abspath(roll_path))
+            print(f"Roll:           {roll_path}")
+            if not roll_path.is_dir():
+                print(warn.format("not found - moved or deleted?"))
+        else:  # an older profile's relative path; which folder it was relative to isn't recorded
+            print(f"Roll:           {roll}")
+            print(warn.format("recorded relative to the folder halide calibrate ran in, and not in this one"))
+            print("                  reopen it in halide calibrate --profile and use Find roll… to record its full path")
     if records:
-        frames = {Path(os.path.abspath(r["frame"])) for r in records}
+        frames = {Path(r["frame"]) for r in records}
         missing = sum(not f.is_file() for f in frames)
         note = f" ({missing} missing)" if missing else ""
         print(f"Points:         {len(records)} on {len(frames)} frame(s){note}")

@@ -192,9 +192,18 @@ def absolute(path: str | Path) -> Path:
     return Path(os.path.abspath(path))
 
 
+def recorded_path(path: str | Path) -> Path:
+    """A path as a profile should record it: absolute, unless it's a relative path from an older
+    profile that doesn't exist from the current folder. That one is kept as it was recorded - which
+    folder it was relative to is unknowable, and making it absolute here would bake a wrong guess
+    (the current folder) into the profile when it's saved again."""
+    path = Path(path)
+    return absolute(path) if path.is_absolute() or path.exists() else path
+
+
 def point_to_dict(point: NeutralPoint) -> dict:
     return {
-        "frame": str(absolute(point.frame)),
+        "frame": str(recorded_path(point.frame)),
         "x": point.x,
         "y": point.y,
         "rgb": [float(v) for v in point.rgb],
@@ -205,7 +214,7 @@ def point_to_dict(point: NeutralPoint) -> dict:
 def point_from_dict(data: dict) -> NeutralPoint:
     scan = data.get("scan")
     return NeutralPoint(
-        frame=absolute(data["frame"]),  # a relative path (older profiles) is as good as the current folder
+        frame=recorded_path(data["frame"]),
         x=int(data["x"]),
         y=int(data["y"]),
         rgb=tuple(float(v) for v in data["rgb"]),

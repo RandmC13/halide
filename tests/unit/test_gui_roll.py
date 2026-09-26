@@ -193,6 +193,8 @@ def test_a_roll_loaded_by_relative_path_is_saved_as_absolute(tmp_path, monkeypat
 
 def test_an_older_profile_with_relative_paths_still_reads_against_the_current_folder(tmp_path, monkeypatch):
     session, paths = _session(tmp_path)
+    for p in paths:
+        p.write_bytes(b"")
     for i, g in enumerate((0.8, 1.2, 1.6)):
         session.add_point(_pt(paths[i], g))
     sidecars = session.sidecars()
@@ -236,3 +238,31 @@ def test_a_moved_roll_is_reported_as_the_recorded_folder(tmp_path):
     assert session.missing_frames() == old_paths  # nothing loaded, nothing on disk
     session.set_roll([tmp_path / "new" / n for n in ("a.tif", "b.tif", "c.tif")], [AT_1_30] * 3, tmp_path / "new")
     assert session.missing_frames() == []  # all re-attached by file name
+
+
+def test_an_older_relative_profile_opened_from_another_folder_isnt_given_a_guessed_path(tmp_path, monkeypatch):
+    roll = tmp_path / "films" / "pre-processed"
+    roll.mkdir(parents=True)
+    session, paths = _session(roll)
+    for i, g in enumerate((0.8, 1.2, 1.6)):
+        session.add_point(_pt(paths[i], g))
+    sidecars = session.sidecars()
+    sidecars["roll"] = "pre-processed"  # as older profiles recorded `halide calibrate pre-processed`
+    for a in sidecars["anchors"]:
+        a["frame"] = str(Path(a["frame"]).relative_to(tmp_path / "films"))
+    path = save_named_profile(session.profile_to_save(), "old", profiles_dir=tmp_path / "profiles", **sidecars)
+
+    monkeypatch.chdir(tmp_path)  # not the folder it was made in
+    reopened = CalibrationSession()
+    assert reopened.restore(path) is None
+    assert reopened.recorded_roll == Path("pre-processed")  # as recorded, not tmp_path/pre-processed
+    assert reopened.missing_frames() == sorted(Path("pre-processed") / n for n in ("a.tif", "b.tif", "c.tif"))
+    resaved = reopened.sidecars()  # "Continue without", then Save
+    assert resaved["roll"] == "pre-processed"
+    assert [a["frame"] for a in resaved["anchors"]] == [f"pre-processed/{n}" for n in ("a.tif", "b.tif", "c.tif")]
+
+    reopened.set_roll(paths, [AT_1_30] * 3, roll)  # Find roll…: now it records the real full path
+    assert reopened.missing_frames() == []
+    found = reopened.sidecars()
+    assert found["roll"] == str(roll)
+    assert [a["frame"] for a in found["anchors"]] == [str(p) for p in paths]

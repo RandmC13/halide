@@ -259,7 +259,10 @@ class CalibrationSession:
             "tone": self.tone_override,
             "scan": self.reference,
             "anchors": [anchors.point_to_dict(p) for p in self.points],
-            "roll": str(anchors.absolute(self.roll_folder)) if self.roll_folder else None,
+            # The loaded roll, else the one a reopened profile recorded (kept even when it wasn't found,
+            # so "Continue without" then Save doesn't forget where the roll was).
+            "roll": str(anchors.recorded_path(self.roll_folder or self.recorded_roll))
+            if (self.roll_folder or self.recorded_roll) else None,
         }
 
     def restore(self, profile_path: Path) -> Path | None:
@@ -273,9 +276,9 @@ class CalibrationSession:
         self.details = {k: getattr(profile, k) or "" for k in DETAIL_FIELDS}
         self.tone_override = load_tone_override(profile_path)
         self._reference_override = load_scan_reference(profile_path)
-        folder = anchors.absolute(roll) if roll else None  # relative in older profiles
+        folder = anchors.recorded_path(roll) if roll else None  # may stay relative: older profiles
         self.recorded_roll = folder
-        return folder if folder is not None and folder.is_dir() else None
+        return folder if folder is not None and folder.is_absolute() and folder.is_dir() else None
 
     def missing_frames(self) -> list[Path]:
         """Frames that points were picked on but that are neither in the loaded roll nor on disk

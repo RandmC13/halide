@@ -440,8 +440,12 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     roll moved) and re-attach to a moved roll by file name.
   - Those paths are stored **absolute** (`anchors.absolute`: `os.path.abspath`, symlinks kept).
     They used to be stored as typed, so `halide calibrate Roll16` saved `"Roll16"` and the profile
-    only reopened from that same folder. Older relative profiles still read against the current
-    folder (the old behaviour) and become absolute when saved again. When the roll folder has gone,
+    only reopened from that same folder. An older relative path is used only if it exists from the
+    current folder; otherwise it stays **as recorded** (`anchors.recorded_path`) - shown as
+    "recorded only as 'pre-processed'", never absolutised. Found via real use: the first version
+    read it against the current folder, so opening from the repo showed every old profile's roll
+    as `/home/…/halide/pre-processed`, "missing" - and saving would have baked that guess in. Which
+    folder it was relative to isn't recorded anywhere; Find roll… is the way to fix one. When the roll folder has gone,
     the picker says so in a "Roll not found" dialog with "Find roll…" (opens in the nearest
     surviving parent folder; points re-attach by file name) or "Continue without"; picked frames
     missing from a roll that is still there get a "Frames not found" warning. Both chosen by the
@@ -480,6 +484,13 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   - Closing any window stops its worker processes rather than waiting (concurrent.futures has no
     public terminate, so the pool's private process table): `halide calibrate` otherwise sat ~7 s in
     the terminal after its window closed.
+  - Closing also waits (no timeout) for **every** loader thread, including ones replaced by a newer
+    load (`MainWindow._threads`): Qt aborts the whole process ("QThread: Destroyed while thread is
+    still running", core dump) if a window is destroyed with any running. Found via real use -
+    only the preview loader was stopped, with a 3 s timeout, never the full-resolution
+    `FrameLoader`; reproduced on Roll 16 by closing within ~0.5 s of loading. A mid-decode frame
+    load can't be interrupted, so the window hides first and the process exits when it finishes
+    (up to ~2.7 s after closing during the first load).
   - The auto estimate's "candidates unusually close in density" warning is silenced in the picker
     only (`gui/roll.py::quiet_auto_estimate`) - it's CLI advice, and printed on every launch.
 - **`halide invert --pick` opens the same picker for one frame** (`gui/quick_pick.py::

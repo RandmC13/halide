@@ -30,13 +30,15 @@ class PreviewLoader(QThread):
         self._paths = list(paths)
 
     def run(self) -> None:
-        if not self._paths:
+        if not self._paths or self.isInterruptionRequested():  # stopped before it got going
             return
         # As batch/orchestrator.py::_run_pool: one BLAS thread per worker process, set before the
         # pool (and its forkserver) exists.
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ.setdefault(var, "1")
         workers = default_export_worker_count([BatchJob(input_path=p, output_path=None) for p in self._paths])
+        if self.isInterruptionRequested():  # sizing the pool reads every frame's header
+            return
         executor = ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context())
         try:
             pending = {executor.submit(load_frame_preview, str(p)): i for i, p in enumerate(self._paths)}
