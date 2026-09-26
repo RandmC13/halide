@@ -258,7 +258,9 @@ def _thumbnail_worker(job: BatchJob, thumbnail_long_edge: int) -> BatchResult:
 # What the forkserver imports once, before forking workers: its own default (`__main__`) plus the
 # worker code. Workers then share those pages copy-on-write instead of each importing numpy,
 # colour-science and scipy afresh — measured: 4 idle workers' proportional memory 294 -> 73 MiB.
-_FORKSERVER_PRELOAD = ["__main__", "halide.processing"]
+# colour is listed explicitly because halide imports it lazily (only where it's used), so
+# preloading halide.processing alone no longer loads it.
+_FORKSERVER_PRELOAD = ["__main__", "halide.processing", "colour"]
 
 
 def _pool_context():
