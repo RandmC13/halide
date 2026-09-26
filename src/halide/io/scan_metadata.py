@@ -20,8 +20,6 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-import tifffile
-
 _XMP_TAG = 700
 
 # darktable modules that don't reshape tone or colour: raw decoding, the colour-profile matrices,
@@ -108,6 +106,8 @@ def darktable_state_from_xmp(xmp: str) -> DarktableState | None:
 
 def read_scan_metadata(path: str | Path) -> tuple[ScanSettings | None, DarktableState | None]:
     """(EXIF scan settings, darktable export state) — either may be None if absent/unreadable."""
+    import tifffile  # here, not at module level: the CLI imports this module just to start up
+
     try:
         with tifffile.TiffFile(path) as tif:
             tags = tif.pages[0].tags

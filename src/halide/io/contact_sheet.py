@@ -28,11 +28,10 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from PIL.PngImagePlugin import PngInfo
 
+from halide.io.contact_sheet_defaults import DEFAULT_COLUMNS, DEFAULT_FRAME_WIDTH  # noqa: F401 -- re-exported
 from halide.io.raster import _SRGB_ICC_BYTES, to_srgb_8bit
 
 FRAME_ASPECT = 3 / 2  # a 35mm frame's cell; other shapes are fitted inside it
-DEFAULT_FRAME_WIDTH = 900  # px per frame cell — a 6-across sheet is ~6000 px wide
-DEFAULT_COLUMNS = 6
 
 _SHEET = (14, 13, 12)  # film prints black on a contact sheet: rebate, frame lines, the lot
 _TITLE = (225, 215, 200)

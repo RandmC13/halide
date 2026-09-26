@@ -8,16 +8,10 @@ from pathlib import Path
 
 from halide.batch.orchestrator import BatchJob, BatchResult
 from halide.cli import console
-from halide.io.contact_sheet import (
-    DEFAULT_COLUMNS,
-    DEFAULT_FRAME_WIDTH,
-    Tile,
-    caption_from_provenance,
-    load_thumbnail,
-    render_sheet,
-    write_sheet,
-)
-from halide.processing import _halide_version
+from halide.io.contact_sheet_defaults import DEFAULT_COLUMNS, DEFAULT_FRAME_WIDTH
+
+# The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
+# building the parser — `halide --help`, tab completion — doesn't load it.
 
 
 def add_contact_layout_arguments(parser: argparse.ArgumentParser) -> None:
@@ -59,6 +53,9 @@ def write_contact_sheet(
 ) -> None:
     """Assemble the sheet from every job's thumbnail (in job order — the order of the roll), with a
     'failed' tile for any frame that didn't make it, and write it."""
+    from halide.io.contact_sheet import Tile, caption_from_provenance, load_thumbnail, render_sheet, write_sheet
+    from halide.processing import _halide_version
+
     failed = {r.job for r in results if r.error}
     tiles, records = [], []
     for job in jobs:

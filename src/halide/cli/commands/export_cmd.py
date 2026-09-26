@@ -17,7 +17,9 @@ from halide.batch.orchestrator import (
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
 from halide.cli._run_sheet import choose_workers, roll_row
-from halide.processing import export_delivery_image
+
+# The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
+# building the parser — `halide --help`, tab completion — doesn't load it.
 
 _FORMATS = ("png", "jpg", "jpeg")
 
@@ -59,6 +61,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_single(args: argparse.Namespace, input_path: Path) -> int:
+    from halide.processing import export_delivery_image
+
     if not input_path.exists():
         raise SystemExit(f"input file not found: {input_path}")
 

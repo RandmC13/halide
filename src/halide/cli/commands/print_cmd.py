@@ -27,7 +27,9 @@ from halide.cli import console
 from halide.cli._run_sheet import choose_workers, roll_row
 from halide.cli._calibration_args import add_tone_arguments, describe_resolved_tone, resolve_tone_params
 from halide.core.types import ToneCurveParams
-from halide.processing import PrintInputError, ScanColorError, print_scan
+
+# The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
+# building the parser — `halide --help`, tab completion — doesn't load it.
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -66,6 +68,8 @@ def _resolve_tone(args: argparse.Namespace) -> ToneCurveParams:
 
 
 def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCurveParams) -> int:
+    from halide.processing import PrintInputError, ScanColorError, print_scan
+
     if not input_path.exists():
         raise SystemExit(f"input file not found: {input_path}")
 

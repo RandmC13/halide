@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from typing import Literal
 
 CalibrationSource = Literal["colorchecker", "anchor", "auto", "manual"]
+
+
+class Stage(Enum):
+    """How far `processing.process_scan` takes a negative. Lives here rather than in
+    processing.py (which re-exports it) so the CLI can name it without importing numpy."""
+
+    FULL = "full"  # white balance + density balance + invert + tone render
+    INVERT_ONLY = "invert_only"  # skip density balance (identity profile), still invert + tone render
+    DENSITY_ONLY = "density_only"  # white balance + density balance only, no invert/tone render
 
 
 @dataclass(frozen=True)

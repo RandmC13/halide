@@ -5,7 +5,7 @@ Each shell's script is generated from halide's own argparse parser (`shtab` for 
 which shtab supports; `fish_script` below for fish, which it doesn't), so it can't drift from the
 real flags: every run of halide from an interactive terminal regenerates the script for the shell
 it was run from and rewrites the file only if it changed. The scripts are static — pressing Tab
-never starts Python (even `halide --help` takes ~0.2 s, which would make every Tab lag).
+never starts Python (even `halide --help` takes ~0.1 s, which would make every Tab lag).
 
 Getting the shell to load the script: fish autoloads `~/.config/fish/completions/halide.fish`, so
 nothing else is needed. zsh and bash only read their rc file, so the first run appends one marked

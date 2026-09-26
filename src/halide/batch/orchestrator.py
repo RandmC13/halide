@@ -25,11 +25,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-import tifffile
+from halide.core.types import DensityProfile, Stage, ToneCurveParams
+from halide.io.contact_sheet_defaults import DEFAULT_FRAME_WIDTH
 
-from halide.core.types import DensityProfile, ToneCurveParams
-from halide.io.contact_sheet import DEFAULT_FRAME_WIDTH
-from halide.processing import Stage, export_delivery_image, print_scan, process_scan, thumbnail_existing_output
+# tifffile and halide.processing (numpy, Pillow, colour-science) are imported inside the functions
+# that use them: every CLI command imports this module, and `halide --help` shouldn't pay for them.
+# Workers don't pay either — the forkserver preloads halide.processing (_FORKSERVER_PRELOAD).
 
 TIFF_SUFFIXES = (".tif", ".tiff")
 
@@ -91,6 +92,8 @@ def _decoded_pixel_bytes(path: Path) -> int | None:
     """Cheaply estimate a TIFF's decoded in-memory size from its header alone (page shape/dtype),
     without reading any pixel data — used to size the worker pool before processing starts. Returns
     None if the header can't be read (caller falls back to a conservative default)."""
+    import tifffile
+
     try:
         with tifffile.TiffFile(path) as tf:
             page = tf.pages[0]
@@ -221,6 +224,8 @@ def _worker(
     tone_params: ToneCurveParams,
     thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
 ) -> BatchResult:
+    from halide.processing import process_scan
+
     try:
         process_scan(
             job.input_path, job.output_path, stage, density_profile, tone_params, scan_gain=job.scan_gain,
@@ -232,6 +237,8 @@ def _worker(
 
 
 def _export_worker(job: BatchJob, quality: int) -> BatchResult:
+    from halide.processing import export_delivery_image
+
     try:
         warning = export_delivery_image(job.input_path, job.output_path, quality=quality)
         return BatchResult(job=job, error=None, warning=warning)
@@ -240,6 +247,8 @@ def _export_worker(job: BatchJob, quality: int) -> BatchResult:
 
 
 def _print_worker(job: BatchJob, tone_params: ToneCurveParams) -> BatchResult:
+    from halide.processing import print_scan
+
     try:
         _, warning = print_scan(job.input_path, job.output_path, tone_params)
         return BatchResult(job=job, error=None, warning=warning)
@@ -248,6 +257,8 @@ def _print_worker(job: BatchJob, tone_params: ToneCurveParams) -> BatchResult:
 
 
 def _thumbnail_worker(job: BatchJob, thumbnail_long_edge: int) -> BatchResult:
+    from halide.processing import thumbnail_existing_output
+
     try:
         thumbnail_existing_output(job.input_path, job.thumbnail_path, thumbnail_long_edge)
         return BatchResult(job=job, error=None)

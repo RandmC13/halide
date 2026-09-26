@@ -19,8 +19,7 @@ from halide.calibration.profile_store import (
 )
 from halide.io.scan_metadata import ScanSettings, read_scan_metadata
 from halide.cli import console
-from halide.core.types import DensityProfile, ToneCurveParams
-from halide.processing import Stage
+from halide.core.types import DensityProfile, Stage, ToneCurveParams
 
 
 def _suggest_profile_name(name: str) -> str | None:
