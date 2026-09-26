@@ -15,6 +15,7 @@ Agreement is judged per point against the fit through the *other* points
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -184,9 +185,25 @@ def wedge_range(green_densities: Iterable[np.ndarray]) -> tuple[float, float] | 
 # --- persistence (the profile's "anchors" sidecar, see calibration/profile_store.py) ------------------
 
 
+def absolute(path: str | Path) -> Path:
+    """`path` made absolute against the current folder, as typed otherwise (symlinks kept, unlike
+    Path.resolve). Profiles record frames and the roll this way so they reopen from any folder - a
+    relative path only meant something in the folder `halide calibrate` was started from."""
+    return Path(os.path.abspath(path))
+
+
+def recorded_path(path: str | Path) -> Path:
+    """A path as a profile should record it: absolute, unless it's a relative path from an older
+    profile that doesn't exist from the current folder. That one is kept as it was recorded - which
+    folder it was relative to is unknowable, and making it absolute here would bake a wrong guess
+    (the current folder) into the profile when it's saved again."""
+    path = Path(path)
+    return absolute(path) if path.is_absolute() or path.exists() else path
+
+
 def point_to_dict(point: NeutralPoint) -> dict:
     return {
-        "frame": str(point.frame),
+        "frame": str(recorded_path(point.frame)),
         "x": point.x,
         "y": point.y,
         "rgb": [float(v) for v in point.rgb],
@@ -197,7 +214,7 @@ def point_to_dict(point: NeutralPoint) -> dict:
 def point_from_dict(data: dict) -> NeutralPoint:
     scan = data.get("scan")
     return NeutralPoint(
-        frame=Path(data["frame"]),
+        frame=recorded_path(data["frame"]),
         x=int(data["x"]),
         y=int(data["y"]),
         rgb=tuple(float(v) for v in data["rgb"]),

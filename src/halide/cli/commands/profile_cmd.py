@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from pathlib import Path
 
 from halide.calibration.profile_store import (
     EDITABLE_FIELDS,
     default_profiles_dir,
     delete_profile,
     list_profiles,
+    load_anchors,
     load_profile,
     load_scan_reference,
     rename_profile,
@@ -94,7 +97,32 @@ def _run_show(args: argparse.Namespace) -> int:
     print(f"Notes:          {profile.notes or '(not set)'}")
     scan = load_scan_reference(path)
     print(f"Scanned at:     {scan.describe() if scan else '(not recorded — pass --scan-reference FRAME with --match-scan-exposure)'}")
+    _show_roll(path)
     return 0
+
+
+def _show_roll(path: Path) -> None:
+    """Where the picker's points came from (profiles saved by `halide calibrate`), flagging a roll
+    or frames that have been moved or deleted since. Older profiles recorded paths relative to the
+    folder the picker was started in; those are read against the current folder, as the picker does."""
+    records, roll = load_anchors(path)
+    warn = f"                {console.Style.YELLOW}{console.ICON_WARN} {{}}{console.Style.RESET}"
+    if roll:
+        roll_path = Path(roll)
+        if roll_path.is_absolute() or roll_path.is_dir():
+            roll_path = Path(os.path.abspath(roll_path))
+            print(f"Roll:           {roll_path}")
+            if not roll_path.is_dir():
+                print(warn.format("not found - moved or deleted?"))
+        else:  # an older profile's relative path; which folder it was relative to isn't recorded
+            print(f"Roll:           {roll}")
+            print(warn.format("recorded relative to the folder halide calibrate ran in, and not in this one"))
+            print("                  reopen it in halide calibrate --profile and use Find roll… to record its full path")
+    if records:
+        frames = {Path(r["frame"]) for r in records}
+        missing = sum(not f.is_file() for f in frames)
+        note = f" ({missing} missing)" if missing else ""
+        print(f"Points:         {len(records)} on {len(frames)} frame(s){note}")
 
 
 def _run_rename(args: argparse.Namespace) -> int:
