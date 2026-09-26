@@ -23,7 +23,7 @@ def _rgb(green_density, deviation=(0.0, 0.0, 0.0)):
     return tuple(10.0 ** -d)
 
 
-def _point(green_density, scan=AT_1_30, deviation=(0.0, 0.0, 0.0), frame="IMG_0001.tif"):
+def _point(green_density, scan=AT_1_30, deviation=(0.0, 0.0, 0.0), frame="/films/Roll16/IMG_0001.tif"):
     """A neutral object as it would be sampled from a frame digitized at `scan`: a scan exposure k
     times the reference's multiplies the recorded transmittance by k (scan_consistency.py)."""
     k = scan.relative_exposure / AT_1_30.relative_exposure
@@ -119,11 +119,17 @@ def test_wedge_range_spans_the_rolls_green_density():
     assert anchors.wedge_range([]) is None
 
 
-def test_point_dict_roundtrip():
+def test_point_dict_roundtrip(tmp_path):
     point = _point(1.2, AT_1_60)
     assert anchors.point_from_dict(anchors.point_to_dict(point)) == point
-    no_exif = NeutralPoint(frame=Path("a.tif"), x=1, y=2, rgb=(0.1, 0.2, 0.3), scan=None)
+    no_exif = NeutralPoint(frame=tmp_path / "a.tif", x=1, y=2, rgb=(0.1, 0.2, 0.3), scan=None)
     assert anchors.point_from_dict(anchors.point_to_dict(no_exif)) == no_exif
+
+
+def test_a_relative_frame_is_stored_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    relative = NeutralPoint(frame=Path("roll/a.tif"), x=1, y=2, rgb=(0.1, 0.2, 0.3), scan=None)
+    assert anchors.point_to_dict(relative)["frame"] == str(tmp_path / "roll" / "a.tif")
 
 
 def test_profile_anchors_sidecar_roundtrips_and_survives_edit_and_rename(tmp_path):
