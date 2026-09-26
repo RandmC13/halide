@@ -572,6 +572,13 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   - Verified by driving real interactive `zsh -i`, `bash -i` (with and without the bash-completion
     package) and `fish -i` in a pty. Not covered: tcsh, PowerShell/Windows, and the macOS system
     bash 3.2 (untested).
+- **colour-science is imported inside the functions that use it, never at module level**
+  (`io/icc.py::convert_to_working_space`, `io/raster.py::to_srgb_8bit`,
+  `processing.py::_acescg_matrix`). `import colour` drags in scipy and its plotting module and was
+  ~0.95 s of a ~1.3 s startup, paid even by `halide --help`/`profile list`; deferred, those take
+  ~0.2 s (the rest is numpy + tifffile, which every command module imports). Batch workers still get
+  it preloaded: `colour` is listed in `_FORKSERVER_PRELOAD` explicitly. Outputs unchanged
+  bit-for-bit (verified on real scans: invert, export, batch).
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 

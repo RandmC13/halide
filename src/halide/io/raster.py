@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import colour
 import numpy as np
 from PIL import Image, ImageCms
 
@@ -26,6 +25,8 @@ def to_srgb_8bit(acescg_image: np.ndarray) -> np.ndarray:
     cannot represent out-of-gamut or HDR values, and by this stage we are deliberately committing
     to a bounded display format rather than preserving scene-referred data (that's what the ACEScg
     TIFF intermediate is for)."""
+    import colour  # imported here, not at module level: it's most of the CLI's startup time
+
     srgb_linear = colour.RGB_to_RGB(
         acescg_image,
         input_colourspace=colour.RGB_COLOURSPACES["ACEScg"],

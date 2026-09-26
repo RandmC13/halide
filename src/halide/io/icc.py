@@ -26,12 +26,10 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-import colour
 import numpy as np
 
 _LUT_TAG_SIGNATURES = frozenset({"A2B0", "A2B1", "A2B2", "B2A0", "B2A1", "B2A2"})
 _LINEARITY_TOLERANCE = 5e-3
-_D50_XY = colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"]
 
 # The output working-space profile: Elle Stone's community-authored linear ACEScg ICC profile
 # (CC BY-SA 3.0, see src/halide/assets/icc_profiles/LICENSE-elles_icc_profiles.txt), the exact profile the
@@ -217,10 +215,12 @@ def convert_to_working_space(img: np.ndarray, profile: LinearRGBProfile) -> np.n
     # float64 intermediate; casting its *result* back down here still stops that float64-ness from
     # propagating through the rest of this project's pipeline (white balance, density balance,
     # invert, tone render), which is where it would otherwise multiply repeatedly.
+    import colour  # imported here, not at module level: it's most of the CLI's startup time
+
     working = colour.XYZ_to_RGB(
         pcs_xyz,
         colourspace=colour.RGB_COLOURSPACES["ACEScg"],
-        illuminant=_D50_XY,
+        illuminant=colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"],
         chromatic_adaptation_transform="Bradford",
         apply_cctf_encoding=False,
     )

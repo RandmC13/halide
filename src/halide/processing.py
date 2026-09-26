@@ -5,13 +5,13 @@ orchestrator (which calls this once per file inside a process pool) don't duplic
 
 from __future__ import annotations
 
+import functools
 import json
 from collections.abc import Callable
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-import colour
 import numpy as np
 from PIL import Image
 
@@ -39,14 +39,21 @@ from halide.io.tiff import copy_exif_metadata, read_tiff, read_tiff_description,
 
 IDENTITY_PROFILE = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0))
 
-_D50_XY = colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"]
-_ACESCG_MATRIX = colour.RGB_to_XYZ(
-    np.eye(3),
-    colourspace=colour.RGB_COLOURSPACES["ACEScg"],
-    illuminant=_D50_XY,
-    chromatic_adaptation_transform="Bradford",
-    apply_cctf_decoding=False,
-).T
+
+@functools.cache
+def _acescg_matrix() -> np.ndarray:
+    # colour-science is imported where it's used, not at module level: importing it (and the
+    # scipy it pulls in) is most of the CLI's startup time, which `halide --help` shouldn't pay.
+    import colour
+
+    d50_xy = colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"]
+    return colour.RGB_to_XYZ(
+        np.eye(3),
+        colourspace=colour.RGB_COLOURSPACES["ACEScg"],
+        illuminant=d50_xy,
+        chromatic_adaptation_transform="Bradford",
+        apply_cctf_decoding=False,
+    ).T
 
 
 class Stage(Enum):
@@ -292,7 +299,7 @@ def export_delivery_image(input_path: str | Path, output_path: str | Path, quali
     else:
         try:
             profile = parse_linear_rgb_profile(scan.icc_profile)
-            if not np.allclose(profile.rgb_to_pcs_xyz, _ACESCG_MATRIX, atol=1e-3):
+            if not np.allclose(profile.rgb_to_pcs_xyz, _acescg_matrix(), atol=1e-3):
                 warning = (
                     f"{input_path}'s embedded profile does not look like ACEScg — `halide export` "
                     f"expects the output of `halide invert`/`halide batch`. Proceeding anyway, but "
