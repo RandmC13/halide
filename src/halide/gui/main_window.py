@@ -537,9 +537,10 @@ class MainWindow(QWidget):
             self.print_controls.set_override(None)
         self._start_roll(paths, folder)
 
-    def load_files(self, paths: list[Path]) -> None:
+    def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
         """Individual scans as a roll of their own (`halide calibrate a.tif b.tif`, `invert --pick`)."""
-        self.session.reset()
+        if not keep_points:
+            self.session.reset()
         self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None)
 
     def _start_roll(self, paths: list[Path], folder: Path | None) -> None:
@@ -584,15 +585,58 @@ class MainWindow(QWidget):
         self._profile_name = path.stem
         self.details_form.set_values(self.session.details)
         self.print_controls.set_override(self.session.tone_override)
+        self._status(f"Reopened '{path.stem}': {len(self.session.points)} point(s)")
+        recorded = self.session.recorded_roll
         if folder is not None:
             self.load_roll(folder, keep_points=True)
-            self._status(f"Reopened '{path.stem}': {len(self.session.points)} point(s)")
+        elif recorded is None and (on_disk := sorted({p.frame for p in self.session.points if p.frame.is_file()})):
+            self.load_files(on_disk, keep_points=True)  # made from single scans, not a roll folder
         else:
             self._refresh_points()
-            self._status(
-                f"Reopened '{path.stem}': {len(self.session.points)} point(s). Its roll folder wasn't "
-                "found - load the roll to see them on their frames (they still count in the fit)."
-            )
+        if recorded is not None and folder is None:
+            self._roll_not_found(path.stem, recorded)
+        else:
+            self._warn_missing_frames()
+
+    def _roll_not_found(self, profile_name: str, recorded: Path) -> None:
+        """The reopened profile's roll folder has gone: say so, and offer to point at where it went
+        (points re-attach to the moved scans by file name - CalibrationSession.set_roll)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Roll not found")
+        box.setText(f"'{profile_name}' was made from\n{recorded}\nwhich has been moved or deleted.")
+        box.setInformativeText(
+            f"Its {len(self.session.points)} point(s) still count in the fit. Point to the roll's new "
+            "folder to see them on their frames again."
+        )
+        box.addButton("Continue without", QMessageBox.ButtonRole.RejectRole)
+        find = box.addButton("Find roll…", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(find)
+        box.exec()
+        if box.clickedButton() is not find:
+            self._status(f"Roll not found: {recorded} - its points still count in the fit")
+            return
+        start = next((str(p) for p in recorded.parents if p.is_dir()), str(Path.home()))
+        chosen = QFileDialog.getExistingDirectory(self, "Find the roll (its folder of scans)", start)
+        if chosen:
+            self.load_roll(Path(chosen), keep_points=True)
+            self._warn_missing_frames()
+        else:
+            self._status(f"Roll not found: {recorded} - its points still count in the fit")
+
+    def _warn_missing_frames(self) -> None:
+        """Frames points were picked on that aren't in the loaded roll or on disk any more."""
+        missing = self.session.missing_frames()
+        if not missing:
+            return
+        names = "\n".join(f"  {p.name}" for p in missing[:8]) + (f"\n  …and {len(missing) - 8} more" if len(missing) > 8 else "")
+        count = sum(p.frame in set(missing) for p in self.session.points)
+        QMessageBox.warning(
+            self,
+            "Frames not found",
+            f"{len(missing)} frame(s) you picked on have been moved, renamed or deleted:\n{names}\n\n"
+            f"Their {count} point(s) still count in the fit, but can't be shown on their frames.",
+        )
 
     def _on_preview_ready(self, index: int, preview, estimate, error) -> None:
         if index >= len(self.session.frames):

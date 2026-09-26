@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from pathlib import Path
 
 from halide.calibration.profile_store import (
     EDITABLE_FIELDS,
     default_profiles_dir,
     delete_profile,
     list_profiles,
+    load_anchors,
     load_profile,
     load_scan_reference,
     rename_profile,
@@ -94,7 +97,25 @@ def _run_show(args: argparse.Namespace) -> int:
     print(f"Notes:          {profile.notes or '(not set)'}")
     scan = load_scan_reference(path)
     print(f"Scanned at:     {scan.describe() if scan else '(not recorded — pass --scan-reference FRAME with --match-scan-exposure)'}")
+    _show_roll(path)
     return 0
+
+
+def _show_roll(path: Path) -> None:
+    """Where the picker's points came from (profiles saved by `halide calibrate`), flagging a roll
+    or frames that have been moved or deleted since. Older profiles recorded paths relative to the
+    folder the picker was started in; those are read against the current folder, as the picker does."""
+    records, roll = load_anchors(path)
+    if roll:
+        roll_path = Path(os.path.abspath(roll))
+        print(f"Roll:           {roll_path}")
+        if not roll_path.is_dir():
+            print(f"                {console.Style.YELLOW}{console.ICON_WARN} not found - moved or deleted?{console.Style.RESET}")
+    if records:
+        frames = {Path(os.path.abspath(r["frame"])) for r in records}
+        missing = sum(not f.is_file() for f in frames)
+        note = f" ({missing} missing)" if missing else ""
+        print(f"Points:         {len(records)} on {len(frames)} frame(s){note}")
 
 
 def _run_rename(args: argparse.Namespace) -> int:

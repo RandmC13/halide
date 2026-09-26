@@ -15,6 +15,7 @@ Agreement is judged per point against the fit through the *other* points
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -184,9 +185,16 @@ def wedge_range(green_densities: Iterable[np.ndarray]) -> tuple[float, float] | 
 # --- persistence (the profile's "anchors" sidecar, see calibration/profile_store.py) ------------------
 
 
+def absolute(path: str | Path) -> Path:
+    """`path` made absolute against the current folder, as typed otherwise (symlinks kept, unlike
+    Path.resolve). Profiles record frames and the roll this way so they reopen from any folder - a
+    relative path only meant something in the folder `halide calibrate` was started from."""
+    return Path(os.path.abspath(path))
+
+
 def point_to_dict(point: NeutralPoint) -> dict:
     return {
-        "frame": str(point.frame),
+        "frame": str(absolute(point.frame)),
         "x": point.x,
         "y": point.y,
         "rgb": [float(v) for v in point.rgb],
@@ -197,7 +205,7 @@ def point_to_dict(point: NeutralPoint) -> dict:
 def point_from_dict(data: dict) -> NeutralPoint:
     scan = data.get("scan")
     return NeutralPoint(
-        frame=Path(data["frame"]),
+        frame=absolute(data["frame"]),  # a relative path (older profiles) is as good as the current folder
         x=int(data["x"]),
         y=int(data["y"]),
         rgb=tuple(float(v) for v in data["rgb"]),

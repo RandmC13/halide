@@ -91,6 +91,7 @@ class CalibrationSession:
     details: dict[str, str] = field(default_factory=lambda: {k: "" for k in DETAIL_FIELDS})
     tone_override: ToneCurveParams | None = None  # the Print drawer's pinned exposure/grade, if any
     _reference_override: ScanSettings | None = None  # a reopened profile's recorded reference
+    recorded_roll: Path | None = None  # the roll folder a reopened profile recorded, found or not
 
     # --- the roll -----------------------------------------------------------------------------
 
@@ -102,11 +103,14 @@ class CalibrationSession:
         self.details = {k: "" for k in DETAIL_FIELDS}
         self.tone_override = None
         self._reference_override = None
+        self.recorded_roll = None
 
     def set_roll(self, paths: list[Path], scans: list[ScanSettings | None], folder: Path | None) -> None:
         """Load a roll's frames. Points already in the session (a reopened profile) whose frame
         isn't at its recorded path but has a namesake in this roll - the roll was moved or copied -
         are re-attached to that frame, so they're shown on it again."""
+        paths = [anchors.absolute(p) for p in paths]
+        folder = anchors.absolute(folder) if folder is not None else None
         self.frames = [Frame(path=p, number=i + 1, scan=s) for i, (p, s) in enumerate(zip(paths, scans))]
         self.roll_folder = folder
         by_name = {p.name: p for p in paths}
@@ -255,7 +259,7 @@ class CalibrationSession:
             "tone": self.tone_override,
             "scan": self.reference,
             "anchors": [anchors.point_to_dict(p) for p in self.points],
-            "roll": str(self.roll_folder) if self.roll_folder else None,
+            "roll": str(anchors.absolute(self.roll_folder)) if self.roll_folder else None,
         }
 
     def restore(self, profile_path: Path) -> Path | None:
@@ -269,5 +273,14 @@ class CalibrationSession:
         self.details = {k: getattr(profile, k) or "" for k in DETAIL_FIELDS}
         self.tone_override = load_tone_override(profile_path)
         self._reference_override = load_scan_reference(profile_path)
-        folder = Path(roll) if roll else None
+        folder = anchors.absolute(roll) if roll else None  # relative in older profiles
+        self.recorded_roll = folder
         return folder if folder is not None and folder.is_dir() else None
+
+    def missing_frames(self) -> list[Path]:
+        """Frames that points were picked on but that are neither in the loaded roll nor on disk
+        where the profile recorded them - moved or deleted since. Their points still count in the
+        fit (the RGB is stored); they just can't be shown on their frame."""
+        loaded = {f.path for f in self.frames}
+        missing = {p.frame for p in self.points if p.frame not in loaded and not p.frame.is_file()}
+        return sorted(missing)

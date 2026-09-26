@@ -438,6 +438,14 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   - Profiles record their picks and roll folder (`anchors`/`roll` sidecars) so `halide calibrate
     --profile NAME` reopens them to add to; points keep their stored RGB (they count even if the
     roll moved) and re-attach to a moved roll by file name.
+  - Those paths are stored **absolute** (`anchors.absolute`: `os.path.abspath`, symlinks kept).
+    They used to be stored as typed, so `halide calibrate Roll16` saved `"Roll16"` and the profile
+    only reopened from that same folder. Older relative profiles still read against the current
+    folder (the old behaviour) and become absolute when saved again. When the roll folder has gone,
+    the picker says so in a "Roll not found" dialog with "Find roll…" (opens in the nearest
+    surviving parent folder; points re-attach by file name) or "Continue without"; picked frames
+    missing from a roll that is still there get a "Frames not found" warning. Both chosen by the
+    user. `halide profile show` prints the roll and flags a missing roll or frames.
 - **The picker's design was chosen by the user, decision by decision** (see the plan
   `docs/plans/multipoint-picker.md`) - ask the same way before changing it. Landscape,
   fixed-size window (~55% x 70% of the screen, 900x700 floor; at 62% height opening a drawer
