@@ -399,6 +399,42 @@ def test_default_export_worker_count_on_a_gpu_is_capped_by_free_device_memory(tm
         assert default_export_worker_count(jobs, device=gpu) == max(1, (4 * 2**30) // estimate_worker_device_bytes(jobs))
 
 
+def test_device_budget_warning_fires_when_requested_workers_exceed_free_gpu_memory(tmp_path):
+    from halide.batch.orchestrator import device_budget_warning
+
+    jobs = [BatchJob(input_path=tmp_path / "a.tif", output_path=None)]
+    gpu = ComputeDevice(kind="gpu", name="Fake", memory_free=int(6.8 * 2**30), memory_total=8 * 2**30)
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME):
+        safe = max(1, gpu.memory_free // estimate_worker_device_bytes(jobs))
+        warning = device_budget_warning(jobs, safe + 1, gpu)
+        assert warning is not None
+        assert warning.startswith(f"--workers {safe + 1}")  # console.warning() adds "Warning:"
+        assert "GPU memory" in warning and "CPU" in warning
+        assert device_budget_warning(jobs, safe, gpu) is None
+
+
+def test_device_budget_warning_is_none_without_a_gpu_or_its_free_memory(tmp_path):
+    from halide.batch.orchestrator import device_budget_warning
+
+    jobs = [BatchJob(input_path=tmp_path / "a.tif", output_path=None)]
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME):
+        assert device_budget_warning(jobs, 64, None) is None
+        assert device_budget_warning(jobs, 64, ComputeDevice(kind="cpu")) is None
+        assert device_budget_warning(jobs, 64, ComputeDevice(kind="gpu", name="Fake")) is None
+
+
+def test_device_worker_cap_is_what_bounds_the_default_on_a_small_card(tmp_path):
+    from halide.batch.orchestrator import device_worker_cap
+
+    jobs = [BatchJob(input_path=tmp_path / f"{i}.tif", output_path=None) for i in range(16)]
+    gpu = ComputeDevice(kind="gpu", name="Fake", memory_free=4 * 2**30, memory_total=8 * 2**30)
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
+        "psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 2**30)
+    ), patch("halide.batch.orchestrator._cpu_cap", return_value=16):
+        assert device_worker_cap(jobs, gpu) == default_worker_count(jobs, device=gpu)
+        assert device_worker_cap(jobs, ComputeDevice(kind="cpu")) is None
+
+
 class _RecordingExecutor(_FakeExecutor):
     def __init__(self, futures_by_job, submitted):
         super().__init__(futures_by_job)

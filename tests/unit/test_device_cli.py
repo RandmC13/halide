@@ -365,6 +365,39 @@ def test_print_directory_hands_the_device_to_its_workers(roll_dir, tmp_path, mon
     assert "out of GPU memory" in _strip(capsys.readouterr().out)
 
 
+def test_batch_warns_when_explicit_workers_look_too_many_for_the_gpu(roll_dir, tmp_path, monkeypatch, capsys,
+                                                                   gpu_resolves):
+    # 6 GiB free and ~768 MiB per GPU worker: 8 workers won't all fit. Frames that don't are redone
+    # on the CPU, so --workers 8 would mostly measure CPU fallbacks — say so up front.
+    import halide.cli.commands.batch_cmd as batch_cmd
+
+    monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner([], warning=None))
+    assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL, "--workers", "8"]) == 0
+    out = _strip(capsys.readouterr().out)
+    assert "--workers 8 may not fit in free GPU memory" in out
+
+
+def test_batch_names_gpu_memory_when_it_set_the_worker_count(roll_dir, tmp_path, monkeypatch, capsys):
+    import halide.cli._device_args as device_args
+    import halide.cli.commands.batch_cmd as batch_cmd
+
+    small = ComputeDevice(kind="gpu", name="Fake GPU", memory_free=1 * 2**30, memory_total=2 * 2**30)
+    monkeypatch.setattr(device_args, "resolve_device", lambda requested: small)
+    monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner([], warning=None))
+    assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL]) == 0
+    workers = [line for line in _strip(capsys.readouterr().out).splitlines() if "Workers" in line]
+    assert workers and "free GPU memory" in workers[0]
+
+
+def test_batch_worker_row_on_the_cpu_is_unchanged(roll_dir, tmp_path, monkeypatch, capsys):
+    import halide.cli.commands.batch_cmd as batch_cmd
+
+    monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner([], warning=None))
+    assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL, "--device", "cpu"]) == 0
+    workers = [line for line in _strip(capsys.readouterr().out).splitlines() if "Workers" in line]
+    assert workers and "free memory and CPU cores" in workers[0] and "GPU" not in workers[0]
+
+
 def test_contact_shows_the_gpu_fallback_reason_even_when_quiet(roll_dir, tmp_path, monkeypatch, capsys):
     # As the run-sheet commands: --quiet hides progress, never warnings.
     import halide.cli._device_args as device_args

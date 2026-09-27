@@ -159,13 +159,30 @@ def estimate_worker_device_bytes(jobs: list[BatchJob]) -> int:
     return _DEVICE_CONTEXT_BYTES + max(sizes) * _DEVICE_FRAME_MULTIPLIER
 
 
-def _device_cap(jobs: list[BatchJob], device: ComputeDevice | None) -> int | None:
+def device_worker_cap(jobs: list[BatchJob], device: ComputeDevice | None) -> int | None:
     """How many GPU workers fit in the card's free memory, or None when there's no GPU (or its free
     memory wasn't reported). Uses the free memory the parent's own resolve_device already measured —
     no further CUDA calls here (the parent's own context is already counted out of it)."""
     if device is None or device.kind != "gpu" or not device.memory_free:
         return None
     return max(1, device.memory_free // estimate_worker_device_bytes(jobs))
+
+
+def device_budget_warning(jobs: list[BatchJob], requested_workers: int, device: ComputeDevice | None) -> str | None:
+    """The GPU counterpart of memory_budget_warning: a warning if an explicit --workers N looks
+    like more GPU workers than the card's free memory holds (device_worker_cap), else None — also
+    None on the CPU or when the card's free memory wasn't reported. Each worker's memory-pool share
+    shrinks as N grows (_device_worker_args), and a frame that doesn't fit its share is developed
+    on the CPU instead, so too many GPU workers mostly means slow CPU fallbacks, not a crash."""
+    safe_workers = device_worker_cap(jobs, device)
+    if safe_workers is None or requested_workers <= safe_workers:
+        return None
+    per_worker = estimate_worker_device_bytes(jobs)
+    return (
+        f"--workers {requested_workers} may not fit in free GPU memory (~{per_worker / 1024**3:.1f} GB "
+        f"estimated per worker vs. ~{device.memory_free / 1024**3:.1f} GB free suggests {safe_workers} "
+        f"worker(s)) — frames that don't fit are developed on the CPU instead, more slowly."
+    )
 
 
 def _device_worker_args(device: ComputeDevice | None, workers: int) -> tuple[str, int | None]:
@@ -216,7 +233,7 @@ def default_worker_count(
     cap = _cpu_cap()
     if not jobs:
         return cap
-    device_cap = _device_cap(jobs, device)
+    device_cap = device_worker_cap(jobs, device)
     if device_cap is not None:
         cap = min(cap, device_cap)
     try:

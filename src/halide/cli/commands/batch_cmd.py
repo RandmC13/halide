@@ -298,6 +298,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
         args, jobs, sheet,
         default_count=lambda jobs: default_worker_count(jobs, device=device),
         budget_warning=memory_budget_warning,
+        device=device,
     )
     return jobs, density_profile, tone_params, scan_reference, workers, device
 

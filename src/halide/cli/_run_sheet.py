@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 from typing import Callable
 
-from halide.batch.orchestrator import BatchJob
+from halide.batch.orchestrator import BatchJob, device_budget_warning, device_worker_cap
 from halide.cli._device_args import device_fallback_warning, device_row, gpu_hint
 from halide.cli.console import RunSheet
 from halide.device import ComputeDevice
@@ -43,16 +43,21 @@ def choose_workers(
     *,
     default_count: Callable[[list[BatchJob]], int],
     budget_warning: Callable[[list[BatchJob], int], str | None],
+    device: ComputeDevice | None = None,
 ) -> int:
-    """An explicit --workers N wins (with a warning if it looks too many for free memory);
-    otherwise the memory-aware default. Either way the choice goes on the sheet."""
+    """An explicit --workers N wins (with a warning if it looks too many for free memory, or on a
+    GPU for the card's free memory); otherwise the memory-aware default. Either way the choice goes
+    on the sheet, naming GPU memory when that's what set the count."""
     if args.workers is not None:
         sheet.row("Workers", f"{args.workers} (--workers)")
-        warning = budget_warning(jobs, args.workers)
-        if warning:
-            sheet.warn("Workers", warning)
+        for warning in (budget_warning(jobs, args.workers), device_budget_warning(jobs, args.workers, device)):
+            if warning:
+                sheet.warn("Workers", warning)
         return args.workers
     workers = default_count(jobs)
-    sheet.row("Workers", f"{workers}{RunSheet.SEP}auto-selected from free memory and CPU cores "
-                         "(--workers N overrides)")
+    if device_worker_cap(jobs, device) == workers:
+        reason = "auto-selected to fit free GPU memory"
+    else:
+        reason = "auto-selected from free memory and CPU cores"
+    sheet.row("Workers", f"{workers}{RunSheet.SEP}{reason} (--workers N overrides)")
     return workers

@@ -131,6 +131,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
             args, jobs, sheet,
             default_count=lambda jobs: default_worker_count(jobs, device=device),
             budget_warning=memory_budget_warning,
+            device=device,
         )
 
     renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="print")
