@@ -7,7 +7,7 @@ same bytes instead of the frame being pickled/copied through a pipe.
 Kept free of heavy imports (only numpy) at module import time: nothing on the CLI parser's own
 import path may reach this module, since that would pull numpy into `halide --help`'s startup, which
 tests/unit/test_cli_startup.py forbids. This module is only ever imported from inside batch worker
-functions and the (not-yet-built) GPU service, the same way `halide.processing` already is.
+functions and the GPU service (halide/gpu_service.py), the same way `halide.processing` already is.
 
 Two roles, two functions, deliberately not symmetric:
 - `new_frame` (the creating side — a CPU worker): allocates a segment sized for one frame, yields
