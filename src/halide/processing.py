@@ -5,6 +5,7 @@ orchestrator (which calls this once per file inside a process pool) don't duplic
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import functools
 import json
@@ -39,7 +40,14 @@ from halide.io.contact_sheet import (
 )
 from halide.io.raster import srgb_8bit_from_acescg, to_srgb_8bit, write_delivery_image, write_srgb_8bit_image
 from halide.io.scan_metadata import DarktableState, ScanSettings, read_scan_metadata
-from halide.io.tiff import copy_exif_metadata, read_tiff, read_tiff_description, set_description, write_tiff
+from halide.io.tiff import (
+    copy_exif_metadata,
+    read_tiff,
+    read_tiff_description,
+    read_tiff_shape,
+    set_description,
+    write_tiff,
+)
 
 IDENTITY_PROFILE = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0))
 
@@ -180,6 +188,8 @@ def process_scan(
     thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
     device: ComputeDevice | None = None,
     on_warning: Callable[[str], None] | None = None,
+    service=None,
+    shm_prefix: str | None = None,
 ) -> ResolvedTone | None:
     """Process one negative scan end to end and write the result.
 
@@ -201,30 +211,43 @@ def process_scan(
     a driver error — the frame is redone on the CPU and `on_warning` is told why (printed if no
     callback is given). A GPU problem never fails a frame the CPU could have developed.
 
+    `service`: a batch worker's gpu_service.ServiceClient — the frame is decoded into shared memory
+    (segment names starting with `shm_prefix`, see shared_frames.batch_prefix) and developed by the
+    batch's one GPU service process instead of in this process; `device` is then not used. Any
+    failure (the service's device, the service itself gone, no room in shared memory) develops the
+    frame on the CPU here instead, with a warning, exactly as the in-process GPU path does.
+
     Returns the tone values actually used (None for Stage.DENSITY_ONLY, which has no tone stage).
     """
-    # One full-frame host buffer for the whole run: decoded, developed (or downloaded into) and
-    # written in place.
-    image, source_profile = _read_scan(input_path)
-    request = DevelopRequest(source_profile=source_profile, scan_gain=scan_gain, density_profile=density_profile,
-                             stage=stage, tone_params=tone_params)
+    with contextlib.ExitStack() as shared:
+        # One full-frame host buffer for the whole run: decoded, developed (or downloaded into) and
+        # written in place — a shared-memory one when a GPU service develops it.
+        frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
+        image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
+        request = DevelopRequest(source_profile=source_profile, scan_gain=scan_gain, density_profile=density_profile,
+                                 stage=stage, tone_params=tone_params)
 
-    developed, image = _run_on_device(input_path, image, device, develop_request, request, on_warning)
-    used_device = "gpu" if developed is not None else "cpu"
-    if developed is None:
-        developed = develop_request(image, request)
-    resolved, profile = developed
+        if frame is not None:
+            reply, image, used_device = _run_on_service(input_path, frame, service, "develop", request, on_warning)
+            developed = None if reply is None else (reply.resolved, reply.profile)
+        else:
+            developed, image = _run_on_device(input_path, image, device, develop_request, request, on_warning)
+            used_device = "gpu" if developed is not None else "cpu"
+        if developed is None:
+            developed = develop_request(image, request)
+        resolved, profile = developed
 
-    record = provenance_json(resolved, profile, scan_gain, used_device) if resolved is not None else None
-    if output_path is not None:
-        write_tiff(output_path, image, icc_profile=output_profile_bytes())
-    if thumbnail_path is not None:
-        save_thumbnail(thumbnail_path, thumbnail_from_linear(image, thumbnail_long_edge),
-                       read_provenance(record))
-    # Free the frame before exiftool (a separate process, kept running between frames on Linux —
-    # halide.io.exiftool) rewrites the output, so its peak while writing never coincides with a
-    # developed frame — see the per-worker memory estimate in batch/orchestrator.py.
-    del image
+        record = provenance_json(resolved, profile, scan_gain, used_device) if resolved is not None else None
+        if output_path is not None:
+            write_tiff(output_path, image, icc_profile=output_profile_bytes())
+        if thumbnail_path is not None:
+            save_thumbnail(thumbnail_path, thumbnail_from_linear(image, thumbnail_long_edge),
+                           read_provenance(record))
+        # Free the frame before exiftool (a separate process, kept running between frames on Linux —
+        # halide.io.exiftool) rewrites the output, so its peak while writing never coincides with a
+        # developed frame — see the per-worker memory estimate in batch/orchestrator.py. A shared
+        # frame is unlinked on leaving this block.
+        del image, frame
     if output_path is not None:
         # Output is always ACEScg, a different profile than the source — exiftool must not clobber
         # the ACEScg tag we just wrote with the source's own ICC bytes.
@@ -232,6 +255,52 @@ def process_scan(
         if record is not None:
             set_description(output_path, record)
     return resolved
+
+
+def _shared_frame(input_path, service, shm_prefix: str | None, stack: contextlib.ExitStack, on_warning,
+                  extra_uint8: bool = False):
+    """A shared-memory frame the size of `input_path`'s decoded scan (float32, as read_tiff always
+    decodes), entered on `stack` so it's unlinked when the caller is done — or None when there's no
+    `service` to hand it to, or no room for it. With `extra_uint8`, (frame, uint8 output frame) for
+    an export, or None.
+
+    No room (SharedMemoryUnavailable: /dev/shm full — more workers than it holds, or something
+    else filled it) warns and returns None: the frame is then developed on the CPU in this worker,
+    never lost. A header that can't be read returns None silently, so the decode that follows
+    fails with the same error the CPU path gives."""
+    if service is None:
+        return None
+    from halide.shared_frames import SharedMemoryUnavailable, new_frame
+
+    try:
+        shape = read_tiff_shape(input_path)
+    except Exception:  # noqa: BLE001 — reported by the real decode, just after
+        return None
+    try:
+        frame = stack.enter_context(new_frame(shape, np.float32, prefix=shm_prefix))
+        if not extra_uint8:
+            return frame
+        return frame, stack.enter_context(new_frame(shape, np.uint8, prefix=shm_prefix))
+    except SharedMemoryUnavailable as exc:
+        action = "exported this file" if extra_uint8 else "developed this frame"
+        _warn(on_warning, f"{input_path}: no room in shared memory for the GPU service ({exc}) — {action} "
+                          f"on the CPU instead")
+        return None
+
+
+def _run_on_service(input_path, frame, service, method: str, request, on_warning):
+    """`service.<method>(frame, request)` — develop or print_ — on a shared frame the scan was
+    decoded into. Returns (reply, buffer, device name): the service writes the result back into the
+    frame, so the buffer is `frame.array`. On any failure — the request failed on the service's
+    device (DeviceJobFailed), or the service is gone or stuck (ServiceUnavailable) — (None, the
+    buffer the CPU should start over on, "cpu"): fall_back_to_cpu's rules, so a frame the service
+    may have half-written, or may still write into, is re-read into a private buffer."""
+    from halide.gpu_service import ServiceUnavailable
+
+    try:
+        return getattr(service, method)(frame, request), frame.array, service.device_kind
+    except (DeviceJobFailed, ServiceUnavailable) as failed:
+        return None, fall_back_to_cpu(input_path, frame.array, failed.failure, on_warning), "cpu"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -383,6 +452,10 @@ class DeviceFailure:
         what happened."""
         if self.out_of_memory:
             return f"{input_path}: out of GPU memory — {action} on the CPU instead"
+        if self.type_name == "ServiceUnavailable":
+            # A batch's shared GPU service is gone (gpu_service.ServiceUnavailable): its own message
+            # already says so in words ("the GPU service stopped responding (...)").
+            return f"{input_path}: {self.message} — {action} on the CPU instead"
         detail = f"{self.type_name}: {self.message}" if self.message else self.type_name
         return f"{input_path}: the GPU failed ({detail}) — {action} on the CPU instead"
 
@@ -510,6 +583,8 @@ def print_scan(
     tone_params: ToneCurveParams,
     device: ComputeDevice | None = None,
     on_warning: Callable[[str], None] | None = None,
+    service=None,
+    shm_prefix: str | None = None,
 ) -> tuple[ResolvedTone, str | None]:
     """`halide print`: apply only the print stage (fitted exposure + grade, paper curve) to a flat
     linear positive — typically `halide invert --output flat`'s output after scene-level editing in
@@ -523,8 +598,9 @@ def print_scan(
     — it's dropped in favour of the fit, with a warning. The fitted exposure itself doesn't need the
     metadata: it's invariant to a global multiply (see core.tone_render.fit_print).
 
-    `device` / `on_warning`: as process_scan — a GPU failure redoes the print on the CPU and is
-    reported through `on_warning`, separately from the returned (metadata) warning.
+    `device` / `on_warning` / `service` / `shm_prefix`: as process_scan — a GPU failure redoes the
+    print on the CPU and is reported through `on_warning`, separately from the returned (metadata)
+    warning.
     """
     # Header only: decoding the pixels here just for the description held a second full frame
     # alongside the decoded image.
@@ -534,30 +610,36 @@ def print_scan(
             f"{input_path} is already a halide print (it has the tone curve applied) — `halide print` "
             f"expects a flat positive from `halide invert --output flat`"
         )
-    image, source_profile = _read_scan(input_path)
+    with contextlib.ExitStack() as shared:
+        frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
+        image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
 
-    warning = None
-    exposure = tone_params.exposure
-    scale = provenance.get("linear_scale") if provenance is not None else None
-    if not (isinstance(scale, (int, float)) and scale > 0):
-        scale = None
-        if exposure is not None:
-            warning = (
-                f"{input_path} has no halide flat-output metadata (normal after editing elsewhere), so a "
-                f"pinned exposure of {exposure:+.3f} can't be reproduced on it — fitting exposure instead"
-            )
-            exposure = None
-    print_params = ToneCurveParams(
-        mode="paper", exposure=exposure, contrast=tone_params.contrast, curve_path=tone_params.curve_path
-    )
+        warning = None
+        exposure = tone_params.exposure
+        scale = provenance.get("linear_scale") if provenance is not None else None
+        if not (isinstance(scale, (int, float)) and scale > 0):
+            scale = None
+            if exposure is not None:
+                warning = (
+                    f"{input_path} has no halide flat-output metadata (normal after editing elsewhere), so a "
+                    f"pinned exposure of {exposure:+.3f} can't be reproduced on it — fitting exposure instead"
+                )
+                exposure = None
+        print_params = ToneCurveParams(
+            mode="paper", exposure=exposure, contrast=tone_params.contrast, curve_path=tone_params.curve_path
+        )
 
-    request = PrintRequest(source_profile=source_profile, scale=scale, print_params=print_params)
-    resolved, image = _run_on_device(input_path, image, device, print_request, request, on_warning)
-    used_device = "gpu" if resolved is not None else "cpu"
-    if resolved is None:
-        resolved = print_request(image, request)
-    write_tiff(output_path, image, icc_profile=output_profile_bytes())
-    del image  # before exiftool runs — see process_scan
+        request = PrintRequest(source_profile=source_profile, scale=scale, print_params=print_params)
+        if frame is not None:
+            reply, image, used_device = _run_on_service(input_path, frame, service, "print_", request, on_warning)
+            resolved = None if reply is None else reply.resolved
+        else:
+            resolved, image = _run_on_device(input_path, image, device, print_request, request, on_warning)
+            used_device = "gpu" if resolved is not None else "cpu"
+        if resolved is None:
+            resolved = print_request(image, request)
+        write_tiff(output_path, image, icc_profile=output_profile_bytes())
+        del image, frame  # before exiftool runs — see process_scan
     copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
     set_description(output_path, provenance_json(resolved, None, device=used_device))
     return resolved, warning
@@ -569,6 +651,8 @@ def export_delivery_image(
     quality: int = 95,
     device: ComputeDevice | None = None,
     on_warning: Callable[[str], None] | None = None,
+    service=None,
+    shm_prefix: str | None = None,
 ) -> str | None:
     """Convert one processed ACEScg TIFF into a delivery-ready sRGB PNG/JPEG. The single place this
     logic lives, so `halide export`'s single-file and bulk-directory modes, and the export worker
@@ -583,29 +667,54 @@ def export_delivery_image(
     is redone on the CPU and `on_warning` is told why (printed if no callback is given) — the same
     "never fail a frame the CPU could have handled" contract as `process_scan`/`_run_on_device`.
     Nothing here is written into `scan.image` on the way, so a fallback needs no re-read.
-    """
-    scan = read_tiff(input_path)
-    warning = None
-    if scan.icc_profile is None:
-        warning = f"{input_path} has no embedded ICC profile; assuming it is ACEScg."
-    else:
-        try:
-            profile = parse_linear_rgb_profile(scan.icc_profile)
-            if not np.allclose(profile.rgb_to_pcs_xyz, _acescg_matrix(), atol=1e-3):
-                warning = (
-                    f"{input_path}'s embedded profile does not look like ACEScg — `halide export` "
-                    f"expects the output of `halide invert`/`halide batch`. Proceeding anyway, but "
-                    f"colors may be wrong."
-                )
-        except UnsupportedICCProfileError as exc:
-            warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway."
 
-    srgb_8bit = _export_srgb_on_device(input_path, scan.image, device, on_warning)
-    if srgb_8bit is not None:
-        write_srgb_8bit_image(output_path, srgb_8bit, quality=quality)
-    else:
-        write_delivery_image(output_path, scan.image, quality=quality)
+    `service` / `shm_prefix`: as process_scan — the batch's GPU service converts the frame from one
+    shared-memory buffer into another. After any failure its output buffer is never used (see
+    export_fallback): the CPU converts into a buffer of this process's own.
+    """
+    with contextlib.ExitStack() as shared:
+        frames = _shared_frame(input_path, service, shm_prefix, shared, on_warning, extra_uint8=True)
+        scan = read_tiff(input_path, out=None if frames is None else frames[0].array)
+        warning = None
+        if scan.icc_profile is None:
+            warning = f"{input_path} has no embedded ICC profile; assuming it is ACEScg."
+        else:
+            try:
+                profile = parse_linear_rgb_profile(scan.icc_profile)
+                if not np.allclose(profile.rgb_to_pcs_xyz, _acescg_matrix(), atol=1e-3):
+                    warning = (
+                        f"{input_path}'s embedded profile does not look like ACEScg — `halide export` "
+                        f"expects the output of `halide invert`/`halide batch`. Proceeding anyway, but "
+                        f"colors may be wrong."
+                    )
+            except UnsupportedICCProfileError as exc:
+                warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway."
+
+        if frames is not None:
+            srgb_8bit = _export_on_service(input_path, frames, service, on_warning)
+        else:
+            srgb_8bit = _export_srgb_on_device(input_path, scan.image, device, on_warning)
+        if srgb_8bit is not None:
+            write_srgb_8bit_image(output_path, srgb_8bit, quality=quality)
+        else:
+            write_delivery_image(output_path, scan.image, quality=quality)
+        del scan, frames, srgb_8bit
     return warning
+
+
+def _export_on_service(input_path, frames, service, on_warning) -> np.ndarray:
+    """export_delivery_image through the GPU service: `frames` is (the decoded ACEScg frame, its
+    uint8 output), both shared. Returns the output frame's array, or after any failure the CPU's
+    conversion of the (only ever read) input into a fresh buffer — never the output frame, which a
+    service that stopped answering may still be writing into (export_fallback)."""
+    from halide.gpu_service import ServiceUnavailable
+
+    frame, out = frames
+    try:
+        service.export(frame, out, ExportRequest())
+    except (DeviceJobFailed, ServiceUnavailable) as failed:
+        return export_fallback(input_path, frame.array, failed.failure, on_warning)
+    return out.array
 
 
 def _export_srgb_on_device(input_path, acescg_image: np.ndarray, device: ComputeDevice | None, on_warning):

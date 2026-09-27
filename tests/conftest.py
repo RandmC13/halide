@@ -28,3 +28,25 @@ import pytest
 @pytest.fixture(autouse=True)
 def _default_device_is_cpu_in_tests(monkeypatch):
     monkeypatch.setenv("HALIDE_DEVICE", "cpu")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gpu_service_in_tests(monkeypatch):
+    """The same reasoning for batches: on a GPU `ComputeDevice` (tests build fake ones freely),
+    `batch.orchestrator.batch_compute` starts the shared GPU service, which resolves the machine's
+    *real* GPU in its own process — on the user's RTX 3070 a test meant for plumbing would develop
+    on the card. So a real "gpu" service is refused here, as a service that couldn't start (the
+    batch then runs in per-worker GPU mode, which tests drive with fakes as before). Tests about the
+    service itself ask for a "cpu" one, or one whose child installs the fake GPU (an initializer),
+    and those still start."""
+    import halide.batch.orchestrator as orchestrator
+    from halide.gpu_service import ServiceUnavailable
+
+    real = orchestrator._start_service
+
+    def start(kind, initializer):
+        if kind == "gpu" and initializer is None:
+            raise ServiceUnavailable("the GPU service isn't started in tests")
+        return real(kind, initializer)
+
+    monkeypatch.setattr(orchestrator, "_start_service", start)

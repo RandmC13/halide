@@ -87,12 +87,14 @@ class ServiceUnavailable(RuntimeError):
 class ServiceAddress:
     """Where a running service listens: everything a worker process needs to connect, as plain
     picklable data (B3 hands it to pool workers). `pid` is the service process, for diagnostics
-    and tests; nothing in a worker needs it."""
+    and tests; nothing in a worker needs it. `kind` is the device it develops on ("gpu"; "cpu" only
+    in tests) — what a frame it developed records as its provenance "device"."""
 
     address: str | tuple
     family: str
     authkey: bytes
     pid: int
+    kind: str = "gpu"
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,11 @@ class ServiceClient:
         self._conn = None
         self._dead: str | None = None  # why, once this client has given up on the service
         self._lock = threading.Lock()
+
+    @property
+    def device_kind(self) -> str:
+        """What the service develops on — see ServiceAddress.kind."""
+        return self._address.kind
 
     def develop(self, frame, request) -> DevelopReply:
         resolved, profile = self._request(("develop", frame.descriptor(), request))
@@ -385,7 +392,8 @@ def _serving(device, where: tuple[str | tuple, str, bytes] | None = None) -> Ite
     `where` is (address, family, authkey), made by _new_address; a fresh one if not given."""
     address, family, authkey = where if where is not None else _new_address()
     listener = connection.Listener(address, family=family, authkey=authkey)
-    service_address = ServiceAddress(address=listener.address, family=family, authkey=authkey, pid=os.getpid())
+    service_address = ServiceAddress(address=listener.address, family=family, authkey=authkey, pid=os.getpid(),
+                                     kind=device.kind)
     server = _Server(listener, service_address, device)
     server.start()
     try:

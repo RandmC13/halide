@@ -485,3 +485,68 @@ def test_calibrate_hands_the_device_to_the_picker(monkeypatch, gpu_resolves):
     monkeypatch.setenv("DISPLAY", ":99")
     assert main(["calibrate"]) == 0
     assert seen["device"] is _FAKE_GPU
+
+
+# ---------------------------------------------------------------------------
+# Task B3: a GPU batch shares one GPU service, and the run sheet says how the GPU is used
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_gpu_service(monkeypatch):
+    """A real service process whose GPU is the strict fake (tests/unit/_fake_device.py)."""
+    import halide.batch.orchestrator as orchestrator
+    from tests.unit import _fake_device
+
+    monkeypatch.setattr(orchestrator, "_SERVICE_INITIALIZER", _fake_device.install_as_gpu)
+
+
+def _sheet_lines(out: str, label: str) -> list[str]:
+    return [line for line in out.splitlines() if label in line]
+
+
+@pytest.mark.parametrize("command, module, runner", [
+    (["batch", *MANUAL], "batch_cmd", "run_batch"),
+    (["export"], "export_cmd", "run_export_batch"),
+    (["print"], "print_cmd", "run_print_batch"),
+])
+def test_the_run_sheet_says_the_workers_share_the_gpu_service(roll_dir, tmp_path, monkeypatch, capsys,
+                                                             gpu_resolves, fake_gpu_service, command, module, runner):
+    import importlib
+
+    cmd = importlib.import_module(f"halide.cli.commands.{module}")
+    calls = []
+    monkeypatch.setattr(cmd, runner, _recording_runner(calls, warning=None))
+    args = [command[0], str(roll_dir), str(tmp_path / "out"), *command[1:]]
+    assert main(args) == 0
+    assert calls[0]["compute"].mode == "service"
+    out = _strip(capsys.readouterr().out)
+    (compute,) = _sheet_lines(out, "Compute")
+    assert "GPU — Fake GPU" in compute and "one GPU process shared by all workers" in compute
+    assert "GPU service not used" not in out
+    assert "GPU memory" not in " ".join(_sheet_lines(out, "Workers"))  # no VRAM cap in service mode
+
+
+def test_the_run_sheet_says_why_the_gpu_service_isnt_used(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves):
+    import halide.batch.orchestrator as orchestrator
+    import halide.cli.commands.batch_cmd as batch_cmd
+
+    # /dev/shm too small for even one frame (a small container): today's per-worker GPU mode.
+    monkeypatch.setattr(orchestrator, "_shared_memory_free", lambda: 0)
+    calls = []
+    monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner(calls, warning=None))
+    assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL]) == 0
+    assert calls[0]["compute"].mode == "per_worker"
+    out = " ".join(_strip(capsys.readouterr().out).split())  # rows wrap
+    assert "one GPU context per worker" in out
+    assert "GPU service not used: shared memory (/dev/shm) has 0 KiB free" in out
+
+
+def test_a_real_gpu_batch_through_the_service(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves, fake_gpu_service):
+    out_dir = tmp_path / "out"
+    assert main(["batch", str(roll_dir), str(out_dir), *MANUAL, "--workers", "2", "--quiet"]) == 0
+    for name in ("frame_00.tiff", "frame_01.tiff"):
+        from halide.io.tiff import read_tiff_description
+
+        assert json.loads(read_tiff_description(out_dir / name))["halide"]["device"] == "gpu"
+    assert "Warning" not in capsys.readouterr().out

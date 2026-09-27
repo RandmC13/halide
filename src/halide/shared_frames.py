@@ -85,22 +85,23 @@ class SharedFrame:
 
 
 def batch_prefix() -> str:
-    """A predictable, process-scoped name prefix for this batch's shared-memory segments — call this
+    """A predictable, batch-scoped name prefix for this batch's shared-memory segments — call this
     once in the orchestrator (the pool's own parent process) and pass the result down to every
     worker's call to `new_frame(..., prefix=...)`. `sweep()` then only ever removes segments this
     particular batch created, never another `halide batch` (or anything unrelated) that happens to
     be running at the same time. Keyed on *this* process's own pid — the pool owner's, not a
-    worker's — since `sweep()` is meant to run from the orchestrator, after the pool has already
-    shut down, not from inside a worker."""
-    return f"{_NAME_STEM}-{os.getpid()}-"
+    worker's — plus a random token per call: one process can run two batches over its life (the
+    picker's contact sheet window, rebuilt), and sweeping one must never unlink the other's live
+    frames; nor can a leftover from an earlier, killed run whose pid happens to be reused ever
+    match."""
+    return f"{_NAME_STEM}-{os.getpid()}-{uuid.uuid4().hex[:8]}-"
 
 
 def _standalone_prefix() -> str:
     """`new_frame`'s default prefix when no orchestrator-provided one is given — direct/non-batch
-    use, or a unit test. Keyed on this process's *parent* pid (`os.getppid()`) rather than its own:
-    a `new_frame` call with no prefix has no "pool" of its own to be the owner of, so the most
-    reasonable stand-in for "whoever owns this process" is whatever started it."""
-    return f"{_NAME_STEM}-{os.getppid()}-"
+    use, or a unit test. Keyed on this process's own pid, the one that creates (and unlinks) the
+    segment: its parent may be anything — a shell — and names nothing useful."""
+    return f"{_NAME_STEM}-{os.getpid()}-"
 
 
 def _nbytes(shape: tuple[int, ...], dtype: np.dtype) -> int:
@@ -208,8 +209,31 @@ def new_frame(shape: tuple[int, ...], dtype, *, prefix: str | None = None) -> It
         # process itself can still close its own mapping (see below) — and unlink() also unregisters
         # this segment from the resource_tracker (self._track is True here), so a normal exit never
         # leaves a "leaked shared_memory" registration behind either.
-        shm.unlink()
+        try:
+            shm.unlink()
+        except FileNotFoundError:
+            # Already removed by name — a sweep() that ran early (an orchestrator cleaning up after
+            # a pool it believed was finished). The segment is gone either way; what's left is the
+            # tracker registration unlink() would have dropped, and this process's own mapping.
+            _unregister(shm._name)
         _close_tolerating_live_exports(shm)
+
+
+def _unregister(tracked_name: str) -> None:
+    """Drop `tracked_name` (with its leading slash, as the tracker keeps it) from this process's
+    resource tracker without ever making it print a traceback.
+
+    The tracker is a separate process that keeps a *set* of names and answers an UNREGISTER for a
+    name it doesn't hold with a KeyError traceback on stderr (Python 3.14's resource_tracker main
+    loop) — and there's no way to ask it what it holds. A REGISTER first makes the pair safe either
+    way: a name it already holds stays one entry (a set), a name it never saw (an orphan from
+    another run, a worker that died between creating and registering) is added and removed again.
+    Both go down the same pipe from this process, so they arrive in order."""
+    try:
+        resource_tracker.register(tracked_name, "shared_memory")
+        resource_tracker.unregister(tracked_name, "shared_memory")
+    except Exception:  # noqa: BLE001 — best-effort bookkeeping; the segment is gone either way
+        pass
 
 
 @contextmanager
@@ -227,21 +251,21 @@ def attach_frame(name: str, shape: tuple[int, ...], dtype) -> Iterator[np.ndarra
 
 def sweep(prefix: str) -> int:
     """Unlink every leftover shared-memory segment whose name starts with `prefix` (see
-    `batch_prefix()`), for an orchestrator to call once it notices a worker is gone (crashed/
-    SIGKILLed) — Review Focus item 5, under the real pool topology: a forkserver/spawn worker pool
-    shares the *parent's* resource_tracker, so a segment a dead worker leaves behind survives until
-    the whole parent process exits, not the instant that one worker dies (reproduced directly; see
+    `batch_prefix()`). For an orchestrator to call **only after its worker pool has fully shut
+    down** — every worker of a batch shares one prefix, so a sweep while any of them is still
+    running would unlink frames they are still using (the GPU service would then fail to attach
+    to them). What it catches is a worker that died holding a frame (SIGKILL, the OOM killer):
+    Review Focus item 5, under the real pool topology — a forkserver/spawn worker pool shares the
+    *parent's* resource_tracker, so such a segment would otherwise survive until the whole parent
+    process exits, not the instant that one worker dies (reproduced directly; see
     tests/unit/test_shared_frames.py). Returns how many segments were removed.
 
-    Also explicitly unregisters each removed name from `multiprocessing.resource_tracker`'s own
-    registry, not just unlinking the segment's bytes: `SharedMemory.unlink()` normally does this
-    itself, but that only happens when *the process that created the segment* calls it — here we're
-    unlinking on behalf of a worker that's already dead and never got the chance. Without this, the
-    tracker still lists the name as outstanding and prints its own "leaked shared_memory objects"
-    `UserWarning` (with a matching `BufferError` from a doomed second close attempt) when the
-    *parent* process eventually exits, even though sweep() already removed the segment itself —
-    reproduced directly, and the reason this function does both steps rather than just calling
-    `os.unlink`/`shm_unlink`.
+    Also drops each removed name from `multiprocessing.resource_tracker`'s registry, not just the
+    segment's bytes: `SharedMemory.unlink()` normally does this itself, but only in the process that
+    created the segment — here we unlink on behalf of a worker that's already dead. Without it, the
+    tracker still lists the name and prints its own "leaked shared_memory objects" `UserWarning`
+    when the parent eventually exits, even though the segment is already gone. Done via
+    `_unregister`, which never makes the tracker print a KeyError for a name it doesn't hold.
 
     Linux only: `/dev/shm` is listable, so leftover segments can be found by name from outside the
     process that created them. Other platforms return 0 without raising, deliberately not attempted:
@@ -265,15 +289,14 @@ def sweep(prefix: str) -> int:
             leftover = shared_memory.SharedMemory(name=entry, create=False, track=False)
         except FileNotFoundError:
             continue
+        # This handle never called .buf (no numpy export was ever taken against it), so a plain
+        # close() is always safe here — unlike new_frame/attach_frame's own cleanup.
         try:
             leftover.unlink()
-        finally:
-            try:
-                resource_tracker.unregister(f"/{entry}", "shared_memory")
-            except Exception:  # noqa: BLE001 — best-effort bookkeeping; the segment is gone either way
-                pass
-            # This handle never called .buf (no numpy export was ever taken against it), so a plain
-            # close() is always safe here — unlike new_frame/attach_frame's own cleanup.
-            leftover.close()
+        except FileNotFoundError:
+            leftover.close()  # removed by someone else between the open and here: theirs to track
+            continue
+        _unregister(f"/{entry}")
+        leftover.close()
         removed += 1
     return removed

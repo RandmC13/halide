@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import time
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from halide.batch.orchestrator import (
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
-from halide.cli._run_sheet import choose_workers, compute_row, roll_row
+from halide.cli._run_sheet import choose_workers, compute_row, roll_row, start_compute
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
@@ -116,33 +117,38 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
         for f in files
     ]
 
-    with console.RunSheet(quiet=args.quiet) as sheet:
-        roll_row(sheet, input_dir, len(jobs), str(output_dir))
-        compute_row(sheet, device)
-        workers = choose_workers(
-            args, jobs, sheet,
-            default_count=lambda jobs: default_export_worker_count(jobs, device=device),
-            budget_warning=export_memory_budget_warning,
-            device=device,
+    # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
+    with contextlib.ExitStack() as stack:
+        with console.RunSheet(quiet=args.quiet) as sheet:
+            roll_row(sheet, input_dir, len(jobs), str(output_dir))
+            compute = start_compute(stack, sheet, jobs, device, "export")
+            compute_row(sheet, device, compute)
+            workers = choose_workers(
+                args, jobs, sheet,
+                default_count=lambda jobs: default_export_worker_count(jobs, device=device),
+                budget_warning=export_memory_budget_warning,
+                device=device,
+                compute=compute,
+            )
+
+        renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="export")
+        job_index = {job: i for i, job in enumerate(jobs)}
+
+        def on_start(job):
+            if renderer:
+                renderer.mark_processing(job_index[job])
+
+        def on_result(result):
+            if renderer:
+                renderer.report(job_index[result.job], result)
+
+        if renderer:
+            renderer.start()
+
+        results = run_export_batch(
+            jobs, quality=args.quality, max_workers=workers, on_result=on_result, on_start=on_start, device=device,
+            compute=compute,
         )
-
-    renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="export")
-    job_index = {job: i for i, job in enumerate(jobs)}
-
-    def on_start(job):
-        if renderer:
-            renderer.mark_processing(job_index[job])
-
-    def on_result(result):
-        if renderer:
-            renderer.report(job_index[result.job], result)
-
-    if renderer:
-        renderer.start()
-
-    results = run_export_batch(
-        jobs, quality=args.quality, max_workers=workers, on_result=on_result, on_start=on_start, device=device
-    )
 
     cancelled = len(results) < len(jobs)
     if renderer:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import shutil
 import tempfile
 import warnings
@@ -26,7 +27,7 @@ from halide.cli._calibration_args import (
     resolve_stage,
     resolve_tone_params,
 )
-from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row
+from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, start_compute
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
 from halide.core.types import Stage
 
@@ -219,10 +220,12 @@ def run(args: argparse.Namespace) -> int:
             shutil.rmtree(thumbnails, ignore_errors=True)
 
 
-def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], sheet: console.RunSheet):
+def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], sheet: console.RunSheet,
+             stack: contextlib.ExitStack):
     """Everything decided before developing starts — scan checks, scan-exposure matching,
-    calibration, print settings, worker count — each reported on the run sheet as it's decided.
-    Returns (jobs, density_profile, tone_params, scan_reference, workers)."""
+    calibration, print settings, how the GPU is used, worker count — each reported on the run sheet
+    as it's decided. On a GPU the shared GPU service starts here and runs until `stack` closes.
+    Returns (jobs, density_profile, tone_params, scan_reference, workers, device, compute)."""
     from halide.processing import ScanColorError, estimate_roll_density_profile, read_roll_scan_metadata
 
     roll_row(sheet, input_dir, len(jobs), _destination(args))
@@ -290,17 +293,20 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
 
     # Resolved after choose_calibration_source (called by _run, before this sheet opens) and
     # before the sheet closes — see CLAUDE.md's choose_calibration_source ordering note. The workers
-    # develop on it (run_batch); on a GPU, the default worker count also fits the card's memory.
+    # develop on it (run_batch): on a GPU through the shared GPU service, or — if it can't be used —
+    # with a CUDA context per worker, whose default count also fits the card's memory.
     device = resolve_device_arg(args)
-    compute_row(sheet, device)
+    compute = start_compute(stack, sheet, jobs, device)
+    compute_row(sheet, device, compute)
 
     workers = choose_workers(
         args, jobs, sheet,
         default_count=lambda jobs: default_worker_count(jobs, device=device),
         budget_warning=memory_budget_warning,
         device=device,
+        compute=compute,
     )
-    return jobs, density_profile, tone_params, scan_reference, workers, device
+    return jobs, density_profile, tone_params, scan_reference, workers, device, compute
 
 
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob]) -> int:
@@ -313,36 +319,39 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
             "--auto-density-roll cannot be combined with --profile/manual overrides/--auto-density"
         )
 
-    with console.RunSheet(quiet=args.quiet) as sheet:
-        jobs, density_profile, tone_params, scan_reference, workers, device = _prepare(
-            args, stage, input_dir, jobs, sheet
+    # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
+    with contextlib.ExitStack() as stack:
+        with console.RunSheet(quiet=args.quiet) as sheet:
+            jobs, density_profile, tone_params, scan_reference, workers, device, compute = _prepare(
+                args, stage, input_dir, jobs, sheet, stack
+            )
+
+        renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="invert")
+        job_index = {job: i for i, job in enumerate(jobs)}
+
+        def on_start(job):
+            if renderer:
+                renderer.mark_processing(job_index[job])
+
+        def on_result(result):
+            if renderer:
+                renderer.report(job_index[result.job], result)
+
+        if renderer:
+            renderer.start()
+
+        results = run_batch(
+            jobs,
+            stage,
+            density_profile,
+            tone_params,
+            max_workers=workers,
+            on_result=on_result,
+            on_start=on_start,
+            thumbnail_long_edge=args.frame_width,
+            device=device,
+            compute=compute,
         )
-
-    renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="invert")
-    job_index = {job: i for i, job in enumerate(jobs)}
-
-    def on_start(job):
-        if renderer:
-            renderer.mark_processing(job_index[job])
-
-    def on_result(result):
-        if renderer:
-            renderer.report(job_index[result.job], result)
-
-    if renderer:
-        renderer.start()
-
-    results = run_batch(
-        jobs,
-        stage,
-        density_profile,
-        tone_params,
-        max_workers=workers,
-        on_result=on_result,
-        on_start=on_start,
-        thumbnail_long_edge=args.frame_width,
-        device=device,
-    )
 
     cancelled = len(results) < len(jobs)
     if renderer:

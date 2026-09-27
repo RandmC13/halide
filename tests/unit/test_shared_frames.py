@@ -284,3 +284,60 @@ def test_sweep_removes_a_sigkilled_pool_workers_segment_with_no_resource_tracker
     stderr_lower = result.stderr.lower()
     assert "leaked" not in stderr_lower, result.stderr
     assert "resource_tracker" not in stderr_lower, result.stderr
+
+
+# --- Task B3 carry-over fixes -----------------------------------------------------------------
+
+
+def test_batch_prefix_is_different_for_every_batch():
+    # One process can run two batches (the picker's contact sheet, rebuilt): sweeping one batch's
+    # prefix must never match the other's live frames.
+    assert batch_prefix() != batch_prefix()
+
+
+def test_standalone_prefix_is_keyed_on_this_processs_own_pid_not_its_parents():
+    import os
+
+    with new_frame((2, 2, 3), np.float32) as frame:
+        assert frame.name.startswith(f"halide-{os.getpid()}-")
+        assert not frame.name.startswith(f"halide-{os.getppid()}-")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
+def test_a_frame_already_swept_by_name_still_closes_cleanly_with_no_tracker_noise():
+    # new_frame's own unlink must tolerate the name being gone already (an early sweep), and still
+    # close its mapping — with nothing left in the tracker to warn about at exit.
+    result = _run(
+        """
+        import numpy as np
+        from halide.shared_frames import new_frame, sweep
+
+        with new_frame((4, 4, 3), np.float32, prefix="early-sweep-test-") as frame:
+            frame.array[...] = 1.0
+            assert sweep("early-sweep-test-") == 1
+        print("ok")
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+    assert "leaked" not in result.stderr.lower() and "Traceback" not in result.stderr, result.stderr
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
+def test_sweeping_a_segment_this_processs_tracker_never_registered_prints_nothing():
+    # E.g. an orphan from an earlier SIGKILLed run whose pid was reused: an UNREGISTER for a name
+    # the tracker doesn't hold made the tracker process print a KeyError traceback.
+    result = _run(
+        """
+        from multiprocessing import shared_memory
+        from halide.shared_frames import sweep
+
+        orphan = shared_memory.SharedMemory(create=True, size=48, name="orphan-sweep-test-x", track=False)
+        orphan.close()
+        print(sweep("orphan-sweep-test-"))
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "1"
+    assert "KeyError" not in result.stderr and "Traceback" not in result.stderr, result.stderr
+    assert not _segment_exists("orphan-sweep-test-x")

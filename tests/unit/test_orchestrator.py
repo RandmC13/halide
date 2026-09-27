@@ -663,3 +663,371 @@ def test_memory_budget_warning_counts_gpu_host_memory(tmp_path):
     ):
         assert memory_budget_warning(jobs, requested_workers=6) is None  # fine for CPU workers
         assert memory_budget_warning(jobs, requested_workers=6, device=gpu) is not None
+
+
+# --- The shared GPU service (docs/plans/gpu-batch-throughput.md Task B3) ---
+#
+# No GPU here: real-pool tests run a "gpu"-kind service whose own process installs the strict fake
+# device (tests/unit/_fake_device.py's install_as_gpu) — so every frame really crosses into the
+# service through shared memory, the service really runs the device code, and the result must still
+# be bit-identical to the CPU (the fake computes with numpy). Frames are small: /dev/shm is 64 MiB in
+# this sandbox.
+
+import json  # noqa: E402
+import os  # noqa: E402
+import signal  # noqa: E402
+
+import psutil  # noqa: E402
+
+from halide.batch.orchestrator import (  # noqa: E402
+    BatchCompute,
+    GpuService,
+    batch_compute,
+    estimate_service_host_bytes,
+    estimate_service_worker_memory_bytes,
+    service_budget_warnings,
+    service_worker_count,
+)
+from halide.io.contact_sheet_defaults import DEFAULT_FRAME_WIDTH  # noqa: E402
+from halide.io.tiff import read_tiff_description  # noqa: E402
+from halide.processing import export_delivery_image, print_scan, process_scan  # noqa: E402
+from tests.unit import _fake_device  # noqa: E402
+
+
+def _probe_worker(job, *args):
+    """orchestrator._worker, reporting what the worker process looked like afterwards: whether it
+    had imported CuPy (it must never — no CUDA in a service-mode worker) and what it was handed."""
+    result = _worker(job, *args)
+    handed = type(args[-1]).__name__ if args else None
+    return BatchResult(job=result.job, error=result.error,
+                       warning=f"cupy={'cupy' in sys.modules};last_arg={handed};pid={os.getpid()};{result.warning}")
+
+
+def _shm_entries() -> set:
+    return set(os.listdir("/dev/shm")) if os.path.isdir("/dev/shm") else set()
+
+
+@pytest.fixture
+def clean_shm():
+    """A test that runs a real pool must leave no shared-memory segment behind."""
+    before = _shm_entries()
+    yield
+    assert _shm_entries() - before == set()
+
+
+@pytest.fixture
+def fake_gpu_service(monkeypatch):
+    """batch_compute starts a real "gpu" service process whose GPU is the strict fake."""
+    monkeypatch.setattr(orchestrator, "_SERVICE_INITIALIZER", _fake_device.install_as_gpu)
+    starts = []
+    real = orchestrator._start_service
+
+    def counting(kind, initializer):
+        starts.append(kind)
+        return real(kind, initializer)
+
+    monkeypatch.setattr(orchestrator, "_start_service", counting)
+    return starts
+
+
+def _no_service(monkeypatch):
+    def refuse(kind, initializer):
+        raise AssertionError("a service was started")
+
+    monkeypatch.setattr(orchestrator, "_start_service", refuse)
+
+
+def _provenance(path):
+    return json.loads(read_tiff_description(path))["halide"]
+
+
+def _roll(tmp_path, n, writer=_write_scan):
+    folder = tmp_path / "in"
+    folder.mkdir()
+    return [writer(folder / f"f{i}.tif", seed=i + 1) for i in range(n)]
+
+
+@pytest.mark.parametrize(
+    "runner, args, expected",
+    [
+        (run_batch, (Stage.FULL, None, ToneCurveParams()),
+         (Stage.FULL, None, ToneCurveParams(), DEFAULT_FRAME_WIDTH, "cpu", None)),
+        (run_export_batch, (), (95, "cpu", None)),
+        (run_print_batch, (ToneCurveParams(),), (ToneCurveParams(), "cpu", None)),
+    ],
+)
+@pytest.mark.parametrize("device", [None, ComputeDevice(kind="cpu")])
+def test_the_cpu_path_hands_workers_exactly_what_it_always_did(tmp_path, monkeypatch, runner, args, expected, device):
+    _no_service(monkeypatch)
+    job = BatchJob(input_path=tmp_path / "a.tif", output_path=tmp_path / "b.tif")
+    (fn, rest), = _run_recording(runner, job, *args, max_workers=2, device=device)
+    assert rest == expected  # no service argument, nothing new
+
+
+def test_the_cpu_path_is_plain_cpu_and_starts_nothing(monkeypatch):
+    _no_service(monkeypatch)
+    for device in (None, ComputeDevice(kind="cpu")):
+        with batch_compute([], device) as compute:
+            assert compute.mode == "cpu" and compute.service is None and compute.shm_prefix is None
+            assert compute.worker_args(4) == ("cpu", None)
+
+
+def test_a_gpu_batch_shares_one_service_and_no_worker_touches_cuda(tmp_path, monkeypatch, fake_gpu_service, clean_shm):
+    scans = _roll(tmp_path, 4)
+    out = tmp_path / "out"
+    out.mkdir()
+    jobs = [BatchJob(input_path=s, output_path=out / s.name) for s in scans]
+    monkeypatch.setattr(orchestrator, "_worker", _probe_worker)
+    results = run_batch(jobs, Stage.FULL, PROFILE, ToneCurveParams(), max_workers=2, device=_GPU)
+
+    assert fake_gpu_service == ["gpu"]  # one service for the whole batch
+    assert [r.error for r in results] == [None] * 4
+    for r in results:
+        cupy, handed, pid, warning = r.warning.split(";", 3)
+        assert cupy == "cupy=False"  # the worker never imported CuPy, let alone made a CUDA context
+        assert handed == "last_arg=GpuService"  # the service's address, not ("gpu", pool share)
+        assert warning == "None"  # no frame fell back to the CPU
+    for scan in scans:
+        # Developed by the service (its device, the fake GPU, is recorded) and bit-identical to the
+        # CPU, since the fake computes with numpy.
+        assert _provenance(out / scan.name)["device"] == "gpu"
+        process_scan(scan, tmp_path / "cpu.tif", Stage.FULL, PROFILE, ToneCurveParams())
+        np.testing.assert_array_equal(read_tiff_pixels(out / scan.name), read_tiff_pixels(tmp_path / "cpu.tif"))
+
+
+def test_service_mode_export_and_print_match_the_in_process_gpu_path(tmp_path, fake_gpu_service, clean_shm, fake_gpu):
+    # Compared with the in-process GPU path on the same (fake) device: the service runs the same
+    # device code. (A device export may differ from the CPU's by one 8-bit code value — the device
+    # branch's own sRGB encoding, docs/plans/gpu-acceleration.md D2 — so the CPU isn't the reference.)
+    positives = _roll(tmp_path, 2, writer=_write_positive)
+    exports = [BatchJob(input_path=p, output_path=tmp_path / f"{p.stem}.png") for p in positives]
+    assert [r.error for r in run_export_batch(exports, max_workers=2, device=_GPU)] == [None, None]
+    prints = [BatchJob(input_path=p, output_path=tmp_path / f"{p.stem}-print.tif") for p in positives]
+    results = run_print_batch(prints, ToneCurveParams(), max_workers=2, device=_GPU)
+    assert [(r.error, r.warning) for r in results] == [(None, None), (None, None)]
+    assert fake_gpu_service == ["gpu", "gpu"]
+    from tests.unit.test_device_pipeline import _png_pixels
+
+    for p in positives:
+        export_delivery_image(p, tmp_path / "in-process.png", device=fake_gpu)
+        np.testing.assert_array_equal(_png_pixels(tmp_path / f"{p.stem}.png"), _png_pixels(tmp_path / "in-process.png"))
+        print_scan(p, tmp_path / "in-process-print.tif", ToneCurveParams(), device=fake_gpu)
+        np.testing.assert_array_equal(read_tiff_pixels(tmp_path / f"{p.stem}-print.tif"),
+                                      read_tiff_pixels(tmp_path / "in-process-print.tif"))
+        assert _provenance(tmp_path / f"{p.stem}-print.tif")["device"] == "gpu"
+
+
+def test_when_the_service_dies_mid_batch_the_rest_develop_on_the_cpu(tmp_path, fake_gpu_service, clean_shm):
+    scans = _roll(tmp_path, 4)
+    out = tmp_path / "out"
+    out.mkdir()
+    jobs = [BatchJob(input_path=s, output_path=out / s.name) for s in scans]
+    with batch_compute(jobs, _GPU) as compute:
+        assert compute.mode == "service"
+        pid = compute.service.address.pid
+
+        def kill_after_the_first(result):
+            if result.job == jobs[0]:
+                os.kill(pid, signal.SIGKILL)
+
+        # One worker, so the next frame is only handed out after the service is already dead.
+        results = run_batch(jobs, Stage.FULL, PROFILE, ToneCurveParams(), max_workers=1, device=_GPU,
+                            compute=compute, on_result=kill_after_the_first)
+    assert [r.error for r in results] == [None] * 4  # the batch completed; no frame lost
+    assert results[0].warning is None
+    for r in results[1:]:
+        assert r.warning and "GPU service" in r.warning and "on the CPU instead" in r.warning, [x.warning for x in results]
+    for scan, expected_device in zip(scans, ["gpu", "cpu", "cpu", "cpu"]):
+        assert _provenance(out / scan.name)["device"] == expected_device
+        process_scan(scan, tmp_path / "cpu.tif", Stage.FULL, PROFILE, ToneCurveParams())
+        np.testing.assert_array_equal(read_tiff_pixels(out / scan.name), read_tiff_pixels(tmp_path / "cpu.tif"))
+
+
+def test_a_service_that_wont_start_means_per_worker_gpu_mode_with_the_reason(tmp_path, monkeypatch):
+    from tests.unit.test_gpu_service import _fail_at_startup
+
+    monkeypatch.setattr(orchestrator, "_SERVICE_INITIALIZER", _fail_at_startup)
+    with batch_compute([], _GPU) as compute:
+        assert compute.mode == "per_worker" and compute.service is None
+        assert "cudaErrorInsufficientDriver" in compute.fallback_reason
+        assert compute.worker_args(2) == ("gpu", (6 * 2**30) // 2 - _CUDA_CONTEXT_BYTES)  # as before the service
+
+
+def test_too_little_shared_memory_means_per_worker_gpu_mode_with_the_reason(tmp_path, monkeypatch):
+    _no_service(monkeypatch)
+    monkeypatch.setattr(orchestrator, "_shared_memory_free", lambda: 64 * _MIB)  # a small container
+    monkeypatch.setattr(orchestrator, "_shared_frame_bytes", lambda jobs, workload: _FRAME)
+    with batch_compute([], _GPU) as compute:
+        assert compute.mode == "per_worker"
+        assert "shared memory" in compute.fallback_reason and "64 MiB" in compute.fallback_reason
+        assert compute.worker_args(2)[0] == "gpu"
+
+
+def test_shared_memory_caps_service_mode_workers(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrator, "_shared_memory_free", lambda: 1024 * _MIB)
+    monkeypatch.setattr(orchestrator, "_shared_frame_bytes", lambda jobs, workload: _FRAME)
+    assert orchestrator.shared_memory_worker_cap([]) == int(1024 * _MIB * 0.8) // _FRAME == 4
+    monkeypatch.setattr(orchestrator, "_shared_memory_free", lambda: None)  # Windows: no separate limit
+    assert orchestrator.shared_memory_worker_cap([]) is None
+
+
+def test_shared_frame_bytes_is_the_float32_decode_plus_an_exports_8bit_output(tmp_path):
+    path = tmp_path / "u16.tif"
+    import tifffile
+
+    tifffile.imwrite(path, np.zeros((10, 20, 3), dtype=np.uint16), photometric="rgb")
+    job = BatchJob(input_path=path, output_path=None)
+    assert orchestrator._shared_frame_bytes([job], "develop") == 10 * 20 * 3 * 4  # decoded as float32
+    assert orchestrator._shared_frame_bytes([job], "export") == 10 * 20 * 3 * 5
+
+
+_SERVICE = BatchCompute(device=_GPU, service=GpuService(address="unused", shm_prefix="p-"))
+
+
+def test_service_mode_worker_count_has_no_vram_cap(tmp_path):
+    jobs = [BatchJob(input_path=tmp_path / f"{i}.tif", output_path=None) for i in range(16)]
+    tiny_card = BatchCompute(device=ComputeDevice(kind="gpu", name="Fake", memory_free=10 * _MIB),
+                             service=_SERVICE.service)
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
+        "halide.batch.orchestrator._shared_frame_bytes", return_value=_FRAME
+    ), patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 2**30)), patch(
+        "halide.batch.orchestrator._cpu_cap", return_value=16
+    ):
+        assert service_worker_count(jobs, tiny_card) == 16  # cores and jobs only: the card holds one frame
+
+
+def test_service_mode_worker_count_is_ram_after_the_service_and_shared_memory(tmp_path):
+    jobs = [BatchJob(input_path=tmp_path / f"{i}.tif", output_path=None) for i in range(37)]
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
+        "halide.batch.orchestrator._shared_frame_bytes", return_value=_FRAME
+    ), patch("halide.batch.orchestrator._cpu_cap", return_value=16):
+        per_worker = estimate_service_worker_memory_bytes(jobs)
+        # A CPU worker's estimate, plus its shared frame — no CUDA/CuPy libraries in the worker.
+        assert per_worker == estimate_worker_memory_bytes(jobs) + _FRAME
+        service = estimate_service_host_bytes(jobs)
+        assert service == orchestrator._GPU_SERVICE_HOST_BYTES + _FRAME
+        available = service + 3 * per_worker + per_worker // 2
+        with patch("psutil.virtual_memory", return_value=SimpleNamespace(available=available)):
+            assert service_worker_count(jobs, _SERVICE) == 3
+            capped = BatchCompute(device=_GPU, service=_SERVICE.service, shm_cap=2)
+            assert service_worker_count(jobs, capped) == 2
+
+
+def test_on_the_users_machine_service_mode_runs_more_workers_than_per_worker_gpu(tmp_path):
+    # 8 physical cores, 7.6 GiB RAM: per-worker GPU mode fits 4 (~1.2 GiB each); CPU-only workers
+    # sharing one service fit more — the point of Part B. (Provisional constants; B4 refits.)
+    jobs = [BatchJob(input_path=tmp_path / f"{i}.tif", output_path=None) for i in range(37)]
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
+        "halide.batch.orchestrator._shared_frame_bytes", return_value=_FRAME
+    ), patch("psutil.virtual_memory", return_value=SimpleNamespace(available=_USER_RAM)), patch(
+        "halide.batch.orchestrator._cpu_cap", return_value=8
+    ):
+        gpu = ComputeDevice(kind="gpu", name="NVIDIA GeForce RTX 3070", memory_free=_USER_VRAM)
+        assert default_worker_count(jobs, device=gpu) == 4
+        assert service_worker_count(jobs, BatchCompute(device=gpu, service=_SERVICE.service)) > 4
+
+
+def test_service_budget_warnings_name_ram_and_shared_memory(tmp_path):
+    jobs = [BatchJob(input_path=tmp_path / "a.tif", output_path=None)]
+    capped = BatchCompute(device=_GPU, service=_SERVICE.service, shm_cap=2)
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
+        "halide.batch.orchestrator._shared_frame_bytes", return_value=_FRAME
+    ), patch("psutil.virtual_memory", return_value=SimpleNamespace(available=64 * 2**30)):
+        assert service_budget_warnings(jobs, 2, capped) == []
+        (warning,) = service_budget_warnings(jobs, 3, capped)
+        assert warning.startswith("--workers 3") and "shared memory" in warning and "CPU" in warning
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
+        "halide.batch.orchestrator._shared_frame_bytes", return_value=_FRAME
+    ), patch("psutil.virtual_memory", return_value=SimpleNamespace(available=2 * 2**30)):
+        (warning,) = service_budget_warnings(jobs, 2, _SERVICE)
+        assert "memory" in warning
+
+
+def test_a_worker_with_no_room_in_shared_memory_develops_that_frame_on_the_cpu(tmp_path, monkeypatch):
+    import halide.shared_frames
+    from halide.shared_frames import SharedMemoryUnavailable
+
+    def full(*args, **kwargs):
+        raise SharedMemoryUnavailable("no room for a 23532-byte shared-memory segment")
+
+    monkeypatch.setattr(halide.shared_frames, "new_frame", full)
+    monkeypatch.setattr(orchestrator, "_WORKER_CLIENTS", {})
+    scan = _write_scan(tmp_path / "neg.tif")
+    # The service is never reached (its client only connects on a first request), so any address does.
+    result = _worker(BatchJob(input_path=scan, output_path=tmp_path / "out.tif"), Stage.FULL, PROFILE,
+                     ToneCurveParams(), 64, "cpu", None, _SERVICE.service)
+    assert result.error is None
+    assert "no room in shared memory" in result.warning and "on the CPU instead" in result.warning
+    process_scan(scan, tmp_path / "cpu.tif", Stage.FULL, PROFILE, ToneCurveParams())
+    np.testing.assert_array_equal(read_tiff_pixels(tmp_path / "out.tif"), read_tiff_pixels(tmp_path / "cpu.tif"))
+    assert _provenance(tmp_path / "out.tif")["device"] == "cpu"
+
+
+class _OrderedExecutor(_FakeExecutor):
+    def __init__(self, futures_by_job, events):
+        super().__init__(futures_by_job)
+        self._events = events
+
+    def __exit__(self, *exc_info):
+        self._events.append("pool shut down")
+        return False
+
+    def shutdown(self, **kwargs):
+        pass
+
+
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_shared_frames_are_swept_only_after_the_pool_has_shut_down(tmp_path, monkeypatch, interrupt):
+    import halide.shared_frames
+
+    events = []
+    monkeypatch.setattr(halide.shared_frames, "sweep", lambda prefix: events.append(f"sweep {prefix}"))
+    job = BatchJob(input_path=tmp_path / "a.tif", output_path=tmp_path / "b.tif")
+    future: Future = Future()
+    future.set_result(BatchResult(job=job, error=None))
+
+    def on_result(result):
+        events.append("result")
+        if interrupt:
+            raise KeyboardInterrupt
+
+    with patch("halide.batch.orchestrator.ProcessPoolExecutor", lambda *a, **k: _OrderedExecutor({job: future}, events)):
+        orchestrator._run_pool([job], _worker, (), 1, on_result=on_result, shm_prefix="halide-1-abc-")
+    assert events == ["result", "pool shut down", "sweep halide-1-abc-"]
+
+
+def test_no_sweep_without_shared_frames(tmp_path, monkeypatch):
+    import halide.shared_frames
+
+    monkeypatch.setattr(halide.shared_frames, "sweep", lambda prefix: pytest.fail("swept"))
+    job = BatchJob(input_path=tmp_path / "a.tif", output_path=tmp_path / "b.tif")
+    future: Future = Future()
+    future.set_result(BatchResult(job=job, error=None))
+    with patch("halide.batch.orchestrator.ProcessPoolExecutor", lambda *a, **k: _FakeExecutor({job: future})):
+        orchestrator._run_pool([job], _worker, (), 1)
+
+
+def test_the_service_stops_and_its_frames_are_swept_when_the_batch_ends(tmp_path, fake_gpu_service, clean_shm):
+    with batch_compute([], _GPU) as compute:
+        pid = compute.service.address.pid
+        assert psutil.pid_exists(pid)
+        # A worker that died holding a frame would leave one like this behind.
+        from multiprocessing import shared_memory
+
+        leftover = shared_memory.SharedMemory(create=True, size=64, name=f"{compute.shm_prefix}dead")
+        leftover.close()
+    assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    assert f"{compute.shm_prefix}dead" not in _shm_entries()
+
+
+def test_decoded_pixel_bytes_reads_what_read_tiff_decodes(tmp_path):
+    # Two pages stacked as one series: read_tiff decodes the whole series (read_tiff_shape), not
+    # just the first page.
+    import tifffile
+
+    from halide.io.tiff import read_tiff_shape
+
+    path = tmp_path / "stack.tif"
+    tifffile.imwrite(path, np.zeros((2, 8, 8, 3), dtype=np.float32), photometric="rgb")
+    shape = read_tiff_shape(path)
+    assert orchestrator._decoded_pixel_bytes(path) == int(np.prod(shape)) * 4
