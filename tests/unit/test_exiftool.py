@@ -18,6 +18,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import warnings
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,9 @@ import pytest
 from halide.io import exiftool
 from halide.io.tiff import copy_exif_metadata
 
-pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the fake exiftool is a shebang script")
+# Linux only: the kept-open session is Linux-only (exiftool._KEPT_OPEN_SUPPORTED), and the fake is a
+# shebang script. The non-Linux behaviour is tested here by switching that flag off.
+pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the kept-open session is Linux-only")
 
 FAKE = textwrap.dedent(
     """\
@@ -311,6 +314,52 @@ def test_a_new_process_gets_its_own_session(fake, tmp_path, monkeypatch):
     parent.close()
 
 
+def test_a_real_forked_child_starts_its_own_session_and_leaves_the_parents_alone(fake, tmp_path):
+    source, dests = _files(tmp_path, 3)
+    assert copy_exif_metadata(source, dests[0])
+    parent = exiftool.session()
+    parent_exiftool = parent.pid
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)  # "multi-threaded, fork() may deadlock"
+        child = os.fork()
+    if child == 0:  # the child: copy one file, then exit without atexit, like a killed worker
+        code = 1
+        try:
+            mine = exiftool.session()
+            if mine is not parent and copy_exif_metadata(source, dests[1]) and mine.pid != parent_exiftool:
+                code = 0
+        finally:
+            os._exit(code)
+    _, status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    # The parent's exiftool is still its own: alive, not stopped, and still answering.
+    assert exiftool.session() is parent and _alive(parent_exiftool)
+    assert copy_exif_metadata(source, dests[2])
+    log = fake()
+    by_parent = [entry["args"][-1] for entry in log if entry["pid"] == parent_exiftool and entry["mode"] == "session"]
+    assert by_parent == [str(dests[0]), str(dests[2])]  # the child never wrote to it
+    assert not any(entry["mode"] == "stop" and entry["pid"] == parent_exiftool for entry in log)
+    by_child = [entry for entry in log if entry["mode"] == "session" and entry["pid"] != parent_exiftool]
+    assert [entry["args"][-1] for entry in by_child] == [str(dests[1])]
+    # The child died without atexit; its own exiftool went with it (parent-death signal).
+    deadline = time.monotonic() + 5
+    while _alive(by_child[0]["pid"]) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _alive(by_child[0]["pid"])
+
+
+def test_without_a_parent_death_guarantee_every_copy_is_oneshot(fake, tmp_path, monkeypatch):
+    # Off Linux nothing makes a kept-open exiftool die with a terminated worker, so none is started.
+    monkeypatch.setattr(exiftool, "_KEPT_OPEN_SUPPORTED", False)
+    source, dests = _files(tmp_path, 2)
+    for dest in dests:
+        assert copy_exif_metadata(source, dest, drop_icc=True) is True
+    assert exiftool.session() is None
+    log = fake()
+    assert [entry["mode"] for entry in log] == ["oneshot", "oneshot"]
+    assert [entry["args"] for entry in log] == [_expected_args(source, d, True) for d in dests]
+
+
 def test_the_session_is_closed_at_interpreter_exit(fake, tmp_path):
     source, (dest,) = _files(tmp_path)
     code = (
@@ -326,7 +375,6 @@ def test_the_session_is_closed_at_interpreter_exit(fake, tmp_path):
     assert not _alive(log[0]["pid"])
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="parent-death signal is Linux-only")
 def test_exiftool_does_not_outlive_a_killed_worker(fake, tmp_path):
     # exiftool's -stay_open never exits on end of input (it polls), so a worker killed without
     # running atexit (the GUI terminates its pool; the OOM killer) would leave it running forever.

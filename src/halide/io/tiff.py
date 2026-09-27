@@ -87,9 +87,9 @@ def set_description(path: str | Path, text: str) -> None:
 def copy_exif_metadata(source_path: str | Path, dest_path: str | Path, drop_icc: bool = False) -> bool:
     """Copy EXIF metadata from source_path onto dest_path via exiftool, if available.
     Returns False (without raising) if exiftool isn't installed — metadata is a nice-to-have,
-    not a correctness requirement of the pipeline. Runs on this process's kept-open exiftool
-    (halide.io.exiftool), which is ~0.37 s per file faster than starting one and writes the same
-    bytes; a failure exiftool reports for the file raises (ExifToolError, or CalledProcessError
+    not a correctness requirement of the pipeline. On Linux it runs on this process's kept-open
+    exiftool (halide.io.exiftool), ~0.4 s per file faster than starting one and writing the same
+    bytes; elsewhere it starts one per call; a failure exiftool reports for the file raises (ExifToolError, or CalledProcessError
     where the command had to run one-shot)."""
     args = [
         "-TagsFromFile",

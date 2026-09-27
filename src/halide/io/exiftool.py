@@ -185,7 +185,7 @@ def _die_with_this_process() -> dict:
     killer) would leave an exiftool running with no one to talk to. On Linux the kernel's
     parent-death signal ends it. Strictly the signal follows the *thread* that started it: if that
     thread ends first, exiftool is stopped early, found dead on the next command and restarted.
-    Elsewhere nothing is set; a normal exit still closes it (atexit)."""
+    Other platforms don't get a session at all (_KEPT_OPEN_SUPPORTED)."""
     if not sys.platform.startswith("linux"):
         return {}
     try:
@@ -209,6 +209,14 @@ def _die_with_this_process() -> dict:
 # session in them: writing to it would interleave with the parent's commands on the same pipe,
 # and closing it would close the parent's. So everything is keyed by the PID that made it.
 _lock = threading.Lock()
+
+# The kept-open session is used only where the OS guarantees exiftool dies with the process that
+# started it: Linux, via the parent-death signal (_die_with_this_process). exiftool's -stay_open
+# never exits on its own when its input closes, so elsewhere a worker that is terminated (the GUI
+# closing its pool) or killed (out of memory) would leave its exiftool running forever. There,
+# every copy stays the one-shot call, exactly as before this module.
+_KEPT_OPEN_SUPPORTED = sys.platform.startswith("linux")
+
 _session: ExifToolSession | None = None
 _session_pid: int | None = None
 _oneshot_pid: int | None = None  # a restarted session failed in this process: one-shot from now on
@@ -217,8 +225,11 @@ _atexit_pid: int | None = None
 
 def session() -> ExifToolSession | None:
     """This process's shared session, started on first use. None if exiftool isn't installed,
-    can't be started, or has already failed after a restart in this process."""
+    can't be started, has already failed after a restart in this process, or this platform can't
+    guarantee it would die with us (_KEPT_OPEN_SUPPORTED)."""
     global _session, _session_pid, _atexit_pid
+    if not _KEPT_OPEN_SUPPORTED:
+        return None
     with _lock:
         pid = os.getpid()
         if _session_pid != pid:

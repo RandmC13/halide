@@ -216,9 +216,9 @@ def process_scan(
     if thumbnail_path is not None:
         save_thumbnail(thumbnail_path, thumbnail_from_linear(image, thumbnail_long_edge),
                        read_provenance(record))
-    # Free the frame before exiftool (a separate process) rewrites the output, so a batch worker
-    # never holds a developed frame and exiftool's own memory at once — see the per-worker memory
-    # estimate in batch/orchestrator.py.
+    # Free the frame before exiftool (a separate process, kept running between frames on Linux —
+    # halide.io.exiftool) rewrites the output, so its peak while writing never coincides with a
+    # developed frame — see the per-worker memory estimate in batch/orchestrator.py.
     del image
     if output_path is not None:
         # Output is always ACEScg, a different profile than the source — exiftool must not clobber
