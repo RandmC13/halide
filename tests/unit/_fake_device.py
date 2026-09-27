@@ -230,3 +230,19 @@ def to_host(a: FakeDeviceArray, out: np.ndarray | None = None) -> np.ndarray:
         raise ValueError(f"download target {out.shape}/{out.dtype} doesn't match {a.shape}/{a.dtype}")
     out[...] = a._data
     return out
+
+
+def install_as_gpu() -> None:
+    """Make this whole process's "GPU" the fake — for a separate process that has no pytest
+    fixtures, such as a spawned GPU service (tests/unit/test_gpu_service.py passes this as
+    `running_service`'s `initializer`, which the child runs before resolving its device). Does what
+    test_device_pipeline.py's `fake_gpu` fixture does, plus making `resolve_device` hand back a
+    fake GPU (the real one would import CuPy). Never call it in the pytest process itself: it
+    patches module attributes for good, with no monkeypatch to undo it."""
+    import halide.device
+    from halide.core._xp import register_namespace
+
+    register_namespace(FakeDeviceArray, fake_xp)
+    halide.device.to_device = to_device
+    halide.device.to_host = to_host
+    halide.device.resolve_device = lambda requested=None: halide.device.ComputeDevice(kind="gpu", name="Fake GPU")
