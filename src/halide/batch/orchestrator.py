@@ -17,8 +17,12 @@ measured constants through the same underlying estimator rather than duplicating
 
 from __future__ import annotations
 
+import contextlib
 import multiprocessing
 import os
+import shutil
+import sys
+from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
@@ -32,6 +36,7 @@ from halide.io.contact_sheet_defaults import DEFAULT_FRAME_WIDTH
 # tifffile and halide.processing (numpy, Pillow, colour-science) are imported inside the functions
 # that use them: every CLI command imports this module, and `halide --help` shouldn't pay for them.
 # Workers don't pay either — the forkserver preloads halide.processing (_FORKSERVER_PRELOAD).
+# halide.gpu_service and halide.shared_frames likewise (the latter imports numpy).
 
 TIFF_SUFFIXES = (".tif", ".tiff")
 
@@ -86,6 +91,29 @@ _DEVICE_FRAME_MULTIPLIER = 5
 # not the card, is what limits GPU batch to 4 workers — the count the benchmark ran best at.
 _GPU_HOST_OVERHEAD_BYTES = 1024 * 1024 * 1024
 
+# The shared GPU service (docs/plans/gpu-batch-throughput.md Part B, halide/gpu_service.py): on a GPU,
+# one service process holds the only CUDA context and develops every worker's frames, and the
+# workers are CPU-only processes that hand it frames through shared memory (halide/shared_frames.py).
+# The service's own host memory is taken off the RAM budget before sizing the workers:
+# `_GPU_SERVICE_HOST_BYTES` (CUDA's and CuPy's host-side libraries — the measured GPU worker overhead
+# above) plus one frame's working memory, per batch (estimate_service_host_bytes). PROVISIONAL: B0
+# didn't measure the service itself (docs/plans/gpu-batch-throughput.md, "B0 as actually run"); Task
+# B4's benchmark refits it on the user's card.
+_GPU_SERVICE_HOST_BYTES = _GPU_HOST_OVERHEAD_BYTES
+
+# Shared-memory frames live in /dev/shm on Linux (tmpfs: RAM, but with its own size limit — 64 MiB
+# in a default Docker container, half of RAM on a desktop). Each service-mode worker holds one frame
+# there at a time (an export also its 8-bit output). Only this fraction of the free space is planned
+# on, so another program's (or another halide's) segments arriving mid-batch don't starve the last
+# worker. A worker that finds no room anyway develops that frame on the CPU, with a warning.
+_SHM_DIR = "/dev/shm"
+_SHM_USABLE_FRACTION = 0.8
+
+# What batch_compute starts: a "gpu" service in normal use. Tests set "cpu" (the numpy path in a
+# real separate process) or a child initializer (tests/unit/_fake_device.py's install_as_gpu).
+_SERVICE_KIND = "gpu"
+_SERVICE_INITIALIZER = None
+
 
 @dataclass(frozen=True)
 class BatchJob:
@@ -123,9 +151,10 @@ def _decoded_pixel_bytes(path: Path) -> int | None:
 
     try:
         with tifffile.TiffFile(path) as tf:
-            page = tf.pages[0]
-            shape = page.shape
-            itemsize = page.dtype.itemsize
+            # series[0], as io/tiff.py's read_tiff/read_tiff_shape: what's actually decoded.
+            series = tf.series[0]
+            shape = series.shape
+            itemsize = series.dtype.itemsize
     except Exception:  # noqa: BLE001 — a bad header here must not abort worker-count sizing
         return None
     size = itemsize
@@ -316,6 +345,218 @@ def export_memory_budget_warning(
     )
 
 
+# --- The shared GPU service: which mode a GPU batch runs in, and how many workers it gets ---------
+
+
+def _shared_frame_bytes(jobs: list[BatchJob], workload: str) -> int | None:
+    """The shared memory one service-mode worker holds at a time for the largest job: the decoded
+    float32 frame (read_tiff always decodes to float32, whatever the file's own sample type), and
+    for an export its 8-bit output too. None if no job's header could be read."""
+    from halide.io.tiff import read_tiff_shape
+
+    sizes = []
+    for job in jobs:
+        try:
+            shape = read_tiff_shape(job.input_path)
+        except Exception:  # noqa: BLE001 — a bad header here must not abort worker-count sizing
+            continue
+        pixels = 1
+        for dim in shape:
+            pixels *= dim
+        sizes.append(pixels * (4 + 1 if workload == "export" else 4))
+    return max(sizes) if sizes else None
+
+
+def _shared_memory_free() -> int | None:
+    """Free bytes where shared-memory frames live, or None where that can't be told (or isn't a
+    separate limit): only Linux has a /dev/shm of its own size. On Windows a segment is backed by
+    the page file and counts against RAM like anything else, which the RAM cap already covers."""
+    if sys.platform != "linux":
+        return None
+    try:
+        return shutil.disk_usage(_SHM_DIR).free
+    except OSError:
+        return 0  # no /dev/shm at all: no shared frames either
+
+
+def shared_memory_worker_cap(jobs: list[BatchJob], workload: str = "develop") -> int | None:
+    """How many service-mode workers' frames fit in /dev/shm at once (see _SHM_USABLE_FRACTION):
+    0 when not even one does, None when there's no separate limit to respect."""
+    free = _shared_memory_free()
+    per_worker = _shared_frame_bytes(jobs, workload)
+    if free is None or not per_worker:
+        return None
+    return int(free * _SHM_USABLE_FRACTION) // per_worker
+
+
+def estimate_service_host_bytes(jobs: list[BatchJob]) -> int:
+    """The GPU service process's own host memory (see _GPU_SERVICE_HOST_BYTES): its libraries plus
+    one frame's working memory for the largest job — the decoded float32 frame it attaches to."""
+    return _GPU_SERVICE_HOST_BYTES + (_shared_frame_bytes(jobs, "develop") or 0)
+
+
+def _workload_constants(workload: str) -> tuple[int, int]:
+    if workload == "export":
+        return _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES, _EXPORT_PEAK_RSS_MULTIPLIER
+    return _BASELINE_PROCESS_OVERHEAD_BYTES, _PEAK_RSS_MULTIPLIER
+
+
+def estimate_service_worker_memory_bytes(jobs: list[BatchJob], workload: str = "develop") -> int:
+    """One service-mode worker's peak RAM: a CPU worker's (it's a CPU-only process — no CUDA, no
+    CuPy) plus its shared frame(s), counted on top even though they're the same working buffer the
+    CPU constants already include — generous on purpose until Task B4 measures it."""
+    baseline, multiplier = _workload_constants(workload)
+    return estimate_worker_memory_bytes(jobs, baseline_bytes=baseline, multiplier=multiplier) + (
+        _shared_frame_bytes(jobs, workload) or 0
+    )
+
+
+@dataclass(frozen=True)
+class GpuService:
+    """What a service-mode worker is handed: where the batch's GPU service listens (a picklable
+    gpu_service.ServiceAddress) and the name prefix for its shared frames (shared_frames.
+    batch_prefix, made in the parent so sweep() can clean up after a worker that died)."""
+
+    address: object  # gpu_service.ServiceAddress — typed loosely to keep gpu_service out of this import
+    shm_prefix: str
+
+
+@dataclass(frozen=True)
+class BatchCompute:
+    """How a batch's workers reach the device — decided once, before the pool starts, by
+    batch_compute():
+      - "cpu": no GPU; workers get exactly the arguments they always had;
+      - "service": one GPU service shared by CPU-only workers (the normal GPU case);
+      - "per_worker": each worker makes its own CUDA context, as before Part B — only when the
+        service can't be used, and `fallback_reason` says why (/dev/shm too small, or the service
+        didn't start)."""
+
+    device: ComputeDevice | None
+    workload: str = "develop"  # "develop" (batch, print, the contact sheet window) or "export"
+    service: GpuService | None = None
+    shm_cap: int | None = None  # service-mode workers whose frames fit in /dev/shm; None = no limit
+    fallback_reason: str | None = None
+
+    @property
+    def mode(self) -> str:
+        if self.service is not None:
+            return "service"
+        return "per_worker" if self.device is not None and self.device.kind == "gpu" else "cpu"
+
+    @property
+    def shm_prefix(self) -> str | None:
+        return None if self.service is None else self.service.shm_prefix
+
+    def worker_args(self, workers: int) -> tuple:
+        """The device arguments every worker function takes last. Service mode: the worker's own
+        device is the CPU (it never touches CUDA; it's also where a frame goes when the service
+        can't take it) plus the service — never ("gpu", pool share)."""
+        if self.service is not None:
+            return ("cpu", None, self.service)
+        return _device_worker_args(self.device, workers)
+
+
+def _start_service(kind: str, initializer):
+    """gpu_service.running_service — one indirection, so the test suite can keep a real GPU
+    service from ever starting on a developer's machine (tests/conftest.py)."""
+    from halide.gpu_service import running_service
+
+    return running_service(kind, initializer=initializer)
+
+
+def _size(n: int) -> str:
+    return f"{n / 2**20:.0f} MiB" if n >= 2**20 else f"{n / 2**10:.0f} KiB"
+
+
+@contextlib.contextmanager
+def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: str = "develop"
+                  ) -> Iterator[BatchCompute]:
+    """Decide how this batch reaches the device, and on a GPU start the shared service for as long
+    as the block runs. Run the worker pool *inside* the block: on the way out the service is
+    stopped and then this batch's leftover shared frames are swept — which is only safe once every
+    worker is gone (shared_frames.sweep), so the pool must have shut down by then.
+
+    A GPU batch falls back to per-worker GPU mode (fallback_reason says why, for the run sheet) when
+    /dev/shm can't hold even one frame (a small container) or the service doesn't start. It never
+    fails the batch: that mode is what every GPU batch did before the service existed."""
+    if device is None or device.kind != "gpu":
+        yield BatchCompute(device=device, workload=workload)
+        return
+    shm_cap = shared_memory_worker_cap(jobs, workload)
+    if shm_cap == 0:
+        free = _shared_memory_free() or 0
+        needed = _shared_frame_bytes(jobs, workload) or 0
+        reason = (f"shared memory ({_SHM_DIR}) has {_size(free)} free, too little for one "
+                  f"{_size(needed)} frame")
+        yield BatchCompute(device=device, workload=workload, fallback_reason=reason)
+        return
+    from halide.shared_frames import batch_prefix, sweep
+
+    with contextlib.ExitStack() as stack:
+        try:
+            address = stack.enter_context(_start_service(_SERVICE_KIND, _SERVICE_INITIALIZER))
+        except Exception as exc:  # noqa: BLE001 — ServiceUnavailable, or the process couldn't even spawn
+            stack.close()
+            # One line for the run sheet; the sheet adds its own punctuation after it.
+            yield BatchCompute(device=device, workload=workload, fallback_reason=str(exc).rstrip("."))
+            return
+        prefix = batch_prefix()
+        # Registered after the service, so it runs after the service has stopped (LIFO).
+        stack.callback(sweep, prefix)
+        yield BatchCompute(device=device, workload=workload, service=GpuService(address, prefix), shm_cap=shm_cap)
+
+
+def service_worker_count(jobs: list[BatchJob], compute: BatchCompute) -> int:
+    """default_worker_count for service mode: min(physical cores, RAM cap, /dev/shm cap, jobs).
+    The RAM cap uses the CPU worker constants plus each worker's shared frame, after the service's
+    own memory (estimate_service_host_bytes). No VRAM cap: however many workers there are, the card
+    only ever holds the service's one context and one frame at a time."""
+    cap = _cpu_cap()
+    if not jobs:
+        return cap
+    if compute.shm_cap is not None:
+        cap = min(cap, compute.shm_cap)
+    try:
+        import psutil
+
+        available = psutil.virtual_memory().available
+    except Exception:  # noqa: BLE001 — an unsupported platform must not break batch processing
+        return max(1, min(cap, len(jobs)))
+    per_worker = estimate_service_worker_memory_bytes(jobs, compute.workload)
+    memory_cap = max(1, (available - estimate_service_host_bytes(jobs)) // per_worker)
+    return max(1, min(cap, memory_cap, len(jobs)))
+
+
+def service_budget_warnings(jobs: list[BatchJob], requested_workers: int, compute: BatchCompute) -> list[str]:
+    """For an explicit --workers N in service mode: the RAM warning (as memory_budget_warning, with
+    the service mode's own estimates), and one if N workers' frames won't all fit in /dev/shm at
+    once — those frames are then developed on the CPU in their workers, not lost."""
+    warnings = []
+    try:
+        import psutil
+
+        available = psutil.virtual_memory().available
+    except Exception:  # noqa: BLE001
+        available = None
+    if available is not None:
+        per_worker = estimate_service_worker_memory_bytes(jobs, compute.workload)
+        safe = max(1, (available - estimate_service_host_bytes(jobs)) // per_worker)
+        if requested_workers > safe:
+            warnings.append(
+                f"--workers {requested_workers} may exceed available memory (~{per_worker / 1024**3:.1f} GB "
+                f"estimated per worker, plus the GPU service, vs. ~{available / 1024**3:.1f} GB available "
+                f"suggests {safe} worker(s) is safer) — continuing with {requested_workers} since it was "
+                f"explicitly requested."
+            )
+    if compute.shm_cap is not None and requested_workers > compute.shm_cap:
+        warnings.append(
+            f"--workers {requested_workers} won't all fit in shared memory ({_SHM_DIR} holds "
+            f"{compute.shm_cap} worker(s)' frames) — frames that don't fit are developed on the CPU "
+            f"instead, more slowly."
+        )
+    return warnings
+
+
 # This worker process's device, resolved on its first job and kept for the rest (see
 # _worker_device). Keyed by the pool-limit share so an in-process caller can't get a stale one.
 _WORKER_DEVICES: dict[int | None, tuple[ComputeDevice, BaseException | None]] = {}
@@ -348,6 +589,24 @@ def _worker_device(device_kind: str, memory_limit: int | None) -> tuple[ComputeD
             # frame's warning wants the error itself ("out of GPU memory", a driver error).
             _WORKER_DEVICES[memory_limit] = (ComputeDevice(kind="cpu"), exc.__cause__ or exc)
     return _WORKER_DEVICES[memory_limit]
+
+
+# This worker process's connection to the batch's GPU service, made on its first frame and kept
+# (see _worker_service). A client that found the service gone stays dead: every later frame goes
+# straight to the CPU with a warning, without waiting on it again.
+_WORKER_CLIENTS: dict = {}
+
+
+def _worker_service(service: GpuService | None):
+    """(ServiceClient or None, shm prefix or None) for `service` — the worker's cached client."""
+    if service is None:
+        return None, None
+    client = _WORKER_CLIENTS.get(service.address)
+    if client is None:
+        from halide.gpu_service import ServiceClient
+
+        client = _WORKER_CLIENTS[service.address] = ServiceClient(service.address)
+    return client, service.shm_prefix
 
 
 class _Warnings:
@@ -388,16 +647,18 @@ def _worker(
     thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
     device_kind: str = "cpu",
     device_memory_limit: int | None = None,
+    service: GpuService | None = None,
 ) -> BatchResult:
     from halide.processing import process_scan
 
     warnings = None
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "developed this frame")
+        client, shm_prefix = _worker_service(service)
         process_scan(
             job.input_path, job.output_path, stage, density_profile, tone_params, scan_gain=job.scan_gain,
             thumbnail_path=job.thumbnail_path, thumbnail_long_edge=thumbnail_long_edge,
-            device=device, on_warning=warnings,
+            device=device, on_warning=warnings, service=client, shm_prefix=shm_prefix,
         )
         return BatchResult(job=job, error=None, warning=warnings.text())
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
@@ -405,29 +666,34 @@ def _worker(
 
 
 def _export_worker(
-    job: BatchJob, quality: int, device_kind: str = "cpu", device_memory_limit: int | None = None
+    job: BatchJob, quality: int, device_kind: str = "cpu", device_memory_limit: int | None = None,
+    service: GpuService | None = None,
 ) -> BatchResult:
     from halide.processing import export_delivery_image
 
     warnings = None
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "exported this file")
+        client, shm_prefix = _worker_service(service)
         warnings(export_delivery_image(job.input_path, job.output_path, quality=quality,
-                                       device=device, on_warning=warnings))
+                                       device=device, on_warning=warnings, service=client, shm_prefix=shm_prefix))
         return BatchResult(job=job, error=None, warning=warnings.text())
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
 
 def _print_worker(
-    job: BatchJob, tone_params: ToneCurveParams, device_kind: str = "cpu", device_memory_limit: int | None = None
+    job: BatchJob, tone_params: ToneCurveParams, device_kind: str = "cpu", device_memory_limit: int | None = None,
+    service: GpuService | None = None,
 ) -> BatchResult:
     from halide.processing import print_scan
 
     warnings = None
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "developed this frame")
-        _, warning = print_scan(job.input_path, job.output_path, tone_params, device=device, on_warning=warnings)
+        client, shm_prefix = _worker_service(service)
+        _, warning = print_scan(job.input_path, job.output_path, tone_params, device=device, on_warning=warnings,
+                                service=client, shm_prefix=shm_prefix)
         warnings(warning)
         return BatchResult(job=job, error=None, warning=warnings.text())
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
@@ -474,6 +740,7 @@ def _run_pool(
     max_workers: int,
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
+    shm_prefix: str | None = None,
 ) -> list[BatchResult]:
     """Process every job in a process pool, in parallel, calling `worker(job, *worker_args)` for
     each. Calls on_start(job) when a job is handed to a worker and on_result(result) when it
@@ -500,7 +767,12 @@ def _run_pool(
     recorded as its own failed BatchResult with an actionable message, exactly like a per-file
     processing error — the rest of the batch's real results are preserved either way. Shared by
     run_batch and run_export_batch — only the worker function and its extra arguments differ
-    between a full inversion and a delivery-format export."""
+    between a full inversion and a delivery-format export.
+
+    `shm_prefix`: the batch's shared-frame prefix in GPU service mode (BatchCompute.shm_prefix).
+    Once the pool has fully shut down — on every way out, a crash or Ctrl+C included — whatever a
+    dead worker left in /dev/shm under it is swept (shared_frames.sweep); never before, since
+    every worker shares the prefix."""
     if max_workers < 1:
         raise ValueError(f"max_workers must be at least 1, got {max_workers}")
 
@@ -523,58 +795,98 @@ def _run_pool(
             ),
         )
 
-    with ProcessPoolExecutor(max_workers=max_workers, mp_context=_pool_context()) as executor:
-        pending = list(jobs)
-        in_flight: dict = {}
+    interrupted: list = []  # the pool's worker processes, if Ctrl+C stopped it without waiting
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=_pool_context()) as executor:
+            pending = list(jobs)
+            in_flight: dict = {}
 
-        def submit_next() -> None:
-            # Loops rather than submitting exactly one job, so that once the pool is broken every
-            # remaining queued job is immediately resolved as a crashed result instead of being
-            # submitted (and raising) one at a time as later callers happen to invoke this again.
-            while pending:
-                job = pending.pop(0)
-                try:
-                    future = executor.submit(worker, job, *worker_args)
-                except BrokenProcessPool:
-                    result = _crashed_result(job)
-                    results.append(result)
-                    if on_result:
-                        on_result(result)
-                    continue
-                in_flight[future] = job
-                if on_start:
-                    on_start(job)
-                break
-
-        for _ in range(min(max_workers, len(jobs))):
-            submit_next()
-
-        try:
-            while in_flight:
-                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
-                for future in done:
-                    job = in_flight.pop(future)
+            def submit_next() -> None:
+                # Loops rather than submitting exactly one job, so that once the pool is broken every
+                # remaining queued job is immediately resolved as a crashed result instead of being
+                # submitted (and raising) one at a time as later callers happen to invoke this again.
+                while pending:
+                    job = pending.pop(0)
                     try:
-                        result = future.result()
+                        future = executor.submit(worker, job, *worker_args)
                     except BrokenProcessPool:
                         result = _crashed_result(job)
-                    results.append(result)
-                    if on_result:
-                        on_result(result)
-                    submit_next()
-        except KeyboardInterrupt:
-            # Ctrl+C can land on any bytecode boundary in this loop, not just inside wait() — the
-            # try wraps the whole loop body rather than just the blocking call. Workers in the same
-            # process group receive SIGINT directly too and will exit on their own; cancel_futures
-            # drops anything not yet started rather than waiting for a full drain. Return whatever
-            # completed rather than propagating, so the caller can report "X/N completed, cancelled"
-            # (see batch_cmd.py/export_cmd.py) instead of every already-finished result being lost
-            # to a bare KeyboardInterrupt traceback — the same "don't discard good results" principle
-            # this function already applies to BrokenProcessPool above.
-            executor.shutdown(wait=False, cancel_futures=True)
-            return results
+                        results.append(result)
+                        if on_result:
+                            on_result(result)
+                        continue
+                    in_flight[future] = job
+                    if on_start:
+                        on_start(job)
+                    break
+
+            for _ in range(min(max_workers, len(jobs))):
+                submit_next()
+
+            try:
+                while in_flight:
+                    done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        job = in_flight.pop(future)
+                        try:
+                            result = future.result()
+                        except BrokenProcessPool:
+                            result = _crashed_result(job)
+                        results.append(result)
+                        if on_result:
+                            on_result(result)
+                        submit_next()
+            except KeyboardInterrupt:
+                # Ctrl+C can land on any bytecode boundary in this loop, not just inside wait() — the
+                # try wraps the whole loop body rather than just the blocking call. Workers in the same
+                # process group receive SIGINT directly too and will exit on their own; cancel_futures
+                # drops anything not yet started rather than waiting for a full drain. Return whatever
+                # completed rather than propagating, so the caller can report "X/N completed, cancelled"
+                # (see batch_cmd.py/export_cmd.py) instead of every already-finished result being lost
+                # to a bare KeyboardInterrupt traceback — the same "don't discard good results" principle
+                # this function already applies to BrokenProcessPool above.
+                # The processes, first: a non-waiting shutdown forgets them, and the `with`'s own
+                # shutdown(wait=True) then has nothing left to wait for.
+                interrupted = list((getattr(executor, "_processes", None) or {}).values())
+                executor.shutdown(wait=False, cancel_futures=True)
+                return results
+    finally:
+        if shm_prefix is not None:
+            # Normally the `with` has already waited for every worker to exit; after Ctrl+C they're
+            # waited for here. Only then is nothing using a frame, and the sweep safe.
+            _wait_for_exit(interrupted)
+            from halide.shared_frames import sweep
+
+            sweep(shm_prefix)
 
     return results
+
+
+# How long a worker still running after Ctrl+C gets to finish before it's terminated. Ctrl+C in a
+# terminal reaches the workers too, so they're normally gone at once; this covers one that wasn't
+# signalled (a KeyboardInterrupt raised in the parent alone) and is mid-frame.
+_INTERRUPT_GRACE = 10.0
+
+
+def _wait_for_exit(processes: list) -> None:
+    """Wait for `processes` to exit — terminating any still there after _INTERRUPT_GRACE."""
+    for process in processes:
+        process.join(_INTERRUPT_GRACE)
+        if process.is_alive():
+            process.terminate()
+            process.join()
+
+
+@contextlib.contextmanager
+def _compute_for(compute: BatchCompute | None, jobs: list[BatchJob], device: ComputeDevice | None,
+                 workload: str) -> Iterator[BatchCompute]:
+    """The caller's BatchCompute (the CLI starts one before its run sheet closes, so the sheet can
+    say how the GPU is used), or one started just for this run."""
+    if compute is not None:
+        yield compute
+    else:
+        with batch_compute(jobs, device, workload) as started:
+            yield started
 
 
 def run_batch(
@@ -587,20 +899,33 @@ def run_batch(
     on_start: Callable[[BatchJob], None] | None = None,
     thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
     device: ComputeDevice | None = None,
+    compute: BatchCompute | None = None,
 ) -> list[BatchResult]:
     """Invert every job in a process pool, in parallel — see _run_pool for the shared failure-
     handling and progress-callback behavior. `max_workers` defaults to default_worker_count(jobs,
-    device=device) if not given. Jobs with a thumbnail_path also get a contact-sheet thumbnail.
+    device=device) if not given (service_worker_count in GPU service mode). Jobs with a
+    thumbnail_path also get a contact-sheet thumbnail.
 
-    `device` is the run's already-resolved device (None = CPU). Workers are told only its kind and
-    their share of its memory, and resolve it themselves (see _worker_device); a frame a worker had
-    to develop on the CPU instead says so in its BatchResult.warning."""
-    workers = max_workers if max_workers is not None else default_worker_count(jobs, device=device)
-    return _run_pool(
-        jobs, _worker,
-        (stage, density_profile, tone_params, thumbnail_long_edge, *_device_worker_args(device, workers)),
-        workers, on_result=on_result, on_start=on_start,
-    )
+    `device` is the run's already-resolved device (None = CPU). On a GPU the frames are developed by
+    one shared GPU service (see batch_compute; `compute`, if given, is one the caller already
+    started), or — when the service can't be used — by each worker on a CUDA context of its own:
+    those workers are told only the device's kind and their share of its memory, and resolve it
+    themselves (see _worker_device). A frame a worker had to develop on the CPU instead says so in
+    its BatchResult.warning."""
+    with _compute_for(compute, jobs, device, "develop") as compute:
+        workers = max_workers if max_workers is not None else _default_count(jobs, compute, default_worker_count)
+        return _run_pool(
+            jobs, _worker, (stage, density_profile, tone_params, thumbnail_long_edge, *compute.worker_args(workers)),
+            workers, on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix,
+        )
+
+
+def _default_count(jobs: list[BatchJob], compute: BatchCompute, default: Callable[..., int]) -> int:
+    """The default worker count for this run's mode: `default(jobs, device=...)` (CPU or per-worker
+    GPU), or service_worker_count in service mode."""
+    if compute.service is not None:
+        return service_worker_count(jobs, compute)
+    return default(jobs, device=compute.device)
 
 
 def run_export_batch(
@@ -610,16 +935,18 @@ def run_export_batch(
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
     device: ComputeDevice | None = None,
+    compute: BatchCompute | None = None,
 ) -> list[BatchResult]:
     """Export every job (ACEScg TIFF -> delivery PNG/JPEG) in a process pool, in parallel — see
     _run_pool for the shared failure-handling and progress-callback behavior. `max_workers`
-    defaults to default_export_worker_count(jobs, device=device) if not given; `device` as
-    run_batch."""
-    workers = max_workers if max_workers is not None else default_export_worker_count(jobs, device=device)
-    return _run_pool(
-        jobs, _export_worker, (quality, *_device_worker_args(device, workers)), workers,
-        on_result=on_result, on_start=on_start,
-    )
+    defaults to default_export_worker_count(jobs, device=device) if not given; `device` and
+    `compute` as run_batch."""
+    with _compute_for(compute, jobs, device, "export") as compute:
+        workers = max_workers if max_workers is not None else _default_count(jobs, compute, default_export_worker_count)
+        return _run_pool(
+            jobs, _export_worker, (quality, *compute.worker_args(workers)), workers,
+            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix,
+        )
 
 
 def run_print_batch(
@@ -629,17 +956,19 @@ def run_print_batch(
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
     device: ComputeDevice | None = None,
+    compute: BatchCompute | None = None,
 ) -> list[BatchResult]:
     """`halide print` every job (flat positive -> print) in a process pool — see _run_pool for the
     shared failure-handling and progress-callback behavior. `max_workers` defaults to
     default_worker_count(jobs, device=device): the full-pipeline memory estimate, a safe upper
-    bound for the print stage alone (which is the tail of that same pipeline); `device` as
-    run_batch."""
-    workers = max_workers if max_workers is not None else default_worker_count(jobs, device=device)
-    return _run_pool(
-        jobs, _print_worker, (tone_params, *_device_worker_args(device, workers)), workers,
-        on_result=on_result, on_start=on_start,
-    )
+    bound for the print stage alone (which is the tail of that same pipeline); `device` and
+    `compute` as run_batch."""
+    with _compute_for(compute, jobs, device, "develop") as compute:
+        workers = max_workers if max_workers is not None else _default_count(jobs, compute, default_worker_count)
+        return _run_pool(
+            jobs, _print_worker, (tone_params, *compute.worker_args(workers)), workers,
+            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix,
+        )
 
 
 def run_thumbnail_batch(

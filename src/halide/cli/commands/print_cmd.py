@@ -11,6 +11,7 @@ by hand before the curve would put the shadows on the wrong part of the paper.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import time
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from halide.batch.progress import GridProgressRenderer
 from halide.calibration.profile_store import load_tone_override, resolve_profile_path
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
-from halide.cli._run_sheet import choose_workers, compute_row, roll_row
+from halide.cli._run_sheet import choose_workers, compute_row, roll_row, start_compute
 from halide.cli._calibration_args import add_tone_arguments, describe_resolved_tone, resolve_tone_params
 from halide.core.types import ToneCurveParams
 from halide.device import ComputeDevice
@@ -124,33 +125,38 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
         return 1
     jobs = [BatchJob(input_path=f, output_path=output_dir / f"{f.stem}{args.suffix}.tif") for f in files]
 
-    with console.RunSheet(quiet=args.quiet) as sheet:
-        roll_row(sheet, input_dir, len(jobs), str(output_dir))
-        compute_row(sheet, device)
-        workers = choose_workers(
-            args, jobs, sheet,
-            default_count=lambda jobs: default_worker_count(jobs, device=device),
-            budget_warning=memory_budget_warning,
-            device=device,
+    # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
+    with contextlib.ExitStack() as stack:
+        with console.RunSheet(quiet=args.quiet) as sheet:
+            roll_row(sheet, input_dir, len(jobs), str(output_dir))
+            compute = start_compute(stack, sheet, jobs, device, "develop")
+            compute_row(sheet, device, compute)
+            workers = choose_workers(
+                args, jobs, sheet,
+                default_count=lambda jobs: default_worker_count(jobs, device=device),
+                budget_warning=memory_budget_warning,
+                device=device,
+                compute=compute,
+            )
+
+        renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="print")
+        job_index = {job: i for i, job in enumerate(jobs)}
+
+        def on_start(job):
+            if renderer:
+                renderer.mark_processing(job_index[job])
+
+        def on_result(result):
+            if renderer:
+                renderer.report(job_index[result.job], result)
+
+        if renderer:
+            renderer.start()
+
+        results = run_print_batch(
+            jobs, tone_params, max_workers=workers, on_result=on_result, on_start=on_start, device=device,
+            compute=compute,
         )
-
-    renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="print")
-    job_index = {job: i for i, job in enumerate(jobs)}
-
-    def on_start(job):
-        if renderer:
-            renderer.mark_processing(job_index[job])
-
-    def on_result(result):
-        if renderer:
-            renderer.report(job_index[result.job], result)
-
-    if renderer:
-        renderer.start()
-
-    results = run_print_batch(
-        jobs, tone_params, max_workers=workers, on_result=on_result, on_start=on_start, device=device
-    )
 
     cancelled = len(results) < len(jobs)
     if renderer:
