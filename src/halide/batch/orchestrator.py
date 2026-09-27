@@ -72,6 +72,11 @@ _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 #     percentile scratch (~1/3 frame each, sorted copies included): ~2 frames. K = 4 doubles that.
 #     Upper bound: the probe's *unbanded* whole-frame run held 2.1 GiB of pool on a 181 MiB frame
 #     (~12 frames); banded, this estimate (768 MiB + 4 x 181 MiB = ~1.5 GiB) is ~70% of that.
+#   - per-frame auto calibration (calibration/auto.py, on the device since Task 8) is the peak for
+#     `--auto-density`: the luminance argsort holds its keys (1/3 frame) and int64 order (2/3
+#     frame) plus the sort's own scratch, then the candidate mask/boolean index and percentile
+#     sorts ~1/2 frame each — ~2-3 frames beside the resident one, not banded (whole-frame
+#     statistics). Within K = 4, but the least-margin case; measure it when refitting.
 # On the RTX 3070 (~6.8 GiB free on the desktop) that is 4 workers.
 _CUDA_CONTEXT_BYTES = 384 * 1024 * 1024
 _DEVICE_BAND_SCRATCH_BYTES = 6 * 64 * 1024 * 1024

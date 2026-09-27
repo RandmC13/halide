@@ -62,6 +62,16 @@ class FakeDeviceArray:
     def copy(self):
         return _wrap(self._data.copy())
 
+    # Reductions CuPy arrays have as methods (results stay on the device, 0-d when full).
+    def mean(self, axis=None):
+        return _wrap(self._data.mean(axis=axis))
+
+    def max(self, axis=None):
+        return _wrap(self._data.max(axis=axis))
+
+    def min(self, axis=None):
+        return _wrap(self._data.min(axis=axis))
+
     def __getitem__(self, key):
         return _wrap(self._data[_unwrap(key)])
 
@@ -120,6 +130,7 @@ for _name, _op in {
     if _name not in ("lt", "le", "gt", "ge", "eq", "ne", "matmul"):
         setattr(FakeDeviceArray, f"__i{_name}__", _inplace(_op))
 FakeDeviceArray.__neg__ = lambda self: _wrap(operator.neg(self._data))
+FakeDeviceArray.__invert__ = lambda self: _wrap(operator.invert(self._data))
 FakeDeviceArray.__hash__ = None  # defines __eq__ elementwise, like numpy/CuPy arrays
 
 
@@ -185,6 +196,15 @@ fake_xp = types.SimpleNamespace(
         for name in ("maximum", "minimum", "power", "divide", "log10", "clip", "floor", "where", "sign", "abs")
     },
     percentile=_namespaced(np.percentile, sequence_args=(1,)),
+    # Auto calibration (calibration/auto.py). CuPy has each, with these signatures: argsort (its
+    # sort order among ties differs from numpy's — the real-GPU tests compare by tolerance),
+    # median(axis=), broadcast_to(a, shape), concatenate(sequence of device arrays), empty.
+    argsort=_namespaced(np.argsort),
+    median=_namespaced(np.median),
+    broadcast_to=_namespaced(np.broadcast_to, sequence_args=(1,)),
+    concatenate=_namespaced(np.concatenate, sequence_args=(0,)),
+    empty=_namespaced(np.empty),
+    asnumpy=lambda a: to_host(a),  # cupy.asnumpy: the download, a fresh host array
     asarray=_upload(np.asarray),
     array=_upload(np.array),
     float32=np.float32,
