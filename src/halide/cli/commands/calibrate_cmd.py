@@ -7,6 +7,7 @@ import os
 import sys
 
 from halide.cli import console
+from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -19,6 +20,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--profile",
         help="reopen a saved profile (name or path): its neutral points, roll details and roll",
     )
+    add_device_argument(parser)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -38,11 +40,20 @@ def run(args: argparse.Namespace) -> int:
             "one or forward X11"
         )
 
+    # Not yet passed into the picker's own workers (Task 7 wires batch/contact/calibrate workers
+    # onto the device) — resolved and shown here regardless, so --device gpu still fails fast
+    # without CuPy/a driver, and every command's Compute row behaves the same way (see Ruling R7).
+    device = resolve_device_arg(args)
+
     from halide.gui.app import (
         main as run_gui,
     )  # deferred: don't require Qt/a display for the rest of the CLI
 
     print(console.framed([f"{console.Style.BOLD}halide{console.Style.RESET} · calibration picker"]))
+    print(f"Compute: {device_row(device)}")
+    fallback_warning = device_fallback_warning(device)
+    if fallback_warning:
+        print(console.warning(fallback_warning))
     try:
         run_gui(inputs=args.inputs, profile=args.profile)
     except Exception as exc:  # noqa: BLE001 -- a GUI-toolkit failure, not a domain error

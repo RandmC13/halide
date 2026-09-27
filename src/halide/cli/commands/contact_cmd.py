@@ -19,6 +19,7 @@ from halide.batch.orchestrator import (
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
+from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
@@ -35,6 +36,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_contact_layout_arguments(parser)
     parser.add_argument("--workers", type=int, help="Number of parallel worker processes (default: auto-selected)")
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
+    add_device_argument(parser)
 
 
 def _collect(inputs: list[str], sheet: Path) -> list[Path]:
@@ -72,6 +74,16 @@ def run(args: argparse.Namespace) -> int:
         return 1
     if sheet_path.exists() and not console.confirm_overwrite(sheet_path):
         return 1
+
+    # Not yet passed into the thumbnail workers (Task 7 wires batch/contact workers onto the
+    # device) — resolved and shown here regardless, so --device gpu still fails fast without
+    # CuPy/a driver, and every command's Compute row behaves the same way (see Ruling R7).
+    device = resolve_device_arg(args)
+    if not args.quiet:
+        print(f"Compute: {device_row(device)}")
+        fallback_warning = device_fallback_warning(device)
+        if fallback_warning:
+            print(console.warning(fallback_warning))
 
     first = Path(args.inputs[0])
     default_title = first.name if first.is_dir() else first.parent.name or "contact sheet"

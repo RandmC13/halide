@@ -6,7 +6,7 @@ anywhere the CLI reaches would silently bring the slow start back — hence this
 import subprocess
 import sys
 
-HEAVY = ("numpy", "tifffile", "PIL", "colour", "scipy", "PySide6")
+HEAVY = ("numpy", "tifffile", "PIL", "colour", "scipy", "PySide6", "cupy")
 
 
 def test_building_the_cli_parser_imports_no_heavy_dependencies():

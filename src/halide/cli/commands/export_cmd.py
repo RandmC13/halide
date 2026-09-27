@@ -16,7 +16,8 @@ from halide.batch.orchestrator import (
 )
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
-from halide.cli._run_sheet import choose_workers, roll_row
+from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
+from halide.cli._run_sheet import choose_workers, compute_row, roll_row
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
@@ -58,9 +59,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--quiet", action="store_true", help="Suppress the progress display when `input` is a directory"
     )
+    add_device_argument(parser)
 
 
-def _run_single(args: argparse.Namespace, input_path: Path) -> int:
+def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
     from halide.processing import export_delivery_image
 
     if not input_path.exists():
@@ -69,6 +71,10 @@ def _run_single(args: argparse.Namespace, input_path: Path) -> int:
     output_path = Path(args.output)
     if output_path.exists() and not console.confirm_overwrite(output_path):
         return 1
+
+    fallback_warning = device_fallback_warning(device)
+    if fallback_warning:
+        print(console.warning(fallback_warning))
 
     start = time.monotonic()
     label = f"{console.VERB['export']} {input_path.name}... (exposing)"
@@ -85,13 +91,13 @@ def _run_single(args: argparse.Namespace, input_path: Path) -> int:
     print(
         console.success(
             f"{console.VERB_PAST['export']} → {output_path} "
-            f"({console.human_time(elapsed)}, {console.human_bytes(size)})"
+            f"({console.human_time(elapsed)}, {console.human_bytes(size)}, {device_row(device)})"
         )
     )
     return 0
 
 
-def _run_bulk(args: argparse.Namespace, input_dir: Path) -> int:
+def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -107,6 +113,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path) -> int:
 
     with console.RunSheet(quiet=args.quiet) as sheet:
         roll_row(sheet, input_dir, len(jobs), str(output_dir))
+        compute_row(sheet, device)
         workers = choose_workers(
             args, jobs, sheet,
             default_count=default_export_worker_count, budget_warning=export_memory_budget_warning,
@@ -155,7 +162,11 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
+    # Not yet passed into export_delivery_image (Task 6 wires the export step onto the device) —
+    # resolved and shown here regardless, so --device gpu still fails fast without CuPy/a driver,
+    # and every command's Compute row behaves the same way (see Ruling R7).
+    device = resolve_device_arg(args)
     input_path = Path(args.input)
     if input_path.is_dir():
-        return _run_bulk(args, input_path)
-    return _run_single(args, input_path)
+        return _run_bulk(args, input_path, device)
+    return _run_single(args, input_path, device)
