@@ -5,6 +5,7 @@ orchestrator (which calls this once per file inside a process pool) don't duplic
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import json
 from collections.abc import Callable
@@ -14,13 +15,18 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from halide import banding
+from halide import device as _device  # to_device/to_host looked up at call time: tests inject a fake
 from halide.banding import map_in_bands
 from halide.calibration.auto import auto_density_balance, roll_auto_density_balance
 from halide.core.density import apply_density_balance, apply_white_balance
+from halide.core._xp import array_namespace
 from halide.core.pipeline import negative_to_positive
 from halide.core.tone_render import ResolvedTone, apply_tone, resolve_tone
 from halide.core.types import DensityProfile, Stage, ToneCurveParams  # noqa: F401 -- Stage re-exported
+from halide.device import ComputeDevice
 from halide.io.icc import (
+    LinearRGBProfile,
     UnsupportedICCProfileError,
     convert_to_working_space,
     output_profile_bytes,
@@ -73,13 +79,23 @@ def _halide_version() -> str:
         return "unknown"
 
 
-def provenance_json(resolved: ResolvedTone, profile: DensityProfile | None, scan_gain: float = 1.0) -> str:
+def provenance_json(
+    resolved: ResolvedTone, profile: DensityProfile | None, scan_gain: float = 1.0, device: str = "cpu"
+) -> str:
     """What was done to produce an output file, written into its TIFF ImageDescription: the
     printing decision (fitted or pinned) and, where known, the calibration. For reproducibility,
     and so `halide print` can exactly undo a flat output's exposure scale when the file comes back
     untouched. External editors (darktable) are not expected to preserve it — nothing *requires*
-    it to be present."""
-    record: dict = {"output": "flat" if resolved.mode == "linear" else "print", "version": _halide_version()}
+    it to be present.
+
+    `device` ("cpu" / "gpu") is where the frame was actually developed: the two agree only to
+    float32 rounding (docs/plans/gpu-acceleration.md, D2), not bit for bit, so a file says which
+    made it. A GPU frame that fell back to the CPU records "cpu"."""
+    record: dict = {
+        "output": "flat" if resolved.mode == "linear" else "print",
+        "version": _halide_version(),
+        "device": device,
+    }
     if resolved.mode == "linear":
         record["linear_scale"] = float(resolved.linear_scale)
     else:
@@ -115,6 +131,15 @@ def load_working_space_image(path: str | Path) -> np.ndarray:
     callers may develop it in place. The conversion itself runs band by band into the decoded
     buffer (see halide.banding): converting the whole frame at once held ~5 frames of
     colour-science's float64 temporaries (+900 MiB on a real scan)."""
+    image, source_profile = _read_scan(path)
+    return _to_working_space(image, source_profile)
+
+
+def _read_scan(path: str | Path) -> tuple[np.ndarray, LinearRGBProfile | None]:
+    """load_working_space_image's first half: decode and validate, but don't convert yet. Returns
+    the writable decoded buffer and the profile to convert it from — None when it's already in the
+    working space. Split out for the device path, which uploads the buffer *unconverted* (the
+    conversion runs on the GPU) and needs it untouched to start over on the CPU if the GPU fails."""
     scan = read_tiff(path)
     if scan.icc_profile is None:
         raise ScanColorError(f"{path}: no embedded ICC profile found; cannot verify color space")
@@ -123,13 +148,20 @@ def load_working_space_image(path: str | Path) -> np.ndarray:
         # `halide print`): already in the working space by definition. Converting anyway isn't a
         # true identity — the profile's s15Fixed16 matrix round-trips ACEScg only to ~1e-4 per
         # channel — so skip it rather than add that drift to a file halide itself wrote.
-        return np.require(scan.image, requirements="W")
+        return np.require(scan.image, requirements="W"), None
     try:
         source_profile = parse_linear_rgb_profile(scan.icc_profile)
     except UnsupportedICCProfileError as exc:
         raise ScanColorError(f"{path}: unsupported color profile — {exc}") from exc
-    image = np.require(scan.image, requirements="W")  # copies only if tifffile handed back read-only data
-    return map_in_bands(image, lambda band: convert_to_working_space(band, source_profile))
+    # copies only if tifffile handed back read-only data
+    return np.require(scan.image, requirements="W"), source_profile
+
+
+def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes: int | None = None):
+    """Convert `image` (host or device array) in place, band by band; a no-op for None."""
+    if source_profile is None:
+        return image
+    return map_in_bands(image, lambda band: convert_to_working_space(band, source_profile), band_bytes=band_bytes)
 
 
 def process_scan(
@@ -141,6 +173,8 @@ def process_scan(
     scan_gain: float = 1.0,
     thumbnail_path: str | Path | None = None,
     thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
+    device: ComputeDevice | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> ResolvedTone | None:
     """Process one negative scan end to end and write the result.
 
@@ -157,27 +191,27 @@ def process_scan(
     fill a folder with TIFFs. The thumbnail is made from exactly the same full-resolution develop
     (including the per-frame print fit), so the preview matches what a real run would write.
 
+    `device`: None or a CPU device runs on the CPU, exactly as before the GPU work. A GPU device
+    develops the frame there (see _run_on_device); if the GPU fails for any reason — out of memory,
+    a driver error — the frame is redone on the CPU and `on_warning` is told why (printed if no
+    callback is given). A GPU problem never fails a frame the CPU could have developed.
+
     Returns the tone values actually used (None for Stage.DENSITY_ONLY, which has no tone stage).
     """
-    # One full-frame buffer for the whole run: converted, developed and written in place.
-    image = load_working_space_image(input_path)
-    if scan_gain != 1.0:
-        image *= np.asarray(scan_gain, dtype=image.dtype)
+    # One full-frame host buffer for the whole run: decoded, developed (or downloaded into) and
+    # written in place.
+    image, source_profile = _read_scan(input_path)
 
-    if stage is Stage.INVERT_ONLY:
-        profile = IDENTITY_PROFILE
-    elif density_profile is not None:
-        profile = density_profile
-    else:
-        profile = auto_density_balance(image)
+    def develop(frame, band_bytes=None):
+        return _develop_frame(frame, source_profile, scan_gain, density_profile, stage, tone_params, band_bytes)
 
-    resolved = None
-    if stage is Stage.DENSITY_ONLY:
-        map_in_bands(image, lambda band: apply_density_balance(apply_white_balance(band, profile), profile))
-    else:
-        resolved = _develop_in_place(image, profile, tone_params)
+    developed, image = _run_on_device(input_path, image, device, develop, on_warning)
+    used_device = "gpu" if developed is not None else "cpu"
+    if developed is None:
+        developed = develop(image)
+    resolved, profile = developed
 
-    record = provenance_json(resolved, profile, scan_gain) if resolved is not None else None
+    record = provenance_json(resolved, profile, scan_gain, used_device) if resolved is not None else None
     if output_path is not None:
         write_tiff(output_path, image, icc_profile=output_profile_bytes())
     if thumbnail_path is not None:
@@ -196,15 +230,115 @@ def process_scan(
     return resolved
 
 
-def _develop_in_place(image: np.ndarray, profile: DensityProfile, tone_params: ToneCurveParams) -> ResolvedTone:
+def _develop_frame(
+    frame,
+    source_profile: LinearRGBProfile | None,
+    scan_gain: float,
+    density_profile: DensityProfile | None,
+    stage: Stage,
+    tone_params: ToneCurveParams,
+    band_bytes: int | None = None,
+) -> tuple[ResolvedTone | None, DensityProfile]:
+    """All of process_scan's arithmetic, in place on `frame` — the decoded, not yet converted scan,
+    as a host (numpy) array or a device (CuPy) array. One implementation for both: core/ picks the
+    array library from the array (core/_xp.py), so the GPU runs exactly the CPU's steps in the
+    CPU's order, and the CPU path is the code it always was. Returns (tone used, profile used)."""
+    _to_working_space(frame, source_profile, band_bytes)
+    if scan_gain != 1.0:
+        # A scalar of the frame's own dtype: the multiply stays in float32, and a scalar (unlike a
+        # 0-d numpy array) is accepted as an operand by a device array too.
+        frame *= frame.dtype.type(scan_gain)
+
+    if stage is Stage.INVERT_ONLY:
+        profile = IDENTITY_PROFILE
+    elif density_profile is not None:
+        profile = density_profile
+    else:
+        # Auto calibration isn't device-ready yet (plan Task 8): on a GPU it gets a host copy of
+        # the frame — one extra frame of host memory, for the length of this call.
+        profile = auto_density_balance(_on_host(frame))
+
+    if stage is Stage.DENSITY_ONLY:
+        map_in_bands(frame, lambda band: apply_density_balance(apply_white_balance(band, profile), profile),
+                     band_bytes=band_bytes)
+        return None, profile
+    return _develop_in_place(frame, profile, tone_params, band_bytes), profile
+
+
+def _develop_in_place(
+    image, profile: DensityProfile, tone_params: ToneCurveParams, band_bytes: int | None = None
+) -> ResolvedTone:
     """core.pipeline.develop, applied band by band into `image` (which the caller owns): the same
     per-pixel stages in the same order, with the one whole-frame step — the print fit — run on the
     full buffer between the two banded passes, exactly where develop() runs it. Bit-identical to
     develop() (pinned by tests/unit/test_banding.py), at ~1 frame of memory instead of ~9."""
-    map_in_bands(image, lambda band: negative_to_positive(band, profile))
-    resolved = resolve_tone(image, tone_params)
-    map_in_bands(image, lambda band: apply_tone(band, resolved, tone_params.curve_path))
+    map_in_bands(image, lambda band: negative_to_positive(band, profile), band_bytes=band_bytes)
+    resolved = _tone_on_host(resolve_tone(image, tone_params))
+    map_in_bands(image, lambda band: apply_tone(band, resolved, tone_params.curve_path), band_bytes=band_bytes)
     return resolved
+
+
+def _on_host(frame) -> np.ndarray:
+    return frame if array_namespace(frame) is np else _device.to_host(frame)
+
+
+def _tone_on_host(resolved: ResolvedTone) -> ResolvedTone:
+    """resolve_tone's result with every value a host scalar. On a device frame, the flat output's
+    linear_scale comes back as a 0-d device array (the fit's exposure/contrast are already floats).
+    It is brought back as the CPU has it — a numpy scalar of the frame's dtype, via `[()]` — not as
+    a Python float, which would make the flat output's scaling run in float64 and move its last bit
+    (see estimate_linear_scale). On the CPU this returns `resolved` unchanged."""
+    scale = resolved.linear_scale
+    if scale is None or isinstance(scale, (float, int, np.generic)):
+        return resolved
+    return dataclasses.replace(resolved, linear_scale=_device.to_host(scale)[()])
+
+
+def _run_on_device(input_path, host: np.ndarray, device: ComputeDevice | None, work, on_warning):
+    """Run `work(frame, band_bytes)` on a GPU copy of `host` and download the result into `host`.
+
+    Returns (work's result, host), or (None, host) when there's no GPU to use or it failed — then
+    `host` is the decoded, unconverted scan, ready for the CPU to start over on. That is why the
+    device path writes into `host` only once, at the very end (the plan's "out-of-memory never
+    fails a frame", §3.3): up to then a failure leaves it as decoded. The one exception is the
+    download itself — a GPU runs asynchronously, so an earlier kernel's error can surface there,
+    after part of `host` may have been overwritten — and then the scan is read again from disk.
+
+    Host memory stays ~1 frame: `host` is both the upload source and the download target."""
+    if device is None or device.kind != "gpu":
+        return None, host
+    frame = None
+    downloading = False
+    try:
+        frame = _device.to_device(host)
+        result = work(frame, banding.DEVICE_BAND_BYTES)
+        downloading = True
+        _device.to_host(frame, out=host)
+        return result, host
+    except Exception as exc:  # noqa: BLE001 — any GPU problem: redo on the CPU, never fail the frame
+        del frame
+        _device.release_memory()
+        _warn(on_warning, _gpu_fallback_message(input_path, exc))
+        if downloading:
+            host, _ = _read_scan(input_path)
+        return None, host
+
+
+def _gpu_fallback_message(input_path, exc: Exception) -> str:
+    text = str(exc)
+    # cupy.cuda.memory.OutOfMemoryError is a MemoryError; cuBLAS and the runtime report their own
+    # allocation failures as status codes instead.
+    if isinstance(exc, MemoryError) or "cudaErrorMemoryAllocation" in text or "ALLOC_FAILED" in text:
+        return f"{input_path}: out of GPU memory — developed this frame on the CPU instead"
+    detail = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+    return f"{input_path}: the GPU failed ({detail}) — developed this frame on the CPU instead"
+
+
+def _warn(on_warning: Callable[[str], None] | None, message: str) -> None:
+    if on_warning is not None:
+        on_warning(message)
+    else:
+        print(f"Warning: {message}")
 
 
 _DISPLAY_SUFFIXES = (".png", ".jpg", ".jpeg")
@@ -228,7 +362,11 @@ def thumbnail_existing_output(
 
 
 def print_scan(
-    input_path: str | Path, output_path: str | Path, tone_params: ToneCurveParams
+    input_path: str | Path,
+    output_path: str | Path,
+    tone_params: ToneCurveParams,
+    device: ComputeDevice | None = None,
+    on_warning: Callable[[str], None] | None = None,
 ) -> tuple[ResolvedTone, str | None]:
     """`halide print`: apply only the print stage (fitted exposure + grade, paper curve) to a flat
     linear positive — typically `halide invert --output flat`'s output after scene-level editing in
@@ -241,38 +379,52 @@ def print_scan(
     Without that metadata (darktable won't normally keep it), a pinned exposure can't be reproduced
     — it's dropped in favour of the fit, with a warning. The fitted exposure itself doesn't need the
     metadata: it's invariant to a global multiply (see core.tone_render.fit_print).
+
+    `device` / `on_warning`: as process_scan — a GPU failure redoes the print on the CPU and is
+    reported through `on_warning`, separately from the returned (metadata) warning.
     """
     # Header only: decoding the pixels here just for the description held a second full frame
-    # alongside load_working_space_image's.
+    # alongside the decoded image.
     provenance = read_provenance(read_tiff_description(input_path))
     if provenance is not None and provenance.get("output") == "print":
         raise PrintInputError(
             f"{input_path} is already a halide print (it has the tone curve applied) — `halide print` "
             f"expects a flat positive from `halide invert --output flat`"
         )
-    working_image = load_working_space_image(input_path)
+    image, source_profile = _read_scan(input_path)
 
     warning = None
     exposure = tone_params.exposure
     scale = provenance.get("linear_scale") if provenance is not None else None
-    if isinstance(scale, (int, float)) and scale > 0:
-        working_image /= np.asarray(scale, dtype=working_image.dtype)
-    elif exposure is not None:
-        warning = (
-            f"{input_path} has no halide flat-output metadata (normal after editing elsewhere), so a "
-            f"pinned exposure of {exposure:+.3f} can't be reproduced on it — fitting exposure instead"
-        )
-        exposure = None
+    if not (isinstance(scale, (int, float)) and scale > 0):
+        scale = None
+        if exposure is not None:
+            warning = (
+                f"{input_path} has no halide flat-output metadata (normal after editing elsewhere), so a "
+                f"pinned exposure of {exposure:+.3f} can't be reproduced on it — fitting exposure instead"
+            )
+            exposure = None
     print_params = ToneCurveParams(
         mode="paper", exposure=exposure, contrast=tone_params.contrast, curve_path=tone_params.curve_path
     )
 
-    resolved = resolve_tone(working_image, print_params)
-    map_in_bands(working_image, lambda band: apply_tone(band, resolved, print_params.curve_path))
-    write_tiff(output_path, working_image, icc_profile=output_profile_bytes())
-    del working_image  # before exiftool runs — see process_scan
+    def print_frame(frame, band_bytes=None) -> ResolvedTone:
+        # The whole print stage in place on `frame` (host or device array) — see _develop_frame.
+        _to_working_space(frame, source_profile, band_bytes)
+        if scale is not None:
+            frame /= frame.dtype.type(scale)  # a scalar of the frame's dtype: see _develop_frame
+        resolved = _tone_on_host(resolve_tone(frame, print_params))
+        map_in_bands(frame, lambda band: apply_tone(band, resolved, print_params.curve_path), band_bytes=band_bytes)
+        return resolved
+
+    resolved, image = _run_on_device(input_path, image, device, print_frame, on_warning)
+    used_device = "gpu" if resolved is not None else "cpu"
+    if resolved is None:
+        resolved = print_frame(image)
+    write_tiff(output_path, image, icc_profile=output_profile_bytes())
+    del image  # before exiftool runs — see process_scan
     copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
-    set_description(output_path, provenance_json(resolved, None))
+    set_description(output_path, provenance_json(resolved, None, device=used_device))
     return resolved, warning
 
 

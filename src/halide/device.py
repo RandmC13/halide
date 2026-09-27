@@ -111,3 +111,21 @@ def to_host(a, out=None):
     """Download a CuPy array back to numpy, optionally into a caller-owned buffer (`out`) so a
     banded pipeline (see `banding.py`) can reuse one host array instead of allocating per band."""
     return a.get(out=out)
+
+
+def release_memory() -> None:
+    """Hand CuPy's cached device memory back to the driver. CuPy keeps freed blocks in a pool for
+    reuse, which is right for a batch worker developing frame after frame (Task 7 keeps the pool
+    warm), but a one-frame run — or a frame that just ran out of GPU memory and is about to be
+    redone on the CPU — has no use for the cache. A no-op when CuPy was never imported (nothing to
+    release, and importing it here would cost exactly what the module docstring avoids); never
+    raises, since it runs on the way out of an error path."""
+    import sys
+
+    cupy = sys.modules.get("cupy")
+    if cupy is None:
+        return
+    try:
+        cupy.get_default_memory_pool().free_all_blocks()
+    except Exception:  # noqa: BLE001 — best effort; a broken driver is already being reported
+        pass
