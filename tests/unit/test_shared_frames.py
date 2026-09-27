@@ -9,11 +9,12 @@ import subprocess
 import sys
 import time
 from multiprocessing import shared_memory
+from textwrap import dedent
 
 import numpy as np
 import pytest
 
-from halide.shared_frames import SharedMemoryUnavailable, attach_frame, new_frame
+from halide.shared_frames import SharedMemoryUnavailable, attach_frame, batch_prefix, new_frame, sweep
 
 
 def _segment_exists(name: str) -> bool:
@@ -23,6 +24,15 @@ def _segment_exists(name: str) -> bool:
         return False
     shm.close()
     return True
+
+
+def _run(script: str, timeout: float = 30) -> subprocess.CompletedProcess:
+    """Run `script` as a fresh interpreter and return the completed process — used whenever a test
+    needs to observe something that would be unsafe or misleading to do inside the live pytest
+    process itself: a real segfault (a regression would kill the whole test run, not just fail one
+    test), or a resource_tracker/interpreter-shutdown effect that depends on being the *only* thing
+    using this interpreter's tracker."""
+    return subprocess.run([sys.executable, "-c", dedent(script)], capture_output=True, text=True, timeout=timeout)
 
 
 def test_new_frame_yields_a_writable_buffer_of_the_requested_shape_and_dtype():
@@ -59,6 +69,17 @@ def test_attach_frame_sees_the_creators_data_and_does_not_unlink():
         # attach_frame's own exit must not have unlinked the segment — only the creator does that.
         assert _segment_exists(frame.name)
     assert not _segment_exists(frame.name)
+
+
+def test_shared_frame_descriptor_is_a_plain_picklable_tuple():
+    import pickle
+
+    with new_frame((2, 2, 3), np.float32) as frame:
+        descriptor = frame.descriptor()
+        assert descriptor == (frame.name, frame.shape, frame.dtype)
+        # Round-trips through pickle without dragging the (unpicklable-at-this-size-for-our-
+        # purposes) array along — the whole point of sending a descriptor instead of `frame` itself.
+        assert pickle.loads(pickle.dumps(descriptor)) == descriptor
 
 
 def test_new_frame_raises_shared_memory_unavailable_when_creation_fails(monkeypatch):
@@ -109,51 +130,157 @@ def test_new_frame_raises_shared_memory_unavailable_when_the_segment_has_no_real
     assert created_names and not _segment_exists(created_names[0])
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="resource_tracker's leaked-segment cleanup is exercised on Linux")
-def test_killed_child_holding_a_frame_leaves_no_segment_once_its_process_tree_exits():
-    """Review Focus item 5: a worker OOM-killed mid-batch while it holds a shared-memory frame must
-    not leak a /dev/shm segment. Python's resource_tracker only unlinks leaked segments once *every*
-    process sharing its registration pipe has exited (it fires on EOF, not the instant one process
-    dies) — so this drives the kill from a throwaway subprocess (standing in for a batch's worker
-    pool) and checks the segment only after that whole subprocess has exited, matching the plan's own
-    framing: "check the segment is gone after the pool shuts down."
-    """
-    script = """
-import multiprocessing
-import os
-import signal
-import time
+def test_array_kept_past_the_with_block_stays_valid_and_the_segment_name_is_gone():
+    """Review finding: `np.ndarray(shape, buffer=shm.buf)` (the original implementation) copies out
+    the raw pointer and holds no real buffer-protocol export, so `shm.close()` in `new_frame`'s
+    `finally` succeeds even while a caller still holds `frame.array` — and a later write into that
+    now-dangling pointer segfaults (reproduced directly: exit code 139 with the pre-fix
+    implementation). Run in a subprocess so a regression shows up as *this test failing*, not the
+    whole pytest process dying."""
+    result = _run(
+        """
+        import numpy as np
+        from halide.shared_frames import new_frame
 
-import numpy as np
+        with new_frame((4, 4, 3), np.float32) as frame:
+            name = frame.name
+            kept = frame.array
+            kept[:] = 1.0
 
-from halide.shared_frames import new_frame
-
-ctx = multiprocessing.get_context("fork")
-ready = ctx.Event()
-name_queue = ctx.Queue()
-
-
-def hold_frame_forever():
-    with new_frame((4, 4, 3), np.float32) as frame:
-        name_queue.put(frame.name)
-        ready.set()
-        time.sleep(60)
-
-
-proc = ctx.Process(target=hold_frame_forever)
-proc.start()
-assert ready.wait(timeout=10)
-name = name_queue.get(timeout=10)
-os.kill(proc.pid, signal.SIGKILL)
-proc.join(timeout=10)
-print(name)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30, check=True
+        # The `with` block has exited (segment unlinked); `kept` must still be safely writable, not
+        # a dangling pointer into now-invalid memory.
+        kept[:] = 3.0
+        assert float(kept[0, 0, 0]) == 3.0
+        print(name)
+        """
     )
+    assert result.returncode == 0, f"subprocess crashed (exit {result.returncode}): {result.stderr}"
     name = result.stdout.strip().splitlines()[-1]
+    assert not _segment_exists(name)
 
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and _segment_exists(name):
-        time.sleep(0.2)
-    assert not _segment_exists(name), f"segment {name} leaked after its owning process tree exited"
+
+def test_batch_prefix_is_keyed_on_this_processs_own_pid():
+    import os
+
+    prefix = batch_prefix()
+    assert prefix.startswith("halide-")
+    assert str(os.getpid()) in prefix
+
+
+def test_new_frame_with_a_prefix_names_the_segment_accordingly():
+    with new_frame((2, 2, 3), np.float32, prefix="my-prefix-") as frame:
+        assert frame.name.startswith("my-prefix-")
+        assert _segment_exists(frame.name)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
+def test_sweep_removes_a_leaked_segment_by_prefix_and_unregisters_it():
+    prefix = "sweep-leak-test-"
+    # A segment "leaked" the same way a killed worker would leave one: created, then never unlinked
+    # (the with-block's own cleanup is bypassed by reaching in and calling __enter__/never __exit__
+    # would be awkward with a contextmanager — instead, create one directly and leave it unlinked).
+    import halide.shared_frames as shared_frames_module
+
+    shm = shared_frames_module.shared_memory.SharedMemory(create=True, size=48, name=f"{prefix}leaked")
+    try:
+        assert _segment_exists(shm.name)
+        removed = sweep(prefix)
+        assert removed == 1
+        assert not _segment_exists(shm.name)
+    finally:
+        try:
+            shm.close()
+        except BufferError:
+            pass
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
+def test_sweep_leaves_a_differently_prefixed_segment_alone():
+    """Selectivity: sweeping one batch's prefix must never touch another batch's (or an unrelated
+    live frame's) segment, even one sitting right next to it in /dev/shm."""
+    import halide.shared_frames as shared_frames_module
+
+    leaked_prefix = "sweep-selective-leak-"
+    other_prefix = "sweep-selective-unrelated-"
+    leaked = shared_frames_module.shared_memory.SharedMemory(create=True, size=48, name=f"{leaked_prefix}x")
+    try:
+        with new_frame((2, 2, 3), np.float32, prefix=other_prefix) as unrelated:
+            removed = sweep(leaked_prefix)
+            assert removed == 1
+            assert not _segment_exists(leaked.name)
+            assert _segment_exists(unrelated.name)
+    finally:
+        try:
+            leaked.close()
+        except BufferError:
+            pass
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="forkserver + resource_tracker sharing is exercised on Linux")
+def test_sweep_removes_a_sigkilled_pool_workers_segment_with_no_resource_tracker_warning(tmp_path):
+    """Review Focus item 5, under the *real* batch topology: a batch's worker pool is a forkserver
+    pool, and every worker shares the *parent's* resource_tracker (its registration pipe is
+    inherited at pool start), not a fresh one per worker — so a segment a SIGKILLed worker leaves
+    behind survives until the whole *parent* process exits, not the instant that worker dies
+    (reproduced directly: without `sweep()`, `executor.shutdown()` returning does not remove the
+    segment, and the interpreter prints a "leaked shared_memory objects" UserWarning at its own
+    exit). `sweep()` is what lets the still-alive orchestrator clean this up immediately after
+    noticing the pool lost a worker, instead of waiting for its own process to end.
+
+    Run as a real script (not `-c`): a forkserver/spawn worker's target function must be importable
+    by module+qualname in the (separately bootstrapped) forkserver process, which isn't possible for
+    a function defined inside a `-c` string's throwaway `__main__`.
+    """
+    coord_path = tmp_path / "coord.txt"
+    script = tmp_path / "kill_pool_worker.py"
+    script.write_text(
+        dedent(f"""
+        import multiprocessing
+        import os
+        import signal
+        import time
+        from concurrent.futures import ProcessPoolExecutor
+
+        import numpy as np
+
+        from halide.shared_frames import batch_prefix, new_frame, sweep
+
+        COORD_PATH = {str(coord_path)!r}
+
+
+        def _hold_a_frame(prefix):
+            with new_frame((4, 4, 3), np.float32, prefix=prefix) as frame:
+                with open(COORD_PATH, "w") as f:
+                    f.write(f"{{os.getpid()}} {{frame.name}}")
+                time.sleep(60)
+
+
+        if __name__ == "__main__":
+            prefix = batch_prefix()
+            context = multiprocessing.get_context("forkserver")
+            executor = ProcessPoolExecutor(max_workers=1, mp_context=context)
+            executor.submit(_hold_a_frame, prefix)
+
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and not os.path.exists(COORD_PATH):
+                time.sleep(0.1)
+            with open(COORD_PATH) as f:
+                pid_str, name = f.read().split()
+            os.kill(int(pid_str), signal.SIGKILL)
+
+            executor.shutdown(wait=True, cancel_futures=True)
+
+            removed = sweep(prefix)
+            print("removed", removed)
+            print("name", name)
+        """)
+    )
+    result = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, f"exit {result.returncode}, stderr:\\n{result.stderr}"
+    lines = result.stdout.strip().splitlines()
+    values = dict(line.split(" ", 1) for line in lines)
+    assert values["removed"] == "1"
+    assert not _segment_exists(values["name"])
+    stderr_lower = result.stderr.lower()
+    assert "leaked" not in stderr_lower, result.stderr
+    assert "resource_tracker" not in stderr_lower, result.stderr
