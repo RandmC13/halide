@@ -1029,7 +1029,7 @@ namespace-generic; `solve_density_balance` stays CPU — it receives 3-element h
   resident on the device, one upload/one download; CPU fallback; provenance `device`; the D1/D2/D3
   outcomes; the user's measured numbers (probe + benchmark); the GPU worker default and how it was
   chosen; forkserver/CUDA rule. Update the Architecture tree (`device.py`, `core/_xp.py`) and
-  Commands (`--device`, `pip install -e ".[gpu]"`, `pytest -m gpu`).
+  Commands (`--device`, `halide gpu --install` / `pip install -e ".[cuda13]"`, `pytest -m gpu`).
 - [ ] `docs/README.md`: move this plan's line to "Implemented".
 - [ ] Commit.
 
