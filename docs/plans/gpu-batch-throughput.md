@@ -91,7 +91,7 @@ takes ~0.29 s per file after the first, and its output files are byte-identical.
   `copy_exif_metadata(source, dest, drop_icc=False) -> bool` keeps its signature and return value
   (False = exiftool not installed), and builds exactly the same argument list as today.
 
-- [ ] **Step 1: Failing tests.** Use a fake exiftool: a small Python script written to `tmp_path`
+- [x] **Step 1: Failing tests.** Use a fake exiftool: a small Python script written to `tmp_path`
   and made executable, which implements the part of the `-stay_open True -@ -` protocol used:
   - read argument lines until `-executeNNN`;
   - append a marker line to a log file named in an environment variable;
@@ -110,8 +110,8 @@ takes ~0.29 s per file after the first, and its output files are byte-identical.
   - a path containing `\n` uses one-shot;
   - no exiftool on PATH → `copy_exif_metadata` returns False and starts nothing;
   - `close()` ends the process, and an `atexit` hook closes it at interpreter exit.
-- [ ] **Step 2: Run, verify they fail.**
-- [ ] **Step 3: Implement.**
+- [x] **Step 2: Run, verify they fail.**
+- [x] **Step 3: Implement.**
 
   ```python
   # src/halide/io/exiftool.py
@@ -142,14 +142,19 @@ takes ~0.29 s per file after the first, and its output files are byte-identical.
   First confirm that `-common_args -charset filename=utf8` doesn't change a single output byte
   on Linux, against the real exiftool (Step 5). If it does, pass `-charset filename=utf8` only on
   Windows.
-- [ ] **Step 4: Run tests; full suite.**
-- [ ] **Step 5: Real-exiftool acceptance** (runs where exiftool is installed; the implementer
+- [x] **Step 4: Run tests; full suite.**
+- [x] **Step 5: Real-exiftool acceptance** (runs where exiftool is installed; the implementer
   fetches exiftool's source into their scratch folder, the same way the investigation did):
   - for all four real scans and 3 Roll16 frames, output files written through the session are
     **byte-identical** to the one-shot path;
   - timing: first file and median of the next five, one-shot vs session;
   - record both in the task report.
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
+
+**Done** (`97425d9`, `a6c26ef`): kept-open session on **Linux only** (ruling: a `-stay_open`
+exiftool never exits on end of input, and only Linux's parent-death signal guarantees it dies with
+a terminated worker; elsewhere one-shot as before). Measured: one-shot 0.67 s first / 0.66 s
+median vs session 0.57 s first / 0.23 s median of the next five; 15/15 real outputs byte-identical.
 
 ---
 

@@ -84,7 +84,9 @@ src/halide/
                # either; see "Decisions and why", GPU acceleration).
   io/          # tiff.py (read/write + dtype normalization), icc.py (validate + color-manage
                # the embedded ICC profile), raster.py (ACEScg -> sRGB delivery export),
-               # lut.py (.cube reader, used by tone_render.py at runtime AND by golden tests).
+               # lut.py (.cube reader, used by tone_render.py at runtime AND by golden tests),
+               # exiftool.py (one kept-open exiftool per process, Linux only, behind tiff.py's
+               # copy_exif_metadata — see "Decisions and why", worker pool).
   calibration/ # auto.py (statistical fallback calibration), profile_store.py (named,
                # reusable DensityProfile JSON files under ~/.config/halide/profiles/), anchors.py
                # (the picker's neutral-point model: scan-gain normalisation, agreement, gates).
@@ -387,9 +389,10 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     | IMG_0158 | auto-density | 0.0 | 0 / 47,383,128 | pixel-identical | exact | exact |
   - **Worker pool after that pass**: `K = 3` (baseline 150 MiB) for inversion and `K = 2` (100 MiB)
     for export/contact, refit from real worker processes' peaks (worst: `--auto-density` 509 MiB RSS
-    on a 182 MiB scan) — see the constants' comment in `batch/orchestrator.py`. exiftool needs no
-    term: it streams (67 MiB peak on a 130 MiB output) and `process_scan` frees the frame before
-    running it. Workers come from a forkserver with `halide.processing` preloaded (they share numpy/
+    on a 182 MiB scan) — see the constants' comment in `batch/orchestrator.py`. exiftool has no
+    term but uses part of the margin: it streams (67 MiB peak on a 130 MiB output), `process_scan`
+    frees the frame before running it, and worst worker + exiftool is 576 MiB of the 695 MiB
+    estimate. Workers come from a forkserver with `halide.processing` preloaded (they share numpy/
     colour-science pages copy-on-write: 4 idle workers 294 -> 73 MiB proportional memory). The old
     fixed `min(cpu_count, 6)` cap is now one worker per *physical* core (`_cpu_cap`, the user's
     choice) — a hyperthread sibling adds little to a numpy-bound worker but costs a frame of memory.
@@ -399,6 +402,27 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     bit-identical. Scaling flattens past ~4 workers there (1: 66 s, 2: 35 s, 4: 22 s, 6: 20 s, 8:
     17 s) — probably disk writes (~2 GB of TIFFs per run) and memory bandwidth, not re-tuned from
     one sandbox; re-check on the user's own machine before lowering the physical-core cap.
+  - **exiftool is kept running per process on Linux** (`-stay_open`, `halide.io.exiftool`; plan
+    `docs/plans/gpu-batch-throughput.md` Part A). A fresh exiftool per output cost ~0.66 s, mostly
+    its own start-up and tag-table loading, not the file rewrite; kept open it is ~0.23 s per file
+    after the first (dev sandbox, exiftool 13.36), and outputs are byte-identical — 15/15 real
+    outputs (4 scans + 3 Roll 16 frames, ICC dropped and kept, a non-ASCII file name).
+    - **Linux only, deliberately**: a `-stay_open` exiftool never exits when its input closes (it
+      polls the pipe every 10 ms forever), so a worker the GUI terminates or the OOM killer takes
+      would leave it running for good. Only Linux guarantees it dies with its process (the
+      kernel's parent-death signal); elsewhere every copy stays the old one-shot call. Sessions
+      are keyed by PID (a forked child never uses its parent's) and closed at exit.
+    - **"Failed" is exiftool's own exit status** for that command, echoed after it
+      (`-echo3 {status=${status}}`, exiftool >= 12.10) — the same condition the one-shot's
+      non-zero exit was. Reading its summary instead ("N image files updated", no `Error:`) isn't
+      the same: an "unchanged" file exits 0, and a missing source's message has no `Error:`
+      prefix. That reading is only the fallback for an older exiftool. A failed file raises
+      `ExifToolError` (the batch reports it as that frame's failure).
+    - A session that dies or hangs (timeout, then killed; its `_exiftool_tmp` file removed) is
+      restarted once; if that fails too, the process goes one-shot for the rest of its life, so a
+      broken exiftool never hangs the batch. Arguments exiftool's argument file can't carry
+      verbatim (a line break, leading/trailing white space, a leading `#`) go one-shot.
+      `-charset filename=utf8` (needed on Windows) was verified byte-neutral on Linux.
 - **GPU acceleration (optional, CuPy) — `docs/plans/gpu-acceleration.md`; verified on the user's
   RTX 3070 (2026-09-27): all 46 `pytest -m gpu` tests pass, and the GPU is ~20% faster end to end —
   see the last sub-bullet.**
