@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from halide.cli import console
+from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 from halide.cli._calibration_args import (
     add_calibration_arguments,
     add_scan_arguments,
@@ -35,6 +36,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_calibration_arguments(parser, allow_pick=True)
     add_tone_arguments(parser)
     add_scan_arguments(parser)
+    add_device_argument(parser)
 
 
 def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool) -> tuple[float, object]:
@@ -70,6 +72,7 @@ def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool) -> tuple
 
 
 def run(args: argparse.Namespace) -> int:
+    from halide import device as halide_device
     from halide.processing import ScanColorError, process_scan
 
     input_path = Path(args.input)
@@ -82,6 +85,12 @@ def run(args: argparse.Namespace) -> int:
     else:
         choose_calibration_source(args, "this image")  # sets args.profile etc. before anything reads them
         density_profile, saved_tone = resolve_density_profile(args)
+    # Resolved after the calibration-source prompt above (see CLAUDE.md's choose_calibration_source
+    # ordering note) — a device prompt/error mid-calibration would be a strange place for it.
+    device = resolve_device_arg(args)
+    fallback_warning = device_fallback_warning(device)
+    if fallback_warning:
+        print(console.warning(fallback_warning))
     manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
     calibrated_here = stage is not Stage.INVERT_ONLY and not args.profile and not manual_given
     gain, scan_reference = _resolve_scan_gain(args, calibrated_here)
@@ -102,9 +111,13 @@ def run(args: argparse.Namespace) -> int:
             min_height=console.TANK_MIN_SIZE[1],
             interval=0.5,
         ):
-            resolved = process_scan(args.input, args.output, stage, density_profile, tone_params, scan_gain=gain)
+            resolved = process_scan(
+                args.input, args.output, stage, density_profile, tone_params, scan_gain=gain,
+                device=device, on_warning=lambda msg: print(console.warning(msg)),
+            )
     except ScanColorError as exc:
         raise SystemExit(str(exc))
+    halide_device.release_memory()
     if resolved is not None:
         print(describe_resolved_tone(resolved))
 
@@ -113,7 +126,7 @@ def run(args: argparse.Namespace) -> int:
     print(
         console.success(
             f"{console.VERB_PAST['invert']} → {output_path} "
-            f"({console.human_time(elapsed)}, {console.human_bytes(size)})"
+            f"({console.human_time(elapsed)}, {console.human_bytes(size)}, {device_row(device)})"
         )
     )
     return 0

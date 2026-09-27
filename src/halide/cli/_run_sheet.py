@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Callable
 
 from halide.batch.orchestrator import BatchJob
+from halide.cli._device_args import device_fallback_warning, device_row
 from halide.cli.console import RunSheet
+from halide.device import ComputeDevice
 
 
 def frame_count(n: int) -> str:
@@ -18,6 +20,15 @@ def frame_count(n: int) -> str:
 def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str) -> None:
     # resolve(): `halide batch .` would otherwise name the roll "" (Path(".").name is empty).
     sheet.row("Roll", f"{input_dir.resolve().name}{RunSheet.SEP}{frame_count(n_frames)} → {destination}")
+
+
+def compute_row(sheet: RunSheet, device: ComputeDevice) -> None:
+    """The run sheet's Compute row (see cli/_device_args.py::device_row) plus, when set, why an
+    `auto` choice fell back from GPU to CPU."""
+    sheet.row("Compute", device_row(device))
+    warning = device_fallback_warning(device)
+    if warning:
+        sheet.warn("Compute", warning)
 
 
 def choose_workers(

@@ -13,6 +13,7 @@ from halide.batch.orchestrator import BatchJob, default_worker_count, discover_j
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
+from halide.cli._device_args import add_device_argument, resolve_device_arg
 from halide.cli._calibration_args import (
     add_calibration_arguments,
     add_scan_arguments,
@@ -25,7 +26,7 @@ from halide.cli._calibration_args import (
     resolve_stage,
     resolve_tone_params,
 )
-from halide.cli._run_sheet import choose_workers, frame_count, roll_row
+from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
 from halide.core.types import Stage
 
@@ -72,6 +73,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "is usually the real limit; pass this to override the auto-selected count)",
     )
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
+    add_device_argument(parser)
 
 
 def _match_scan_exposure(
@@ -285,6 +287,12 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
         sheet.ok("Calibration", f"saved as {args.save_profile_as!r} — reuse with --profile {args.save_profile_as}")
     tone_params = resolve_tone_params(args, saved_tone=saved_tone)
     sheet.row("Output", _output_text(stage, tone_params))
+
+    # Resolved after choose_calibration_source (called by _run, before this sheet opens) and
+    # before the sheet closes — see CLAUDE.md's choose_calibration_source ordering note. Not yet
+    # passed into run_batch's workers (Task 7 wires that up) — see Ruling R7.
+    device = resolve_device_arg(args)
+    compute_row(sheet, device)
 
     workers = choose_workers(
         args, jobs, sheet, default_count=default_worker_count, budget_warning=memory_budget_warning
