@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from halide.core._constants import MIN_TRANSMITTANCE
+from halide.core._xp import array_namespace
 
 
 def invert(negative_linear: np.ndarray) -> np.ndarray:
@@ -20,5 +21,6 @@ def invert(negative_linear: np.ndarray) -> np.ndarray:
     well-exposed (density-balanced, transmittance <= 1) input, and are not clipped here."""
     # `safe` is a fresh copy (never negative_linear itself) — reusing it as the reciprocal's `out`
     # avoids a second full-size allocation.
-    safe = np.maximum(negative_linear, MIN_TRANSMITTANCE)
-    return np.divide(1.0, safe, out=safe)
+    xp = array_namespace(negative_linear)
+    safe = xp.maximum(negative_linear, MIN_TRANSMITTANCE)
+    return xp.divide(1.0, safe, out=safe)
