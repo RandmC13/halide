@@ -11,13 +11,20 @@ from __future__ import annotations
 
 import argparse
 
-from halide.device import ComputeDevice, DeviceUnavailableError, resolve_device
+from halide.device import DEFAULT_DEVICE, ComputeDevice, DeviceUnavailableError, resolve_device
 
-# R3 (docs/plans/gpu-acceleration.md §6 D3): the user chose "auto" as the one default used by
-# every command, once GPU support exists at all. `resolve_device` already falls back to this same
-# value when neither --device nor $HALIDE_DEVICE is given; this constant is the CLI's own record of
-# that choice (and what a later "halide gpu" command/hint describes "auto" as meaning).
-DEFAULT_DEVICE = "auto"
+# Re-exported from halide.device (the single place that actually acts on it — resolve_device falls
+# back to this same value when neither --device nor $HALIDE_DEVICE is given) so CLI code, and a
+# later "halide gpu" command/hint, can import the one true default from here without reaching past
+# the CLI package. R3 (docs/plans/gpu-acceleration.md §6 D3): the user chose "auto" as the one
+# default used by every command, once GPU support exists at all.
+__all__ = [
+    "DEFAULT_DEVICE",
+    "add_device_argument",
+    "device_fallback_warning",
+    "device_row",
+    "resolve_device_arg",
+]
 
 
 def add_device_argument(parser: argparse.ArgumentParser) -> None:

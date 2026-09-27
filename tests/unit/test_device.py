@@ -17,7 +17,8 @@ import types
 
 import pytest
 
-from halide.device import DEVICE_ENV, ComputeDevice, DeviceUnavailableError, resolve_device
+import halide.device as device_module
+from halide.device import DEFAULT_DEVICE, DEVICE_ENV, ComputeDevice, DeviceUnavailableError, resolve_device
 
 
 def _fake_cupy(*, device_count=1, device_count_error=None, device_name="NVIDIA GeForce RTX 3070",
@@ -111,6 +112,22 @@ def test_env_var_is_used_when_no_flag(monkeypatch):
 def test_no_flag_no_env_defaults_to_auto(monkeypatch):
     monkeypatch.delenv(DEVICE_ENV, raising=False)
     monkeypatch.setitem(sys.modules, "cupy", None)
+    assert resolve_device(None) == ComputeDevice(kind="cpu")
+
+
+def test_default_device_constant_is_auto():
+    assert DEFAULT_DEVICE == "auto"
+
+
+def test_default_device_constant_actually_governs_resolve_device(monkeypatch):
+    """Not just documentation: resolve_device must read this constant at call time, not have its
+    own separately hardcoded "auto" fallback that this constant merely happens to match."""
+    monkeypatch.delenv(DEVICE_ENV, raising=False)
+    # A GPU "auto" would happily pick, so switching DEFAULT_DEVICE to "cpu" is the only thing that
+    # can make resolve_device(None) come back CPU here — proving the constant is actually consulted,
+    # not just documented to match resolve_device's own separate literal.
+    monkeypatch.setitem(sys.modules, "cupy", _fake_cupy())
+    monkeypatch.setattr(device_module, "DEFAULT_DEVICE", "cpu")
     assert resolve_device(None) == ComputeDevice(kind="cpu")
 
 

@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import re
 import sys
 
 import numpy as np
 import pytest
 
+import halide.cli._device_args as _device_args
 from halide.cli._device_args import DEFAULT_DEVICE, add_device_argument, device_row, resolve_device_arg
 from halide.cli.main import build_parser, main
 from halide.device import ComputeDevice, DeviceUnavailableError
@@ -43,6 +45,23 @@ def test_add_device_argument_offers_the_three_choices_and_defaults_to_none():
 def test_default_device_constant_is_auto():
     # R3: one default, "auto", everywhere.
     assert DEFAULT_DEVICE == "auto"
+
+
+def test_default_device_constant_is_reexported_from_halide_device():
+    # cli/_device_args.DEFAULT_DEVICE must be an import of halide.device's own constant (checked by
+    # source, not just value, since two equal string literals would pass a `==` check either way) —
+    # see tests/unit/test_device.py::test_default_device_constant_actually_governs_resolve_device
+    # for proof resolve_device itself is the thing that reads it.
+    import ast
+
+    source = ast.parse(pathlib.Path(_device_args.__file__).read_text())
+    imported_names = {
+        alias.asname or alias.name
+        for node in ast.walk(source)
+        if isinstance(node, ast.ImportFrom) and node.module == "halide.device"
+        for alias in node.names
+    }
+    assert "DEFAULT_DEVICE" in imported_names
 
 
 def test_resolve_device_arg_uses_resolve_device(monkeypatch):

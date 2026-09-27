@@ -17,6 +17,11 @@ from dataclasses import dataclass
 
 DEVICE_ENV = "HALIDE_DEVICE"
 
+# R3 (docs/plans/gpu-acceleration.md §6 D3): the user's one default, used by every command, once
+# neither --device nor $HALIDE_DEVICE says otherwise. Defined here (not just in cli/_device_args.py,
+# which re-exports it for CLI callers) because this is the single place that actually acts on it.
+DEFAULT_DEVICE = "auto"
+
 _VALID_REQUESTS = ("auto", "cpu", "gpu")
 
 
@@ -52,7 +57,7 @@ def resolve_device(requested: str | None = None) -> ComputeDevice:
     show), `"gpu"` raises so the user's explicit request isn't silently downgraded.
     """
     if requested is None:
-        requested = os.environ.get(DEVICE_ENV, "auto")
+        requested = os.environ.get(DEVICE_ENV, DEFAULT_DEVICE)
     if requested not in _VALID_REQUESTS:
         raise ValueError(
             f"{DEVICE_ENV}/--device is {requested!r}, but it must be one of {', '.join(_VALID_REQUESTS)}"
