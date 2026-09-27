@@ -342,11 +342,14 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     isn't bit-identical: confirmed directly (not assumed) that BLAS and numpy's broadcast `vecmul`
     round the last float64 bit differently even for the identical matrices and identical inputs —
     `vecmul(m_cat, xyz)` vs `xyz @ m_cat.T` differ by up to 1 float64 ULP on the same seed, before
-    the second matrix is even applied (both paths use FMA, just differently). This is CPU-dependent,
-    confirmed by measuring on this project's own dev sandbox: bit-identical (`maxulp=0`) float32
-    output on all four real scans (190,351,044 values total) and a 60M-value synthetic stress test
-    spanning 1e-5 to 10^0.5 — better than the 1-of-60M/1-ULP difference measured on a different CPU
-    when this was accepted. Accepted tolerance, per unit test (`test_icc.py`/`test_raster.py`): 2
+    the second matrix is even applied (both paths use FMA, just differently). This project's dev
+    sandbox measured bit-identical (`maxulp=0`) float32 output on all four real scans (190,351,044
+    values total) and a 60M-value synthetic stress test spanning 1e-5 to 10^0.5 — against an earlier
+    60M-value stress test in this same sandbox (different random sample) that found 1 of 60M values
+    off by 1 ULP when this tolerance was accepted. Both runs are the same hardware; the two results
+    disagree because they sampled different values, and which of them happen to land on the rare
+    last-bit divergence isn't established — this isn't evidence of CPU-dependence, just of sampling
+    variance in an ad-hoc stress test. Accepted tolerance, per unit test (`test_icc.py`/`test_raster.py`): 2
     float32 ULPs on random data and on 512-row bands of each real scan. Measured cost (IMG_0158,
     3276x4849, dev sandbox, warm process): `convert_to_working_space` alone 1.86 s -> 0.67 s
     (~2.8x); `load_working_space_image` (read + convert, banded) 1.70 s -> 0.59 s. `to_srgb_8bit`'s
