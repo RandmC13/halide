@@ -20,7 +20,6 @@ from halide import device as _device  # to_device/to_host looked up at call time
 from halide.banding import map_in_bands
 from halide.calibration.auto import auto_density_balance, roll_auto_density_balance
 from halide.core.density import apply_density_balance, apply_white_balance
-from halide.core._xp import array_namespace
 from halide.core.pipeline import negative_to_positive
 from halide.core.tone_render import ResolvedTone, apply_tone, resolve_tone
 from halide.core.types import DensityProfile, Stage, ToneCurveParams  # noqa: F401 -- Stage re-exported
@@ -254,9 +253,9 @@ def _develop_frame(
     elif density_profile is not None:
         profile = density_profile
     else:
-        # Auto calibration isn't device-ready yet (plan Task 8): on a GPU it gets a host copy of
-        # the frame — one extra frame of host memory, for the length of this call.
-        profile = auto_density_balance(_on_host(frame))
+        # On a GPU this runs on the device frame itself; only the two 3-vector percentiles it
+        # solves from come back to the host (calibration/auto.py).
+        profile = auto_density_balance(frame)
 
     if stage is Stage.DENSITY_ONLY:
         map_in_bands(frame, lambda band: apply_density_balance(apply_white_balance(band, profile), profile),
@@ -276,10 +275,6 @@ def _develop_in_place(
     resolved = _tone_on_host(resolve_tone(image, tone_params))
     map_in_bands(image, lambda band: apply_tone(band, resolved, tone_params.curve_path), band_bytes=band_bytes)
     return resolved
-
-
-def _on_host(frame) -> np.ndarray:
-    return frame if array_namespace(frame) is np else _device.to_host(frame)
 
 
 def _tone_on_host(resolved: ResolvedTone) -> ResolvedTone:

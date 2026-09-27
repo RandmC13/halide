@@ -234,3 +234,101 @@ def test_neutral_candidate_mask_is_bit_identical_to_the_old_full_reference_form(
     assert new.dtype == old.dtype
     assert np.array_equal(new.view(np.uint8), np.ascontiguousarray(old).view(np.uint8))
     assert np.array_equal(_neutral_candidate_mask(image, neutral_fraction), _old_neutral_candidate_mask(image, neutral_fraction))
+
+
+# ---------------------------------------------------------------------------
+# On the device (docs/plans/gpu-acceleration.md, Task 8): the same functions, given a GPU array,
+# run there — pinned bit-for-bit on tests/unit/_fake_device.py's strict CPU stand-in (numpy
+# underneath, so any difference is a plumbing bug). A real GPU is held to the D2 tolerance in
+# tests/gpu/test_gpu_parity.py instead: its argsort orders luminance ties differently.
+# ---------------------------------------------------------------------------
+
+from halide.core._xp import register_namespace  # noqa: E402
+from tests.unit._fake_device import FakeDeviceArray, fake_xp, to_device, to_host  # noqa: E402
+
+_DEVICE_IMAGES = [
+    _noisy_frame((61, 97, 3), np.float32, 1),
+    _noisy_frame((41, 43, 3), np.float64, 2),
+    _noisy_frame((9, 11, 3), np.float32, 3),
+    _synthetic_image_with_decoys(),
+]
+_DEVICE_IDS = ["float32-20-bins", "float64-8-bins", "one-bin", "decoys"]
+
+
+@pytest.fixture
+def fake_device():
+    register_namespace(FakeDeviceArray, fake_xp)
+
+
+def _same_bits(a, b):
+    return a.dtype == b.dtype and np.array_equal(np.ascontiguousarray(a).view(np.uint8), np.ascontiguousarray(b).view(np.uint8))
+
+
+@pytest.mark.parametrize("image", _DEVICE_IMAGES, ids=_DEVICE_IDS)
+@pytest.mark.parametrize("neutral_fraction", [0.01, 0.5, 0.9])
+def test_auto_density_balance_on_device_matches_cpu_exactly(fake_device, image, neutral_fraction):
+    # Same profile, or the same error (a 1% fraction of 99 pixels is no candidates at all), with the
+    # same warnings.
+    def outcome(pixels):
+        import warnings as warnings_module
+
+        with warnings_module.catch_warnings(record=True) as caught:
+            warnings_module.simplefilter("always")
+            try:
+                result = auto_density_balance(pixels, neutral_fraction)
+            except ValueError as exc:
+                result = ("raised", str(exc))
+        return result, [str(w.message) for w in caught]
+
+    assert outcome(to_device(image)) == outcome(image)
+
+
+@pytest.mark.parametrize("image", _DEVICE_IMAGES, ids=_DEVICE_IDS)
+def test_density_local_saturation_and_mask_on_device_match_cpu_exactly(fake_device, image):
+    flat = image.reshape(-1, 3)
+    device_saturation = _density_local_saturation(to_device(flat))
+    assert isinstance(device_saturation, FakeDeviceArray)  # stayed on the device
+    assert _same_bits(to_host(device_saturation), _density_local_saturation(flat))
+    # ... and against the old full-reference form (the oracle above), on the device's result.
+    assert _same_bits(to_host(device_saturation), _saturation(flat, _old_density_reference(flat)))
+    device_mask = _neutral_candidate_mask(to_device(image), 0.5)
+    assert np.array_equal(to_host(device_mask), _old_neutral_candidate_mask(image, 0.5))
+
+
+def test_roll_auto_density_balance_on_device_matches_cpu_exactly(fake_device):
+    flat = _synthetic_image_with_decoys().reshape(-1, 3)
+    frames = [flat[i::4].reshape(-1, 1, 3) for i in range(4)]
+    assert roll_auto_density_balance([to_device(f) for f in frames]) == roll_auto_density_balance(frames)
+
+
+def test_auto_density_balance_on_device_warns_and_raises_as_on_cpu(fake_device):
+    close = np.concatenate(
+        [np.tile((0.10, 0.13, 0.05), (200, 1)), np.tile((0.099, 0.129, 0.0498), (200, 1))], axis=0
+    ).reshape(-1, 1, 3)
+    with pytest.warns(UserWarning, match="unusually close in density"):
+        auto_density_balance(to_device(close), neutral_fraction=0.9)
+    with pytest.raises(ValueError, match="not enough near-neutral pixels"):
+        auto_density_balance(to_device(np.array([[[0.05, 0.05, 0.05]]])), neutral_fraction=0.5)
+
+
+def _old_saturation(pixels, reference):
+    """The pre-device `_saturation` body (np.divide with `where=`, which CuPy's ufuncs don't take) —
+    an oracle for the rewrite, including its zero / negative / NaN max-channel handling."""
+    normalized = pixels / reference
+    max_channel = normalized.max(axis=-1)
+    min_channel = normalized.min(axis=-1)
+    return np.divide(max_channel - min_channel, max_channel, out=np.zeros_like(max_channel), where=max_channel > 0)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_saturation_matches_the_old_where_form_including_degenerate_pixels(fake_device, dtype):
+    rng = np.random.default_rng(5)
+    pixels = rng.uniform(0.001, 0.5, size=(500, 3)).astype(dtype)
+    pixels[:4] = [[0, 0, 0], [-0.1, -0.2, -0.05], [np.nan, 0.1, 0.1], [0, 0.1, -0.1]]
+    reference = np.median(pixels[4:], axis=0).astype(dtype)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        old = _old_saturation(pixels, reference)
+        new = _saturation(pixels, reference)
+        on_device = to_host(_saturation(to_device(pixels), fake_xp.asarray(reference)))
+    assert _same_bits(new, old)
+    assert _same_bits(on_device, old)

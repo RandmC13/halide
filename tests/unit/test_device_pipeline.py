@@ -388,3 +388,27 @@ def test_export_delivery_image_does_not_mutate_the_source_image_on_failure(tmp_p
     _fail_on_device_call(monkeypatch, "to_srgb_8bit", RuntimeError("boom"), on_call=1)
     export_delivery_image(positive, tmp_path / "gpu.png", device=fake_gpu)
     assert np.array_equal(read_tiff(positive).image, before)
+
+
+def test_auto_calibration_runs_on_the_device_frame(tmp_path, fake_gpu, monkeypatch):
+    """Per-frame auto calibration is given the device frame itself (plan Task 8) — not a host copy
+    downloaded just for it — and the only frame-sized download is the finished result."""
+    scan = _write_scan(tmp_path / "neg.tif")
+    process_scan(scan, tmp_path / "cpu.tif", Stage.FULL, None, ToneCurveParams())
+    seen, downloads = [], []
+    real_auto = halide.processing.auto_density_balance
+
+    def spy(image, *args, **kwargs):
+        seen.append(image)
+        return real_auto(image, *args, **kwargs)
+
+    def counting_to_host(a, out=None):
+        downloads.append(a.shape)
+        return _fake_device.to_host(a, out=out)
+
+    monkeypatch.setattr(halide.processing, "auto_density_balance", spy)
+    monkeypatch.setattr(halide.device, "to_host", counting_to_host)
+    process_scan(scan, tmp_path / "gpu.tif", Stage.FULL, None, ToneCurveParams(), device=fake_gpu)
+    assert len(seen) == 1 and isinstance(seen[0], FakeDeviceArray)
+    assert [shape for shape in downloads if len(shape) == 3] == [(37, 53, 3)]  # just the result
+    _assert_same_bits(_pixels(tmp_path / "gpu.tif"), _pixels(tmp_path / "cpu.tif"))

@@ -267,3 +267,45 @@ def test_real_scan_export_on_gpu_matches_cpu(tmp_path, scan):
     )
     assert warnings == [] and warning_cpu is None and warning_gpu is None
     _assert_export_close(tmp_path / "gpu.png", tmp_path / "cpu.png", scan.stem)
+
+
+# ---------------------------------------------------------------------------
+# Task 8: auto calibration on the device frame (calibration/auto.py). Compared by tolerance only:
+# the GPU's argsort orders exact luminance ties differently (the user's probe: 58% identical order),
+# which can move a density bin's boundary by a pixel — close, never bit-identical.
+# ---------------------------------------------------------------------------
+
+PROFILE_RTOL = 1e-5
+
+
+def _assert_profile_close(gpu, cpu):
+    assert gpu.source == cpu.source == "auto"
+    np.testing.assert_allclose(gpu.white_balance, cpu.white_balance, rtol=PROFILE_RTOL, atol=0)
+    np.testing.assert_allclose(gpu.density_scale, cpu.density_scale, rtol=PROFILE_RTOL, atol=0)
+
+
+@pytest.mark.skipif(not REAL_SCANS, reason="no real scans (IMG_*.tif) in the repo root")
+@pytest.mark.parametrize("scan", REAL_SCANS, ids=[p.stem for p in REAL_SCANS])
+def test_real_scan_auto_density_balance_on_gpu_matches_cpu(scan):
+    import cupy
+
+    from halide.calibration.auto import auto_density_balance
+    from halide.processing import load_working_space_image
+
+    image = load_working_space_image(scan)
+    cpu = auto_density_balance(image)
+    gpu = auto_density_balance(cupy.asarray(image))
+    _assert_profile_close(gpu, cpu)
+
+
+@pytest.mark.skipif(not REAL_SCANS, reason="no real scans (IMG_*.tif) in the repo root")
+def test_real_scans_roll_auto_density_balance_on_gpu_matches_cpu():
+    import cupy
+
+    from halide.calibration.auto import roll_auto_density_balance
+    from halide.processing import load_working_space_image
+
+    frames = [load_working_space_image(scan)[::8, ::8].copy() for scan in REAL_SCANS]
+    cpu = roll_auto_density_balance(frames)
+    gpu = roll_auto_density_balance([cupy.asarray(f) for f in frames])
+    _assert_profile_close(gpu, cpu)
