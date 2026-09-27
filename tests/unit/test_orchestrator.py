@@ -853,6 +853,52 @@ def test_a_service_that_wont_start_means_per_worker_gpu_mode_with_the_reason(tmp
         assert compute.worker_args(2) == ("gpu", (6 * 2**30) // 2 - _CUDA_CONTEXT_BYTES)  # as before the service
 
 
+@pytest.mark.parametrize("value", ["0", "off", " OFF ", "false", "no"])
+def test_halide_gpu_service_off_means_per_worker_gpu_mode_and_starts_no_service(monkeypatch, value):
+    _no_service(monkeypatch)
+    monkeypatch.setenv("HALIDE_GPU_SERVICE", value)
+    with batch_compute([], _GPU) as compute:
+        assert compute.mode == "per_worker" and compute.service is None and compute.shm_prefix is None
+        assert compute.fallback_reason == f"turned off by HALIDE_GPU_SERVICE={value.strip()}"
+        assert compute.worker_args(2) == ("gpu", (6 * 2**30) // 2 - _CUDA_CONTEXT_BYTES)  # as before the service
+
+
+@pytest.mark.parametrize("value", [None, "", "1", "on", "yes"])
+def test_the_gpu_service_is_on_unless_halide_gpu_service_turns_it_off(monkeypatch, fake_gpu_service, clean_shm, value):
+    if value is None:
+        monkeypatch.delenv("HALIDE_GPU_SERVICE", raising=False)
+    else:
+        monkeypatch.setenv("HALIDE_GPU_SERVICE", value)
+    with batch_compute([], _GPU) as compute:
+        assert compute.mode == "service" and compute.fallback_reason is None
+    assert fake_gpu_service == ["gpu"]
+
+
+def test_halide_gpu_service_off_leaves_a_cpu_batch_alone(monkeypatch):
+    _no_service(monkeypatch)
+    monkeypatch.setenv("HALIDE_GPU_SERVICE", "0")
+    with batch_compute([], ComputeDevice(kind="cpu")) as compute:
+        assert compute.mode == "cpu" and compute.fallback_reason is None
+
+
+@pytest.mark.parametrize(
+    "runner, args",
+    [
+        (run_batch, (Stage.FULL, None, ToneCurveParams())),
+        (run_export_batch, ()),
+        (run_print_batch, (ToneCurveParams(),)),
+    ],
+)
+def test_halide_gpu_service_off_hands_every_runners_workers_their_own_gpu(tmp_path, monkeypatch, fake_gpu_service,
+                                                                         runner, args):
+    # A service *could* start here (the fake-GPU initializer is set); the switch alone keeps it off.
+    monkeypatch.setenv("HALIDE_GPU_SERVICE", "off")
+    job = BatchJob(input_path=tmp_path / "a.tif", output_path=tmp_path / "b.tif")
+    (fn, rest), = _run_recording(runner, job, *args, max_workers=2, device=_GPU)
+    assert rest[-2:] == ("gpu", (6 * 2**30) // 2 - _CUDA_CONTEXT_BYTES)  # per-worker mode's arguments
+    assert fake_gpu_service == []
+
+
 def test_too_little_shared_memory_means_per_worker_gpu_mode_with_the_reason(tmp_path, monkeypatch):
     _no_service(monkeypatch)
     monkeypatch.setattr(orchestrator, "_shared_memory_free", lambda: 64 * _MIB)  # a small container
