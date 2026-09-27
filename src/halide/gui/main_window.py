@@ -45,6 +45,7 @@ from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate
 from halide.calibration.profile_store import default_profiles_dir, save_named_profile
 from halide.core.tone_render import ResolvedTone
 from halide.core.types import DensityProfile, ToneCurveParams
+from halide.device import ComputeDevice
 from halide.gui import theme
 from halide.gui.drawers import Accordion, Drawer, PrintControls, RollDetailsForm
 from halide.gui.filmstrip import Filmstrip
@@ -310,8 +311,11 @@ class MainWindow(QWidget):
 
     pickCompleted = Signal(object)
 
-    def __init__(self, *, show_load_controls: bool = True, is_pick_session: bool = False) -> None:
+    def __init__(
+        self, *, show_load_controls: bool = True, is_pick_session: bool = False, device: ComputeDevice | None = None
+    ) -> None:
         super().__init__()
+        self.device = device  # what the contact sheet window develops frames on (None = CPU)
         self.show_load_controls = show_load_controls and not is_pick_session
         self.is_pick_session = is_pick_session
         self._pick_result_emitted = False
@@ -882,7 +886,7 @@ class MainWindow(QWidget):
         title = self.session.roll_folder.name if self.session.roll_folder else frames[0][0].stem
         self._proof = ProofWindow(
             self, title, frames, profile, tone, self.session.details.get("film_stock") or None, " · ".join(bits),
-            save_dir=self.session.roll_folder,
+            save_dir=self.session.roll_folder, device=self.device,
         )
         self._proof.destroyed.connect(self._on_proof_closed)
         self._proof.show()

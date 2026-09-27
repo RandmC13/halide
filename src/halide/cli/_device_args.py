@@ -1,6 +1,6 @@
 """Shared `--device` CLI argument, resolution, and run-sheet row — used by every command that
-develops a frame (or will once later tasks wire batch/contact/calibrate workers up to it; see
-CLAUDE.md/docs/plans/gpu-acceleration.md Task 5-7).
+develops a frame (see docs/plans/gpu-acceleration.md Tasks 5-7; `contact` resolves it too, though its
+thumbnails of already-developed frames stay on the CPU).
 
 Deliberately tiny and importable at parser-build time: `halide.device` itself imports no heavy
 dependency (not even cupy) at module level, so pulling in `resolve_device`/`ComputeDevice` here

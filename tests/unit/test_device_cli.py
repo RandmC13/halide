@@ -1,7 +1,7 @@
 """`--device`/`$HALIDE_DEVICE` wired into the CLI: the shared flag, its resolution into the CLI's
 usual clean error exit, the run-sheet/summary-line Compute row, and end-to-end behaviour on
-`invert`/`print` (Task 5, Ruling R7) and `export`'s single-file mode (Task 6 — its bulk-directory
-mode still runs the export worker pool CPU-only until Task 7)."""
+`invert`/`print` (Task 5, Ruling R7) and `export`'s single-file mode (Task 6), and the multi-frame
+commands handing the resolved device to their worker pools (Task 7)."""
 
 from __future__ import annotations
 
@@ -211,7 +211,7 @@ def test_print_prints_the_device_on_its_summary_line(negative_tiff, tmp_path, ca
 
 
 # ---------------------------------------------------------------------------
-# end to end: export (single file — Task 6; the bulk-directory mode is Task 7)
+# end to end: export (single file — Task 6; the bulk-directory mode's pool is further down)
 # ---------------------------------------------------------------------------
 
 
@@ -287,3 +287,112 @@ def test_batch_run_sheet_shows_gpu_fallback_reason(roll_dir, tmp_path, monkeypat
     assert main(args) == 0
     out = _strip(capsys.readouterr().out)
     assert "the driver is too old" in out
+
+
+# ---------------------------------------------------------------------------
+# Task 7: the multi-frame commands hand their resolved device to the worker pool
+# ---------------------------------------------------------------------------
+
+_FAKE_GPU = ComputeDevice(kind="gpu", name="Fake GPU", memory_free=6 * 2**30, memory_total=8 * 2**30)
+
+
+@pytest.fixture
+def gpu_resolves(monkeypatch):
+    """--device auto finds a (fake) GPU; nothing runs on it — the pool runners are replaced."""
+    import halide.cli._device_args as device_args
+
+    monkeypatch.setattr(device_args, "resolve_device", lambda requested: _FAKE_GPU)
+
+
+def _recording_runner(calls, warning="out of GPU memory — developed this frame on the CPU instead"):
+    from halide.batch.orchestrator import BatchResult
+
+    def runner(jobs, *args, **kwargs):
+        calls.append(kwargs)
+        results = [BatchResult(job=job, error=None, warning=warning) for job in jobs]
+        for result in results:
+            if kwargs.get("on_result"):
+                kwargs["on_result"](result)
+        return results
+
+    return runner
+
+
+def _recording_default_count(seen):
+    def default_count(jobs, **kwargs):
+        seen.append(kwargs.get("device"))
+        return 1
+
+    return default_count
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_batch_hands_the_device_to_its_workers_and_shows_their_warnings(roll_dir, tmp_path, monkeypatch, capsys,
+                                                                     gpu_resolves, quiet):
+    import halide.cli.commands.batch_cmd as batch_cmd
+
+    calls, seen = [], []
+    monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner(calls))
+    monkeypatch.setattr(batch_cmd, "default_worker_count", _recording_default_count(seen))
+    args = ["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL] + (["--quiet"] if quiet else [])
+    assert main(args) == 0
+    assert calls[0]["device"] is _FAKE_GPU
+    assert seen == [_FAKE_GPU]  # the default worker count knows it's a GPU run (VRAM cap)
+    out = _strip(capsys.readouterr().out)
+    # A frame redone on the CPU is reported, even with --quiet (warnings always print).
+    assert "frame_00.tiff: out of GPU memory" in out and "frame_01.tiff: out of GPU memory" in out
+
+
+def test_export_directory_hands_the_device_to_its_workers(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves):
+    import halide.cli.commands.export_cmd as export_cmd
+
+    calls, seen = [], []
+    monkeypatch.setattr(export_cmd, "run_export_batch", _recording_runner(calls))
+    monkeypatch.setattr(export_cmd, "default_export_worker_count", _recording_default_count(seen))
+    assert main(["export", str(roll_dir), str(tmp_path / "out"), "--quiet"]) == 0
+    assert calls[0]["device"] is _FAKE_GPU and seen == [_FAKE_GPU]
+    assert "out of GPU memory" in _strip(capsys.readouterr().out)
+
+
+def test_print_directory_hands_the_device_to_its_workers(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves):
+    import halide.cli.commands.print_cmd as print_cmd
+
+    calls, seen = [], []
+    monkeypatch.setattr(print_cmd, "run_print_batch", _recording_runner(calls))
+    monkeypatch.setattr(print_cmd, "default_worker_count", _recording_default_count(seen))
+    assert main(["print", str(roll_dir), str(tmp_path / "out"), "--quiet"]) == 0
+    assert calls[0]["device"] is _FAKE_GPU and seen == [_FAKE_GPU]
+    assert "out of GPU memory" in _strip(capsys.readouterr().out)
+
+
+def test_contact_shows_the_gpu_fallback_reason_even_when_quiet(roll_dir, tmp_path, monkeypatch, capsys):
+    # As the run-sheet commands: --quiet hides progress, never warnings.
+    import halide.cli._device_args as device_args
+
+    monkeypatch.setattr(
+        device_args, "resolve_device",
+        lambda requested: ComputeDevice(kind="cpu", fallback_reason="cudaErrorInsufficientDriver"),
+    )
+    assert main(["contact", str(roll_dir), str(tmp_path / "sheet.jpg"), "--workers", "1", "--quiet"]) == 0
+    assert "cudaErrorInsufficientDriver" in _strip(capsys.readouterr().out)
+
+
+def test_contact_says_its_thumbnails_run_on_the_cpu(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves):
+    # Its frames are already developed: nothing for the GPU to do, and the Compute line says so
+    # rather than naming a card that isn't used.
+    assert main(["contact", str(roll_dir), str(tmp_path / "sheet.jpg"), "--workers", "1"]) == 0
+    compute = [line for line in _strip(capsys.readouterr().out).splitlines() if line.startswith("Compute")]
+    assert compute and compute[0].startswith("Compute: CPU")
+
+
+def test_calibrate_hands_the_device_to_the_picker(monkeypatch, gpu_resolves):
+    # The picker's contact-sheet window develops every frame through batch's own _worker.
+    import types
+
+    seen = {}
+    fake_app = types.ModuleType("halide.gui.app")
+    fake_app.main = lambda **kwargs: seen.update(kwargs)
+    monkeypatch.setitem(sys.modules, "halide.gui.app", fake_app)
+    monkeypatch.setenv("DISPLAY", ":99")
+    assert main(["calibrate"]) == 0
+    assert seen["device"] is _FAKE_GPU

@@ -128,7 +128,9 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
         roll_row(sheet, input_dir, len(jobs), str(output_dir))
         compute_row(sheet, device)
         workers = choose_workers(
-            args, jobs, sheet, default_count=default_worker_count, budget_warning=memory_budget_warning
+            args, jobs, sheet,
+            default_count=lambda jobs: default_worker_count(jobs, device=device),
+            budget_warning=memory_budget_warning,
         )
 
     renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="print")
@@ -145,7 +147,9 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
     if renderer:
         renderer.start()
 
-    results = run_print_batch(jobs, tone_params, max_workers=workers, on_result=on_result, on_start=on_start)
+    results = run_print_batch(
+        jobs, tone_params, max_workers=workers, on_result=on_result, on_start=on_start, device=device
+    )
 
     cancelled = len(results) < len(jobs)
     if renderer:
