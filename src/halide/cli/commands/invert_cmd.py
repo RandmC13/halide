@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from pathlib import Path
 
 from halide.cli import console
-from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
+from halide.cli._device_args import (
+    add_device_argument,
+    device_fallback_warning,
+    device_row,
+    gpu_hint,
+    resolve_device_arg,
+)
 from halide.cli._calibration_args import (
     add_calibration_arguments,
     add_scan_arguments,
@@ -71,6 +78,34 @@ def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool) -> tuple
     return gain, reference
 
 
+def _gpu_hint_stamp() -> Path:
+    # Reuses cli/completion.py's own state-directory helper (Task 6b) rather than picking a new
+    # location — see that module's docstring for why it's under $XDG_DATA_HOME/halide.
+    from halide.cli.completion import _data_dir
+
+    return _data_dir() / "gpu-hint.shown"
+
+
+def _maybe_print_gpu_hint(device) -> None:
+    """`invert` has no run sheet (see cli/_run_sheet.py::compute_row, which shows the same hint on
+    every batch/print/export run), so showing this every single-frame run would nag — a stamp file
+    makes it once per machine instead. HALIDE_NO_GPU_HINT=1 turns it off entirely."""
+    if os.environ.get("HALIDE_NO_GPU_HINT"):
+        return
+    stamp = _gpu_hint_stamp()
+    if stamp.exists():
+        return
+    hint = gpu_hint(device)
+    if not hint:
+        return
+    print(console.dim(hint))
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError:  # a read-only home must not break a real run
+        pass
+
+
 def run(args: argparse.Namespace) -> int:
     from halide import device as halide_device
     from halide.processing import ScanColorError, process_scan
@@ -91,6 +126,7 @@ def run(args: argparse.Namespace) -> int:
     fallback_warning = device_fallback_warning(device)
     if fallback_warning:
         print(console.warning(fallback_warning))
+    _maybe_print_gpu_hint(device)
     manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
     calibrated_here = stage is not Stage.INVERT_ONLY and not args.profile and not manual_given
     gain, scan_reference = _resolve_scan_gain(args, calibrated_here)

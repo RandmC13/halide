@@ -162,6 +162,23 @@ preview.jpg` develops every frame at full quality but keeps only the contact she
 Every command has `--help`. Every output TIFF records how it was printed (profile, grade,
 exposure) in its metadata, and `invert` prints it too.
 
+## GPU acceleration (optional)
+
+If you have an NVIDIA card, halide can develop frames on it instead of the CPU — several times
+faster on a full-resolution scan. It needs an NVIDIA GPU; there's nothing to gain on other
+hardware, so halide doesn't mention this unless it finds one.
+
+```bash
+halide gpu             # what halide sees: your card, and whether GPU support is installed
+halide gpu --install   # add it (downloads CuPy and NVIDIA's CUDA libraries, about 1 GB)
+```
+
+GPU support isn't installed by default because that download is large. Once it's there, halide
+uses it automatically (`--device auto`, the default) whenever it's usable, and falls back to the
+CPU on its own if it isn't. Force the CPU with `--device cpu` or `HALIDE_DEVICE=cpu` — output is
+the same either way, just slower. `halide gpu --install` also prints the command to remove it
+again later.
+
 ## How it works
 
 The method is Aaron Buchler's, from

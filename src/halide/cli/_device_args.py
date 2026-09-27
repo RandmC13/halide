@@ -23,6 +23,7 @@ __all__ = [
     "add_device_argument",
     "device_fallback_warning",
     "device_row",
+    "gpu_hint",
     "resolve_device_arg",
 ]
 
@@ -61,9 +62,28 @@ def device_fallback_warning(device: ComputeDevice) -> str | None:
 def device_row(device: ComputeDevice) -> str:
     """The run sheet's Compute row text (label added by the caller — `sheet.row("Compute", ...)`,
     or a plain print for a command with no run sheet): `"CPU"` or `"GPU — <name>"`. Deliberately
-    just the base text, not the fallback reason (a caller shows that separately, e.g. as a
-    sheet.warn) — kept separate so a later task (6b) can grow this into `"CPU — NVIDIA GeForce
-    RTX 3070 found; add GPU support with: halide gpu --install"` without touching every caller."""
+    just the base text, not the fallback reason or the GPU-available hint (a caller shows those
+    separately — `device_fallback_warning`/`gpu_hint` below — since `invert`'s once-per-machine
+    hint needs to show the hint text without repeating it on every run's summary line)."""
     if device.kind == "gpu":
         return f"GPU — {device.name}"
     return "CPU"
+
+
+def gpu_hint(device: ComputeDevice) -> str | None:
+    """Only when it's worth mentioning: CuPy isn't installed, but the machine actually has an
+    NVIDIA card (Task 6b, docs/plans/gpu-acceleration.md §3.7). None when there's nothing to add —
+    a real GPU is already in use, or there's no card at all (nobody without an NVIDIA card should
+    be pitched a ~1 GB download). Shared, word for word, by two surfaces that show it differently:
+    `cli/_run_sheet.py::compute_row` appends it to the Compute row on every batch/print/export run,
+    while `cli/commands/invert_cmd.py` prints it as its own line once per machine (invert has no
+    run sheet, and would otherwise repeat it on every single-frame run)."""
+    from halide.device import detect_nvidia_driver, gpu_support_installed
+
+    if device.kind == "gpu" or gpu_support_installed():
+        return None
+    driver = detect_nvidia_driver()
+    if driver is None:
+        return None
+    name = driver.device_name or "An NVIDIA GPU"
+    return f"{name} found; add GPU support with: halide gpu --install"

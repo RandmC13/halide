@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from halide.batch.orchestrator import BatchJob
-from halide.cli._device_args import device_fallback_warning, device_row
+from halide.cli._device_args import device_fallback_warning, device_row, gpu_hint
 from halide.cli.console import RunSheet
 from halide.device import ComputeDevice
 
@@ -23,9 +23,14 @@ def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str) 
 
 
 def compute_row(sheet: RunSheet, device: ComputeDevice) -> None:
-    """The run sheet's Compute row (see cli/_device_args.py::device_row) plus, when set, why an
-    `auto` choice fell back from GPU to CPU."""
-    sheet.row("Compute", device_row(device))
+    """The run sheet's Compute row (see cli/_device_args.py::device_row), plus, when there's
+    something to add: why an `auto` choice fell back from GPU to CPU, or (Task 6b) that an NVIDIA
+    card was found but GPU support isn't installed."""
+    text = device_row(device)
+    hint = gpu_hint(device)
+    if hint:
+        text = f"{text} — {hint}"
+    sheet.row("Compute", text)
     warning = device_fallback_warning(device)
     if warning:
         sheet.warn("Compute", warning)
