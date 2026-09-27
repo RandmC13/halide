@@ -21,6 +21,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# GPU acceleration is opt-in (see CLAUDE.md and docs/plans/gpu-acceleration.md): CuPy plus
+# NVIDIA's runtime libraries is ~1 GB, so a plain install never pulls it in. Pick the extra
+# matching your CUDA driver (`halide gpu` reports which); `[ctk]` bundles the matching CUDA
+# Toolkit runtime libraries so a system CUDA install isn't required.
+cuda12 = ["cupy-cuda12x[ctk]>=14"]
+cuda13 = ["cupy-cuda13x[ctk]>=14"]
 
 [project.scripts]
 halide = "halide.cli.main:run_cli"
@@ -38,3 +44,4 @@ halide = ["assets/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["gpu: needs CuPy and a CUDA device"]
