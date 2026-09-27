@@ -105,9 +105,11 @@ def _install(args: argparse.Namespace) -> int:
     if importlib.util.find_spec("pip") is None:
         print(f"halide can't install GPU support automatically here — there's no pip in {sys.prefix}.")
         print("Run whichever of these matches how halide itself was installed:")
-        print(f"    {sys.executable} -m pip install '{package}'")
-        print(f"    pipx inject halide '{package}'")
-        print(f"    uv tool install --with '{package}' halide")
+        # Double quotes (the brackets need quoting in zsh): they work in POSIX shells, PowerShell
+        # and cmd.exe alike — cmd.exe keeps single quotes as part of the argument.
+        print(f'    {sys.executable} -m pip install "{package}"')
+        print(f'    pipx inject halide "{package}"')
+        print(f'    uv tool install --with "{package}" halide')
         return 1
 
     dist_name = package.split("[")[0]  # pip uninstall doesn't take the [ctk] extra
@@ -139,4 +141,10 @@ def _install(args: argparse.Namespace) -> int:
         [sys.executable, "-m", "halide.cli.main", "gpu"], capture_output=True, text=True
     )
     print(check.stdout, end="")
+    if check.returncode != 0:
+        if check.stderr:
+            print(check.stderr, end="" if check.stderr.endswith("\n") else "\n", file=sys.stderr)
+        print("GPU support was installed, but checking it failed (the error is above). "
+              "Run `halide gpu` to check again.")
+        return 1
     return 0

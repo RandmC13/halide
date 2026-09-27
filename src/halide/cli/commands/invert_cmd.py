@@ -98,7 +98,7 @@ def _maybe_print_gpu_hint(device) -> None:
     later must still get the hint once, which an unconditional "probed already" stamp would
     silently prevent. It's only acceptable because the probe itself is cheap when there's nothing
     to find — measured in this sandbox (no libcuda present) at ~0.11 ms median per call in a fresh
-    process (20 samples; see task-6b-report.md's "Fix round 1" section) — negligible next to a
+    process (20 samples; see ruling R8 in docs/plans/gpu-acceleration.md) — negligible next to a
     single-frame develop. If a future platform/driver combination makes `detect_nvidia_driver`
     meaningfully slower, this trade-off needs revisiting (e.g. stamping the "no card" result too,
     with a re-probe interval), not silently working around it here."""

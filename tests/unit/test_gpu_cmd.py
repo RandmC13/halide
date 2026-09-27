@@ -313,9 +313,12 @@ def test_install_no_pip_prints_alternatives_and_runs_nothing(monkeypatch, capsys
     assert main(["gpu", "--install", "--yes"]) == 1
     assert calls == []
     out = _strip(capsys.readouterr().out)
-    assert f"{sys.executable} -m pip install 'cupy-cuda13x[ctk]'" in out
-    assert "pipx inject halide 'cupy-cuda13x[ctk]'" in out
-    assert "uv tool install --with 'cupy-cuda13x[ctk]'" in out
+    # Double quotes: they work in POSIX shells, PowerShell and cmd.exe (which keeps single quotes
+    # literally, so pip would be handed 'cupy-cuda13x[ctk]' with the quotes as part of the name).
+    assert f'{sys.executable} -m pip install "cupy-cuda13x[ctk]"' in out
+    assert 'pipx inject halide "cupy-cuda13x[ctk]"' in out
+    assert 'uv tool install --with "cupy-cuda13x[ctk]"' in out
+    assert "'" not in out.split("Run whichever")[1]
 
 
 def test_install_non_interactive_without_yes_refuses(monkeypatch, capsys, old_driver_absent_cupy):
@@ -395,6 +398,23 @@ def test_install_success_rechecks_in_a_fresh_subprocess(monkeypatch, capsys, old
     assert "gpu" in calls[1]
     out = _strip(capsys.readouterr().out)
     assert "GPU support is installed and working" in out
+
+
+def test_install_recheck_failure_shows_its_error_and_exits_1(monkeypatch, capsys, old_driver_absent_cupy):
+    # pip succeeded, but the fresh `halide gpu` check itself failed (e.g. a broken CuPy import that
+    # crashes it): say so plainly, show what it printed on stderr, and don't report success.
+    def fake_run(argv, **kwargs):
+        if "install" in argv:
+            return subprocess.CompletedProcess(argv, returncode=0, stdout="")
+        return subprocess.CompletedProcess(argv, returncode=1, stdout="",
+                                           stderr="ImportError: libcudart.so.13: cannot open shared object file\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert main(["gpu", "--install", "--yes"]) == 1
+    captured = capsys.readouterr()
+    everything = _strip(captured.out + captured.err)
+    assert "libcudart.so.13" in everything
+    assert "installed, but" in everything.lower() and "halide gpu" in everything
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +532,7 @@ def test_invert_no_card_never_stamps_and_reprobes_every_run(negative_tiff, tmp_p
     probe) is called again on every single invert, indefinitely — deliberate, so a card added to
     the machine later still gets the hint once. Measured negligible (~0.11 ms median per call in a
     fresh process, this sandbox, no libcuda present) rather than papered over with an unconditional
-    stamp; see task-6b-report.md's "Fix round 1" section for the measurement."""
+    stamp; see ruling R8 in docs/plans/gpu-acceleration.md."""
     calls = []
 
     def fake_detect():
