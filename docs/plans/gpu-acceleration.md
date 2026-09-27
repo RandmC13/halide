@@ -22,31 +22,38 @@ below.
 
 ### Rulings made during implementation
 
-One line each; full reasoning and cost-if-wrong are in the SDD ledger
-(`.superpowers/sdd/gpu-acceleration/progress.md`).
+One line each, each ending with its cost if the ruling turns out to be wrong.
 
 - **R1** — the GPU ICC step reuses Task 1's CPU structure (float32 matmul → float64 two matmuls →
   float32) with CuPy, held to D2; no custom FMA-free kernel (§6 D1's kernel text predated the
-  user's "looks identical" answer).
+  user's "looks identical" answer). Cost if wrong: GPU ICC ends up ~1 ulp further from the CPU
+  path, still inside D2.
 - **R2** — Task 7's benchmark script lives at `docs/plans/gpu-acceleration-bench.py`, beside the
   probe, not in a new `scripts/` directory (`CLAUDE.md` asks to keep the repo root uncluttered).
+  Cost if wrong: move one file.
 - **R3** — `DEFAULT_DEVICE = "auto"` was set immediately (the user's D3 answer), rather than waiting
   for the benchmark; the GPU worker-count constants started from the probe plus estimates, marked
-  PROVISIONAL, for the user's own benchmark run to refit.
+  PROVISIONAL, for the user's own benchmark run to refit. Cost if wrong: the GPU batch default
+  worker count may be suboptimal until the user's benchmark is in.
 - **R4** — Task 8 (auto calibration on the device) was built: the probe showed its sort dropping
-  from 0.96 s to 0.006 s on the user's RTX 3070, against a 4.9 s/frame CPU auto-density cost.
+  from 0.96 s to 0.006 s on the user's RTX 3070, against a 4.9 s/frame CPU auto-density cost. Cost
+  if wrong: extra code for a small gain.
 - **R5** — Task 3's `DeviceUnavailableError` text names `halide gpu --install` before Task 6b
-  creates that command; the branch ships both together, so this is never released half-built.
+  creates that command; the branch ships both together, so this is never released half-built. Cost
+  if wrong: none, once Task 6b lands.
 - **R6** — a Task 4 review minor (a real-scan GPU parity test that could pass even on a silent
-  fallback to CPU) was folded into Task 6's dispatch, which touches the same GPU test file.
+  fallback to CPU) was folded into Task 6's dispatch, which touches the same GPU test file. Cost if
+  wrong: small scope creep in Task 6.
 - **R7** — Task 5 wired `--device` and the Compute row into all six commands before every command's
   actual processing call took a device (export in Task 6; batch/contact/calibrate's workers in
   Task 7); the interim "row says GPU, work still runs on CPU" state is real mid-branch but never
-  reaches a release, since the branch ships as a whole.
+  reaches a release, since the branch ships as a whole. Cost if wrong: a reviewer flags the interim
+  mismatch.
 - **R8** — on a machine with no NVIDIA card, `invert`'s GPU hint keeps re-probing on every run
   (rather than stamping "no card" once) so a card added later still gets the hint — kept after
   measuring the probe's real cost at ~0.11 ms median / 0.22 ms max in this sandbox, well under the
-  ruling's 5 ms budget for switching to a one-time stamp instead.
+  ruling's 5 ms budget for switching to a one-time stamp instead. Cost if wrong: a few ms per
+  invert, or (if the budget were exceeded and this weren't fixed) a missed hint.
 
 **Goal:** Run halide's per-frame number crunching on an NVIDIA GPU when one is available — on by
 default if (and only if) it measurably speeds up the user's real runs — with `--device cpu` /
