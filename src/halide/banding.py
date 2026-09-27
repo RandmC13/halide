@@ -28,23 +28,36 @@ import numpy as np
 # cost memory (1000 rows: ~713 MiB peak vs ~372 MiB at 64) for no speed gain.
 _BAND_BYTES = 4 * 1024**2
 
+# The band budget for a frame resident on a GPU (processing.py's device path). Larger than the
+# host's: each band is a kernel launch per stage, and a GPU needs big launches to be busy, while its
+# memory only has to hold the frame plus a few bands' temporaries (docs/plans/gpu-acceleration.md,
+# §3.3: ~181 MiB frame + ~6 x 64 MiB). Banding stays bit-identical at any size (module docstring).
+DEVICE_BAND_BYTES = 64 * 2**20
 
-def band_slices(n_rows: int, row_bytes: int) -> Iterator[slice]:
-    """Row slices covering [0, n_rows) exactly once, each about _BAND_BYTES (at least one row)."""
-    rows_per_band = max(1, _BAND_BYTES // max(1, row_bytes))
+
+def band_slices(n_rows: int, row_bytes: int, band_bytes: int | None = None) -> Iterator[slice]:
+    """Row slices covering [0, n_rows) exactly once, each about `band_bytes` (default _BAND_BYTES,
+    read at call time) and at least one row."""
+    if band_bytes is None:
+        band_bytes = _BAND_BYTES
+    rows_per_band = max(1, band_bytes // max(1, row_bytes))
     for start in range(0, n_rows, rows_per_band):
         yield slice(start, min(start + rows_per_band, n_rows))
 
 
 def map_in_bands(
-    src: np.ndarray, fn: Callable[[np.ndarray], np.ndarray], out: np.ndarray | None = None
-) -> np.ndarray:
+    src, fn: Callable, out=None, band_bytes: int | None = None
+):
     """`out[band] = fn(src[band])` for every band of rows; returns `out`. `out=None` writes back
     into `src` itself — only for a buffer the caller owns. `fn` must be per-pixel (see module
-    docstring) and return an array of the band's shape; assignment casts it to `out`'s dtype."""
+    docstring) and return an array of the band's shape; assignment casts it to `out`'s dtype.
+
+    `src`/`out` may be numpy arrays or device (CuPy) arrays — only slicing, `.shape` and `.dtype`
+    are used. `band_bytes` defaults to _BAND_BYTES; the device path passes DEVICE_BAND_BYTES."""
     if out is None:
         out = src
-    row_bytes = src[:1].nbytes
-    for band in band_slices(src.shape[0], row_bytes):
+    # From shape and dtype rather than `.nbytes`, which not every array type offers.
+    row_bytes = int(np.prod(src.shape[1:], dtype=np.int64)) * src.dtype.itemsize
+    for band in band_slices(src.shape[0], row_bytes, band_bytes):
         out[band] = fn(src[band])
     return out

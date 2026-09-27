@@ -195,7 +195,14 @@ def to_device(a: np.ndarray) -> FakeDeviceArray:
     return FakeDeviceArray(np.array(a, copy=True))
 
 
-def to_host(a: FakeDeviceArray) -> np.ndarray:
+def to_host(a: FakeDeviceArray, out: np.ndarray | None = None) -> np.ndarray:
+    """As halide.device.to_host: a fresh host array, or written into `out` (which CuPy's
+    `get(out=)` requires to match in shape and dtype — checked here too)."""
     if not isinstance(a, FakeDeviceArray):
         raise TypeError(f"expected a device array back, got {type(a).__name__}")
-    return np.array(a._data, copy=True)
+    if out is None:
+        return np.array(a._data, copy=True)
+    if out.shape != a.shape or out.dtype != a.dtype:
+        raise ValueError(f"download target {out.shape}/{out.dtype} doesn't match {a.shape}/{a.dtype}")
+    out[...] = a._data
+    return out
