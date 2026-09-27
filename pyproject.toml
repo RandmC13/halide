@@ -45,3 +45,10 @@ halide = ["assets/*/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["gpu: needs CuPy and a CUDA device"]
+# pytest's default keeps every test's tmp_path from the last 3 runs under the system temp dir, which
+# is RAM (tmpfs) on many Linux desktops. The real-scan GPU tests write ~130 MiB TIFFs each: one
+# `pytest -m gpu` run left 5.2 GB in /tmp on the user's machine and nearly exhausted its memory.
+# "failed" deletes a passing test's directory as soon as that test ends ("none" only cleans up when
+# the whole session exits, so it wouldn't cap the peak); only the last run's failures are kept.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1

@@ -52,6 +52,18 @@ PIXEL_RTOL, PIXEL_ATOL = 1e-5, 1e-7
 TONE_TOL = 1e-5
 
 
+@pytest.fixture(autouse=True)
+def _delete_outputs_even_on_failure(tmp_path):
+    """Remove this test's output files as soon as it ends, pass or fail. Each real-scan test writes
+    two or three ~130 MiB TIFFs, and pytest's "failed" retention (pyproject.toml) would keep a failed
+    test's files — in /tmp, which is RAM on many Linux desktops — until the next run. Everything
+    needed to diagnose a failure is in the assertion message, not the files."""
+    yield
+    for path in tmp_path.iterdir():
+        if path.is_file():
+            path.unlink(missing_ok=True)
+
+
 def _write_scan(path, shape=(37, 53, 3), seed=7, icc=None):
     rng = np.random.default_rng(seed)
     image = rng.uniform(0.01, 0.3, size=shape).astype(np.float32)

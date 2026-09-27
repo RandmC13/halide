@@ -533,6 +533,14 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
       make batch's GPU gain smaller than a single frame's. **The user's own run of
       `docs/plans/gpu-acceleration-bench.py` is what refits all four constants and the worker-count
       default — until then, treat them as a starting estimate, not a measurement.**
+  - **Test temp files are deleted per test, not kept** (`pyproject.toml`:
+    `tmp_path_retention_policy = "failed"`, count 1; `tests/gpu/test_gpu_parity.py` also deletes its
+    files after a *failed* test). Found via real use: pytest's default keeps every test's `tmp_path`
+    from the last 3 runs, in `/tmp` — RAM on the user's CachyOS — and the real-scan GPU tests write
+    ~130 MiB TIFFs each, so one `pytest -m gpu` run left 5.2 GB there and nearly ran the machine out
+    of memory. Simulated (6 tests x 2 x 130 MiB, one failing): peak 1561 -> 258 MiB, left after the
+    run 1561 -> 1 MiB. `"none"` looks like the obvious setting but only cleans up at session end, so
+    it wouldn't cap the peak.
   - **`tests/conftest.py` forces `HALIDE_DEVICE=cpu` for the whole suite (autouse fixture).** With
     `DEFAULT_DEVICE = "auto"` live on every command, any CLI test that didn't pass `--device` would
     otherwise resolve `auto` against whatever machine actually runs the suite — harmless here (no
