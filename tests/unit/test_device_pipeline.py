@@ -352,6 +352,9 @@ def test_export_delivery_image_device_error_redoes_on_cpu(tmp_path, fake_gpu, mo
     warnings = []
     export_delivery_image(positive, tmp_path / "gpu.png", device=fake_gpu, on_warning=warnings.append)
     assert len(warnings) == 1 and "cudaErrorLaunchFailure" in warnings[0] and "CPU" in warnings[0]
+    # Export doesn't develop anything — the fallback wording must say so, not reuse process_scan's
+    # "developed this frame" (a real review finding: they used to share one hardcoded string).
+    assert "exported this file" in warnings[0] and "developed" not in warnings[0]
     assert np.array_equal(_png_pixels(tmp_path / "gpu.png"), _png_pixels(tmp_path / "cpu.png"))
 
 
@@ -365,6 +368,7 @@ def test_export_delivery_image_out_of_memory_on_device_falls_back(tmp_path, fake
     export_delivery_image(positive, tmp_path / "gpu.png", device=fake_gpu, on_warning=warnings.append)
     assert calls["device"] == 2
     assert len(warnings) == 1 and "out of GPU memory" in warnings[0]
+    assert "exported this file" in warnings[0] and "developed" not in warnings[0]
     assert np.array_equal(_png_pixels(tmp_path / "gpu.png"), _png_pixels(tmp_path / "cpu.png"))
 
 
