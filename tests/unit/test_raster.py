@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from halide.io.raster import to_srgb_8bit, write_delivery_image
+from halide.io.raster import srgb_matrix, to_srgb_8bit, write_delivery_image
 
 
 def test_to_srgb_8bit_shape_and_dtype():
@@ -55,3 +55,52 @@ def test_write_delivery_image_rejects_unsupported_extension(tmp_path):
     acescg = np.zeros((2, 2, 3), dtype=np.float32)
     with pytest.raises(ValueError, match="unsupported export format"):
         write_delivery_image(tmp_path / "out.gif", acescg)
+
+
+# ---------------------------------------------------------------------------
+# D1: srgb_matrix's BLAS matmul form vs colour-science's own per-pixel broadcast
+# (see CLAUDE.md, "D1" — the user accepted "looks identical", not bit-identical).
+# ---------------------------------------------------------------------------
+
+
+def _to_srgb_8bit_with_colour(acescg_image: np.ndarray) -> np.ndarray:
+    """Verbatim copy of to_srgb_8bit's body as of dff3cb2 — the D1 oracle."""
+    import colour
+
+    srgb_linear = colour.RGB_to_RGB(
+        acescg_image,
+        input_colourspace=colour.RGB_COLOURSPACES["ACEScg"],
+        output_colourspace=colour.RGB_COLOURSPACES["sRGB"],
+        chromatic_adaptation_transform="Bradford",
+        apply_cctf_encoding=True,
+    )
+    clipped = np.clip(srgb_linear, 0.0, 1.0)
+    return (clipped * 255).round().astype(np.uint8)
+
+
+def test_srgb_matrix_reproduces_colour_science():
+    import colour
+
+    expected = colour.matrix_RGB_to_RGB(
+        colour.RGB_COLOURSPACES["ACEScg"], colour.RGB_COLOURSPACES["sRGB"], "Bradford"
+    )
+    np.testing.assert_allclose(srgb_matrix(), expected, rtol=1e-14, atol=0)
+
+
+def test_to_srgb_8bit_matches_colour_science_on_random_values():
+    n_pixels = 1_000_000
+    n_values = n_pixels * 3
+    rng = np.random.default_rng(7)
+    # Includes values right at 8-bit rounding boundaries (k/255 +/- a hair) as well as out-of-range
+    # highlight/negative values that must clip, per the module's own docstring.
+    boundary = np.arange(256, dtype=np.float32) / 255.0
+    boundary_jitter = np.concatenate([boundary - 1e-4, boundary, boundary + 1e-4]).astype(np.float32)
+    random_vals = rng.uniform(-0.1, 1.5, n_values - boundary_jitter.size).astype(np.float32)
+    values = np.concatenate([boundary_jitter, random_vals])
+    rng.shuffle(values)
+    acescg = values.reshape(n_pixels, 1, 3)
+
+    actual = to_srgb_8bit(acescg)
+    expected = _to_srgb_8bit_with_colour(acescg)
+    n_diff = int(np.count_nonzero(actual != expected))
+    assert n_diff == 0, f"{n_diff} of {actual.size} uint8 values differ from colour-science"

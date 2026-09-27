@@ -12,7 +12,9 @@ from halide.io.icc import (
     convert_to_working_space,
     output_profile_bytes,
     parse_linear_rgb_profile,
+    working_space_matrices,
 )
+from halide.io.tiff import read_tiff
 
 REAL_GAMMA_ENCODED_REC2020_ICC = (
     Path("/tmp/color-negative-inversion/1. pre-requisites/Rec. 2020.icc")
@@ -184,3 +186,70 @@ def test_convert_to_working_space_preserves_neutral_gray():
     r, g, b = result[0, 0]
     assert r == pytest.approx(g, rel=0.05)
     assert b == pytest.approx(g, rel=0.05)
+
+
+# ---------------------------------------------------------------------------
+# D1: convert_to_working_space's BLAS matmul form vs colour-science's own per-pixel broadcast
+# (see CLAUDE.md, "D1" — the user accepted "looks identical", not bit-identical).
+# ---------------------------------------------------------------------------
+
+
+def _convert_with_colour(img: np.ndarray, profile) -> np.ndarray:
+    """Verbatim copy of convert_to_working_space as of dff3cb2 — the D1 oracle."""
+    import colour
+
+    matrix = profile.rgb_to_pcs_xyz.astype(img.dtype, copy=False)
+    pcs_xyz = img @ matrix.T
+    working = colour.XYZ_to_RGB(
+        pcs_xyz,
+        colourspace=colour.RGB_COLOURSPACES["ACEScg"],
+        illuminant=colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"],
+        chromatic_adaptation_transform="Bradford",
+        apply_cctf_encoding=False,
+    )
+    return np.asarray(working, dtype=img.dtype)
+
+
+def test_working_space_matrices_reproduce_colour_science():
+    import colour
+
+    m_cat, m_xyz = working_space_matrices()
+    xyz = np.random.default_rng(0).uniform(0, 1, (1000, 3))
+    expected = colour.XYZ_to_RGB(
+        xyz,
+        colourspace=colour.RGB_COLOURSPACES["ACEScg"],
+        illuminant=colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"],
+        chromatic_adaptation_transform="Bradford",
+        apply_cctf_encoding=False,
+    )
+    # atol=0 (as the brief specifies) is too strict here: this is exactly the last-float64-bit
+    # divergence the brief's own background measurements describe — colour's per-pixel `vecmul`
+    # broadcast and a single chained matmul use FMA differently, which shows up as a ~1-2 ULP
+    # *absolute* difference that's a large *relative* difference for the small values this random
+    # sample happens to produce near the neutral axis. Confirmed by direct comparison (not assumed):
+    # `vecmul(m_cat, xyz)` vs `xyz @ m_cat.T` differ by up to 2.22e-16 absolute (1 float64 ULP) on
+    # this exact seed, before the second matrix is even applied. A tiny atol absorbs that expected
+    # noise without loosening the real check (that the two matrices reproduce colour's maths).
+    np.testing.assert_allclose(xyz @ m_cat.T @ m_xyz.T, expected, rtol=1e-14, atol=1e-15)
+
+
+def test_convert_to_working_space_within_two_ulps_of_colour_science():
+    rng = np.random.default_rng(3)
+    img = (10.0 ** rng.uniform(-5, 0.5, (1000, 1000, 3))).astype(np.float32)
+    profile = parse_linear_rgb_profile(build_icc(LINEAR_TAGS))
+    np.testing.assert_array_max_ulp(
+        convert_to_working_space(img, profile), _convert_with_colour(img, profile), maxulp=2
+    )
+
+
+@pytest.mark.parametrize("name", ["IMG_0151.tif", "IMG_0156.tif", "IMG_0156-nowb.tif", "IMG_0158.tif"])
+def test_convert_to_working_space_on_real_scans(name):
+    path = Path(__file__).resolve().parents[2] / name
+    if not path.exists():
+        pytest.skip(f"{name} not present (real scans are local-only)")
+    scan = read_tiff(path)
+    profile = parse_linear_rgb_profile(scan.icc_profile)
+    band = np.ascontiguousarray(scan.image[:512])
+    np.testing.assert_array_max_ulp(
+        convert_to_working_space(band, profile), _convert_with_colour(band, profile), maxulp=2
+    )
