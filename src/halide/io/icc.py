@@ -234,11 +234,12 @@ def convert_to_working_space(img: np.ndarray, profile: LinearRGBProfile) -> np.n
     # per-pixel broadcast, is ~5x faster (1.37 s/frame -> 0.28 s/frame, measured on a real scan) for
     # the same maths: colour-science's XYZ_to_RGB is exactly `vecmul(M_CAT, vecmul(M_XYZ, xyz))`,
     # where vecmul broadcasts np.matmul per-pixel. BLAS and numpy's broadcast path can round the
-    # last float64 bit differently (both use FMA, just differently — CPU-dependent even for
-    # colour-science's own broadcast form: this project's dev sandbox measured bit-identical
-    # float32 output on all four real scans and a 60M-value stress test; a different CPU measured
-    # 1 of 60M float32 values off by 1 ulp). Accepted tolerance is 2 float32 ulps — see CLAUDE.md,
-    # "D1" for the decision and the measured acceptance numbers.
+    # last float64 bit differently (both use FMA, just differently). In this project's dev sandbox,
+    # a 60M-value synthetic stress test found 0 float32 values differing (bit-identical), against an
+    # earlier 60M-value stress test (same sandbox, different random sample) that found 1 of 60M off
+    # by 1 ulp — the two runs sampled different values, and which of them happen to land on the rare
+    # last-bit divergence isn't established; don't read this as hardware-dependent. Accepted
+    # tolerance is 2 float32 ulps — see CLAUDE.md, "D1" for the decision and the measured numbers.
     m_cat, m_xyz_to_acescg = working_space_matrices()
     working = pcs_xyz @ m_cat.T
     working = working @ m_xyz_to_acescg.T
