@@ -123,6 +123,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
             args, jobs, sheet,
             default_count=lambda jobs: default_export_worker_count(jobs, device=device),
             budget_warning=export_memory_budget_warning,
+            device=device,
         )
 
     renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="export")
