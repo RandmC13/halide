@@ -16,5 +16,9 @@ themselves; these hold the reasoning, evidence and designs behind them.
 - **`investigations/`**: questions looked into, with the evidence, including what didn't work.
   - `anchor-frame.md`: can halide suggest the best frame to calibrate from? It led to the
     multi-point picker. The `check --suggest-anchor` design in it is still unbuilt.
+- **`plans/` (draft, awaiting decisions):**
+  - `gpu-acceleration.md`: where a frame's time goes, and a CuPy-based plan for running the
+    pipeline on an NVIDIA GPU (`--device auto|cpu|gpu`). `gpu-acceleration-probe.py` is the
+    measurement script for the GPU machine.
 
 New write-ups go in the matching folder, not the repo root.
