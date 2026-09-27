@@ -134,12 +134,18 @@ def load_working_space_image(path: str | Path) -> np.ndarray:
     return _to_working_space(image, source_profile)
 
 
-def _read_scan(path: str | Path) -> tuple[np.ndarray, LinearRGBProfile | None]:
+def _read_scan(
+    path: str | Path, out: np.ndarray | None = None
+) -> tuple[np.ndarray, LinearRGBProfile | None]:
     """load_working_space_image's first half: decode and validate, but don't convert yet. Returns
     the writable decoded buffer and the profile to convert it from — None when it's already in the
     working space. Split out for the device path, which uploads the buffer *unconverted* (the
-    conversion runs on the GPU) and needs it untouched to start over on the CPU if the GPU fails."""
-    scan = read_tiff(path)
+    conversion runs on the GPU) and needs it untouched to start over on the CPU if the GPU fails.
+
+    `out`, if given, is decoded into directly (see halide.io.tiff.read_tiff) — used by the future GPU
+    service path (Task B2) to decode straight into a shared-memory frame instead of this process's
+    own heap. Callers that don't pass `out` see no change in behavior."""
+    scan = read_tiff(path, out=out)
     if scan.icc_profile is None:
         raise ScanColorError(f"{path}: no embedded ICC profile found; cannot verify color space")
     if scan.icc_profile == output_profile_bytes():
@@ -152,7 +158,7 @@ def _read_scan(path: str | Path) -> tuple[np.ndarray, LinearRGBProfile | None]:
         source_profile = parse_linear_rgb_profile(scan.icc_profile)
     except UnsupportedICCProfileError as exc:
         raise ScanColorError(f"{path}: unsupported color profile — {exc}") from exc
-    # copies only if tifffile handed back read-only data
+    # copies only if tifffile handed back read-only data (never the case when `out` was given)
     return np.require(scan.image, requirements="W"), source_profile
 
 
