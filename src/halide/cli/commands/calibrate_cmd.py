@@ -40,9 +40,9 @@ def run(args: argparse.Namespace) -> int:
             "one or forward X11"
         )
 
-    # Not yet passed into the picker's own workers (Task 7 wires batch/contact/calibrate workers
-    # onto the device) — resolved and shown here regardless, so --device gpu still fails fast
-    # without CuPy/a driver, and every command's Compute row behaves the same way (see Ruling R7).
+    # Resolved before the window opens, so --device gpu fails fast without CuPy/a driver. The
+    # picker's contact-sheet window develops every frame on it (batch's own workers); the picker's
+    # own previews and picking stay on the CPU.
     device = resolve_device_arg(args)
 
     from halide.gui.app import (
@@ -55,7 +55,7 @@ def run(args: argparse.Namespace) -> int:
     if fallback_warning:
         print(console.warning(fallback_warning))
     try:
-        run_gui(inputs=args.inputs, profile=args.profile)
+        run_gui(inputs=args.inputs, profile=args.profile, device=device)
     except Exception as exc:  # noqa: BLE001 -- a GUI-toolkit failure, not a domain error
         raise SystemExit(
             f"couldn't launch the calibration picker window ({exc})"

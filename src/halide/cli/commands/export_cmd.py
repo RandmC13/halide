@@ -118,10 +118,11 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
 
     with console.RunSheet(quiet=args.quiet) as sheet:
         roll_row(sheet, input_dir, len(jobs), str(output_dir))
-        compute_row(sheet, device)  # shown for consistency; not yet passed to the worker pool below
+        compute_row(sheet, device)
         workers = choose_workers(
             args, jobs, sheet,
-            default_count=default_export_worker_count, budget_warning=export_memory_budget_warning,
+            default_count=lambda jobs: default_export_worker_count(jobs, device=device),
+            budget_warning=export_memory_budget_warning,
         )
 
     renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="export")
@@ -139,7 +140,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
         renderer.start()
 
     results = run_export_batch(
-        jobs, quality=args.quality, max_workers=workers, on_result=on_result, on_start=on_start
+        jobs, quality=args.quality, max_workers=workers, on_result=on_result, on_start=on_start, device=device
     )
 
     cancelled = len(results) < len(jobs)
@@ -168,10 +169,8 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
 
 def run(args: argparse.Namespace) -> int:
     # Resolved here regardless of which mode runs, so --device gpu still fails fast without
-    # CuPy/a driver and every command's Compute row behaves the same way (Ruling R7). Task 6 wired
-    # this into the single-file path (_run_single, above); the bulk-directory path still runs the
-    # export worker pool CPU-only (_run_bulk -> run_export_batch -> batch/orchestrator.py's
-    # _export_worker, which doesn't take a device yet) — that pool is Task 7's job.
+    # CuPy/a driver and every command's Compute row behaves the same way (Ruling R7). Both modes
+    # export on it: the single file in this process, a directory in the worker pool.
     device = resolve_device_arg(args)
     input_path = Path(args.input)
     if input_path.is_dir():

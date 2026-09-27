@@ -46,8 +46,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from halide.batch.orchestrator import BatchJob, _pool_context, _worker, default_worker_count
+from halide.batch.orchestrator import BatchJob, _device_worker_args, _pool_context, _worker, default_worker_count
+from halide.cli import console
 from halide.core.types import DensityProfile, ToneCurveParams
+from halide.device import ComputeDevice
 from halide.gui.render import positive_display
 from halide.io.contact_sheet import SheetLayout, Tile, caption_from_provenance, load_thumbnail, render_sheet, write_sheet
 from halide.processing import Stage
@@ -63,10 +65,14 @@ class ProofRenderer(QThread):
 
     frameDone = Signal(int, object, object, object)
 
-    def __init__(self, paths: list[Path], gains: list[float], profile: DensityProfile, tone: ToneCurveParams, parent=None) -> None:
+    def __init__(
+        self, paths: list[Path], gains: list[float], profile: DensityProfile, tone: ToneCurveParams,
+        device: ComputeDevice | None = None, parent=None,
+    ) -> None:
         super().__init__(parent)
         self._paths, self._gains = list(paths), list(gains)
         self._profile, self._tone = profile, tone
+        self._device = device
 
     def run(self) -> None:
         if self.isInterruptionRequested():  # closed before it got going
@@ -78,14 +84,17 @@ class ProofRenderer(QThread):
         ]
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ.setdefault(var, "1")
-        workers = default_worker_count(jobs)  # reads every frame's header
+        workers = default_worker_count(jobs, device=self._device)  # reads every frame's header
         if self.isInterruptionRequested():
             shutil.rmtree(folder, ignore_errors=True)
             return
+        # As run_batch: the workers get the device's kind and their share of its memory, and each
+        # resolves the device itself.
+        device_args = _device_worker_args(self._device, workers)
         executor = ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context())
         try:
             pending = {
-                executor.submit(_worker, job, Stage.FULL, self._profile, self._tone, PROOF_FRAME_WIDTH): i
+                executor.submit(_worker, job, Stage.FULL, self._profile, self._tone, PROOF_FRAME_WIDTH, *device_args): i
                 for i, job in enumerate(jobs)
             }
             while pending and not self.isInterruptionRequested():
@@ -95,6 +104,8 @@ class ProofRenderer(QThread):
                     try:
                         result = future.result()
                         error = result.error
+                        if result.warning:  # e.g. redone on the CPU: to the terminal, like calibrate's Compute line
+                            print(console.warning(f"{jobs[index].input_path.name}: {result.warning}"))
                     except Exception as exc:  # noqa: BLE001 - a crashed worker is one bad frame
                         error = str(exc)
                     if error is None and jobs[index].thumbnail_path.exists():
@@ -183,6 +194,7 @@ class ProofWindow(QDialog):
         film_stock: str | None,
         settings: str,
         save_dir: Path | None = None,
+        device: ComputeDevice | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowModality(Qt.WindowModality.NonModal)
@@ -248,7 +260,9 @@ class ProofWindow(QDialog):
         self._rerender = QTimer(self)
         self._rerender.setSingleShot(True)
         self._rerender.timeout.connect(self._render)
-        self._renderer = ProofRenderer([p for p, _, _ in frames], [g for _, _, g in frames], profile, tone, self)
+        self._renderer = ProofRenderer(
+            [p for p, _, _ in frames], [g for _, _, g in frames], profile, tone, device, self
+        )
         self._renderer.frameDone.connect(self._on_frame_done)
         self._renderer.start()
 

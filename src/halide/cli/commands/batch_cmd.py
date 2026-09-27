@@ -289,15 +289,17 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     sheet.row("Output", _output_text(stage, tone_params))
 
     # Resolved after choose_calibration_source (called by _run, before this sheet opens) and
-    # before the sheet closes — see CLAUDE.md's choose_calibration_source ordering note. Not yet
-    # passed into run_batch's workers (Task 7 wires that up) — see Ruling R7.
+    # before the sheet closes — see CLAUDE.md's choose_calibration_source ordering note. The workers
+    # develop on it (run_batch); on a GPU, the default worker count also fits the card's memory.
     device = resolve_device_arg(args)
     compute_row(sheet, device)
 
     workers = choose_workers(
-        args, jobs, sheet, default_count=default_worker_count, budget_warning=memory_budget_warning
+        args, jobs, sheet,
+        default_count=lambda jobs: default_worker_count(jobs, device=device),
+        budget_warning=memory_budget_warning,
     )
-    return jobs, density_profile, tone_params, scan_reference, workers
+    return jobs, density_profile, tone_params, scan_reference, workers, device
 
 
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob]) -> int:
@@ -311,7 +313,9 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
         )
 
     with console.RunSheet(quiet=args.quiet) as sheet:
-        jobs, density_profile, tone_params, scan_reference, workers = _prepare(args, stage, input_dir, jobs, sheet)
+        jobs, density_profile, tone_params, scan_reference, workers, device = _prepare(
+            args, stage, input_dir, jobs, sheet
+        )
 
     renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="invert")
     job_index = {job: i for i, job in enumerate(jobs)}
@@ -336,6 +340,7 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
         on_result=on_result,
         on_start=on_start,
         thumbnail_long_edge=args.frame_width,
+        device=device,
     )
 
     cancelled = len(results) < len(jobs)
@@ -345,6 +350,12 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
             not_started = [i for i in range(len(jobs)) if i not in done_indices]
             renderer.cancel(not_started)
         renderer.finish(cancelled=cancelled)
+
+    # Printed even with --quiet, like every run-sheet warning: e.g. a frame the GPU couldn't develop
+    # and the CPU redid (same result, within the GPU tolerance, but the user should know).
+    for r in results:
+        if r.warning:
+            print(console.warning(f"{r.job.input_path.name}: {r.warning}"))
 
     failures = [r for r in results if r.error]
     if renderer is None:

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Callable
 
 from halide.core.types import DensityProfile, Stage, ToneCurveParams
+from halide.device import ComputeDevice
 from halide.io.contact_sheet_defaults import DEFAULT_FRAME_WIDTH
 
 # tifffile and halide.processing (numpy, Pillow, colour-science) are imported inside the functions
@@ -58,6 +59,24 @@ _FALLBACK_PER_WORKER_BYTES = 5 * 1024**3  # used only if a file's header can't b
 # frame at once held several float64 copies of it.
 _EXPORT_PEAK_RSS_MULTIPLIER = 2
 _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
+
+# GPU workers (docs/plans/gpu-acceleration.md §3.5): peak *device* memory per worker, modelled like
+# RAM as `context + K * decoded_pixel_bytes`. PROVISIONAL — not yet measured on a real card; refit
+# from `docs/plans/gpu-acceleration-bench.py`'s memory section on the user's RTX 3070. Evidence so
+# far, and why each is rounded up (a too-high estimate costs a worker; too low costs frames redone
+# on the CPU after running out of VRAM):
+#   - a CUDA context is ~300 MB (an estimate, not measured here) -> 384 MiB;
+#   - the banded device path (banding.DEVICE_BAND_BYTES = 64 MiB) keeps the frame resident and
+#     needs a few bands' temporaries at once — the plan's §3.3 budget is ~6 x 64 MiB -> 384 MiB;
+#   - the frame itself (181 MiB for a real scan) plus the print fit's whole-frame luminance and
+#     percentile scratch (~1/3 frame each, sorted copies included): ~2 frames. K = 4 doubles that.
+#     Upper bound: the probe's *unbanded* whole-frame run held 2.1 GiB of pool on a 181 MiB frame
+#     (~12 frames); banded, this estimate (768 MiB + 4 x 181 MiB = ~1.5 GiB) is ~70% of that.
+# On the RTX 3070 (~6.8 GiB free on the desktop) that is 4 workers.
+_CUDA_CONTEXT_BYTES = 384 * 1024 * 1024
+_DEVICE_BAND_SCRATCH_BYTES = 6 * 64 * 1024 * 1024
+_DEVICE_CONTEXT_BYTES = _CUDA_CONTEXT_BYTES + _DEVICE_BAND_SCRATCH_BYTES
+_DEVICE_FRAME_MULTIPLIER = 4
 
 
 @dataclass(frozen=True)
@@ -123,6 +142,41 @@ def estimate_worker_memory_bytes(
     return baseline_bytes + max(sizes) * multiplier
 
 
+def estimate_worker_device_bytes(jobs: list[BatchJob]) -> int:
+    """Estimate the peak GPU memory one worker needs for the largest job in this batch: its own
+    CUDA context and band scratch, plus the frame resident on the device and the print fit's
+    whole-frame statistics (see the PROVISIONAL constants above). Used for every GPU pool — develop,
+    print and export alike: export keeps the same resident frame and less scratch, so this bounds
+    it too."""
+    sizes = [b for b in (_decoded_pixel_bytes(job.input_path) for job in jobs) if b is not None]
+    if not sizes:
+        return _FALLBACK_PER_WORKER_BYTES
+    return _DEVICE_CONTEXT_BYTES + max(sizes) * _DEVICE_FRAME_MULTIPLIER
+
+
+def _device_cap(jobs: list[BatchJob], device: ComputeDevice | None) -> int | None:
+    """How many GPU workers fit in the card's free memory, or None when there's no GPU (or its free
+    memory wasn't reported). Uses the free memory the parent's own resolve_device already measured —
+    no further CUDA calls here (the parent's own context is already counted out of it)."""
+    if device is None or device.kind != "gpu" or not device.memory_free:
+        return None
+    return max(1, device.memory_free // estimate_worker_device_bytes(jobs))
+
+
+def _device_worker_args(device: ComputeDevice | None, workers: int) -> tuple[str, int | None]:
+    """What each worker is handed about the device: the resolved kind ("cpu"/"gpu") — never the
+    device itself, since each worker makes its own CUDA context (CUDA must not be initialised before
+    the fork) — and, on a GPU, its memory-pool limit: an equal share of the free memory, less its
+    own CUDA context, so one worker's cached blocks can't starve the rest. A share that works out
+    at nothing (far more --workers than fit) becomes 1 byte, not 0: CuPy reads 0 as "no limit".
+    Such a worker's frames then run out of GPU memory and are redone on the CPU, with a warning."""
+    if device is None or device.kind != "gpu":
+        return "cpu", None
+    if not device.memory_free:
+        return "gpu", None
+    return "gpu", max(1, device.memory_free // workers - _CUDA_CONTEXT_BYTES)
+
+
 def _cpu_cap() -> int:
     """Most workers worth running regardless of memory: one per *physical* core. Each worker is
     numpy- and memory-bandwidth-bound, so a hyperthread sibling adds little speed but a whole extra
@@ -140,6 +194,7 @@ def _cpu_cap() -> int:
 def default_worker_count(
     jobs: list[BatchJob],
     *,
+    device: ComputeDevice | None = None,
     baseline_bytes: int = _BASELINE_PROCESS_OVERHEAD_BYTES,
     multiplier: int = _PEAK_RSS_MULTIPLIER,
 ) -> int:
@@ -149,19 +204,25 @@ def default_worker_count(
     ~0.5 GB now, see the constants above), and a CPU-only worker count was enough to get a worker
     OOM-killed. Falls back to the CPU-only cap if `psutil` can't report available
     memory, or if none of the batch's files' headers could be read at all. `baseline_bytes`/
-    `multiplier` default to the full-inversion-pipeline fit — see estimate_worker_memory_bytes."""
-    cpu_cap = _cpu_cap()
+    `multiplier` default to the full-inversion-pipeline fit — see estimate_worker_memory_bytes.
+
+    On a GPU `device`, a third cap: how many workers' device memory fits in the card's free memory
+    (estimate_worker_device_bytes). A CPU device, or None, is exactly the CPU-only count."""
+    cap = _cpu_cap()
     if not jobs:
-        return cpu_cap
+        return cap
+    device_cap = _device_cap(jobs, device)
+    if device_cap is not None:
+        cap = min(cap, device_cap)
     try:
         import psutil
 
         available = psutil.virtual_memory().available
     except Exception:  # noqa: BLE001 — an unsupported platform must not break batch processing
-        return cpu_cap
+        return cap
     per_worker = estimate_worker_memory_bytes(jobs, baseline_bytes=baseline_bytes, multiplier=multiplier)
     memory_cap = max(1, available // per_worker)
-    return max(1, min(cpu_cap, memory_cap, len(jobs)))
+    return max(1, min(cap, memory_cap, len(jobs)))
 
 
 def memory_budget_warning(
@@ -200,10 +261,11 @@ def estimate_export_worker_memory_bytes(jobs: list[BatchJob]) -> int:
     )
 
 
-def default_export_worker_count(jobs: list[BatchJob]) -> int:
+def default_export_worker_count(jobs: list[BatchJob], *, device: ComputeDevice | None = None) -> int:
     """Same as default_worker_count, using export's own calibrated constants."""
     return default_worker_count(
-        jobs, baseline_bytes=_EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES, multiplier=_EXPORT_PEAK_RSS_MULTIPLIER
+        jobs, device=device,
+        baseline_bytes=_EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES, multiplier=_EXPORT_PEAK_RSS_MULTIPLIER,
     )
 
 
@@ -217,43 +279,122 @@ def export_memory_budget_warning(jobs: list[BatchJob], requested_workers: int) -
     )
 
 
+# This worker process's device, resolved on its first job and kept for the rest (see
+# _worker_device). Keyed by the pool-limit share so an in-process caller can't get a stale one.
+_WORKER_DEVICES: dict[int | None, tuple[ComputeDevice, BaseException | None]] = {}
+
+
+def _worker_device(device_kind: str, memory_limit: int | None) -> tuple[ComputeDevice, BaseException | None]:
+    """The device this worker process runs its frames on, and — if it was asked for a GPU but
+    couldn't get one — why not.
+
+    Resolved here, in the worker, on its first GPU job (never in the parent or the forkserver: a
+    CUDA context doesn't survive a fork), then cached for the process's lifetime, so the CUDA
+    context and CuPy's memory pool stay warm from frame to frame. On a GPU it caps the pool at
+    `memory_limit` bytes (this worker's share, see _device_worker_args). A GPU that can't be used
+    here — typically no room left on the card for one more CUDA context — never fails the batch:
+    the worker develops on the CPU and every frame it does so says why."""
+    if device_kind != "gpu":
+        return ComputeDevice(kind="cpu"), None
+    if memory_limit not in _WORKER_DEVICES:
+        from halide import device as halide_device
+
+        try:
+            device = halide_device.resolve_device("gpu")
+            if memory_limit is not None:
+                import cupy  # already imported by resolve_device; see halide.device
+
+                cupy.get_default_memory_pool().set_limit(size=memory_limit)
+            _WORKER_DEVICES[memory_limit] = (device, None)
+        except Exception as exc:  # noqa: BLE001 — any GPU problem: this worker runs on the CPU
+            # resolve_device("gpu") wraps the real error in an install hint meant for the CLI; the
+            # frame's warning wants the error itself ("out of GPU memory", a driver error).
+            _WORKER_DEVICES[memory_limit] = (ComputeDevice(kind="cpu"), exc.__cause__ or exc)
+    return _WORKER_DEVICES[memory_limit]
+
+
+class _Warnings:
+    """Collects a frame's warnings for its BatchResult: a worker's output isn't anyone's terminal,
+    so processing.py's on_warning messages have to travel back in the result. The frame's own path,
+    which those messages start with, is dropped — the CLI prints each warning under the frame's
+    name already."""
+
+    def __init__(self, job: BatchJob) -> None:
+        self._prefix = f"{job.input_path}: "
+        self.messages: list[str] = []
+
+    def __call__(self, message: str | None) -> None:
+        if message:
+            self.messages.append(message.removeprefix(self._prefix))
+
+    def text(self) -> str | None:
+        return "; ".join(self.messages) or None
+
+
+def _start_on_device(job: BatchJob, device_kind: str, memory_limit: int | None, action: str):
+    """(device, warnings) for one frame: the worker's device, with the warning already noted if a
+    requested GPU turned out to be unusable in this worker."""
+    from halide.processing import _gpu_fallback_message
+
+    warnings = _Warnings(job)
+    device, unusable = _worker_device(device_kind, memory_limit)
+    if unusable is not None:
+        warnings(_gpu_fallback_message(job.input_path, unusable, action=action))
+    return device, warnings
+
+
 def _worker(
     job: BatchJob,
     stage: Stage,
     density_profile: DensityProfile | None,
     tone_params: ToneCurveParams,
     thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
+    device_kind: str = "cpu",
+    device_memory_limit: int | None = None,
 ) -> BatchResult:
     from halide.processing import process_scan
 
+    warnings = None
     try:
+        device, warnings = _start_on_device(job, device_kind, device_memory_limit, "developed this frame")
         process_scan(
             job.input_path, job.output_path, stage, density_profile, tone_params, scan_gain=job.scan_gain,
             thumbnail_path=job.thumbnail_path, thumbnail_long_edge=thumbnail_long_edge,
+            device=device, on_warning=warnings,
         )
-        return BatchResult(job=job, error=None)
+        return BatchResult(job=job, error=None, warning=warnings.text())
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
-        return BatchResult(job=job, error=str(exc))
+        return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
 
-def _export_worker(job: BatchJob, quality: int) -> BatchResult:
+def _export_worker(
+    job: BatchJob, quality: int, device_kind: str = "cpu", device_memory_limit: int | None = None
+) -> BatchResult:
     from halide.processing import export_delivery_image
 
+    warnings = None
     try:
-        warning = export_delivery_image(job.input_path, job.output_path, quality=quality)
-        return BatchResult(job=job, error=None, warning=warning)
+        device, warnings = _start_on_device(job, device_kind, device_memory_limit, "exported this file")
+        warnings(export_delivery_image(job.input_path, job.output_path, quality=quality,
+                                       device=device, on_warning=warnings))
+        return BatchResult(job=job, error=None, warning=warnings.text())
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
-        return BatchResult(job=job, error=str(exc))
+        return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
 
-def _print_worker(job: BatchJob, tone_params: ToneCurveParams) -> BatchResult:
+def _print_worker(
+    job: BatchJob, tone_params: ToneCurveParams, device_kind: str = "cpu", device_memory_limit: int | None = None
+) -> BatchResult:
     from halide.processing import print_scan
 
+    warnings = None
     try:
-        _, warning = print_scan(job.input_path, job.output_path, tone_params)
-        return BatchResult(job=job, error=None, warning=warning)
+        device, warnings = _start_on_device(job, device_kind, device_memory_limit, "developed this frame")
+        _, warning = print_scan(job.input_path, job.output_path, tone_params, device=device, on_warning=warnings)
+        warnings(warning)
+        return BatchResult(job=job, error=None, warning=warnings.text())
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
-        return BatchResult(job=job, error=str(exc))
+        return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
 
 def _thumbnail_worker(job: BatchJob, thumbnail_long_edge: int) -> BatchResult:
@@ -271,6 +412,9 @@ def _thumbnail_worker(job: BatchJob, thumbnail_long_edge: int) -> BatchResult:
 # colour-science and scipy afresh — measured: 4 idle workers' proportional memory 294 -> 73 MiB.
 # colour is listed explicitly because halide imports it lazily (only where it's used), so
 # preloading halide.processing alone no longer loads it.
+# Never cupy: importing it is harmless, but anything that touched CUDA here would leave every forked
+# worker with an unusable CUDA context. Each GPU worker imports it and makes its own context on its
+# first job (_worker_device); a test pins that a fresh worker hasn't imported it.
 _FORKSERVER_PRELOAD = ["__main__", "halide.processing", "colour"]
 
 
@@ -405,14 +549,20 @@ def run_batch(
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
     thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
+    device: ComputeDevice | None = None,
 ) -> list[BatchResult]:
     """Invert every job in a process pool, in parallel — see _run_pool for the shared failure-
-    handling and progress-callback behavior. `max_workers` defaults to default_worker_count(jobs)
-    if not given. Jobs with a thumbnail_path also get a contact-sheet thumbnail."""
-    workers = max_workers if max_workers is not None else default_worker_count(jobs)
+    handling and progress-callback behavior. `max_workers` defaults to default_worker_count(jobs,
+    device=device) if not given. Jobs with a thumbnail_path also get a contact-sheet thumbnail.
+
+    `device` is the run's already-resolved device (None = CPU). Workers are told only its kind and
+    their share of its memory, and resolve it themselves (see _worker_device); a frame a worker had
+    to develop on the CPU instead says so in its BatchResult.warning."""
+    workers = max_workers if max_workers is not None else default_worker_count(jobs, device=device)
     return _run_pool(
-        jobs, _worker, (stage, density_profile, tone_params, thumbnail_long_edge), workers,
-        on_result=on_result, on_start=on_start,
+        jobs, _worker,
+        (stage, density_profile, tone_params, thumbnail_long_edge, *_device_worker_args(device, workers)),
+        workers, on_result=on_result, on_start=on_start,
     )
 
 
@@ -422,12 +572,17 @@ def run_export_batch(
     max_workers: int | None = None,
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
+    device: ComputeDevice | None = None,
 ) -> list[BatchResult]:
     """Export every job (ACEScg TIFF -> delivery PNG/JPEG) in a process pool, in parallel — see
     _run_pool for the shared failure-handling and progress-callback behavior. `max_workers`
-    defaults to default_export_worker_count(jobs) if not given."""
-    workers = max_workers if max_workers is not None else default_export_worker_count(jobs)
-    return _run_pool(jobs, _export_worker, (quality,), workers, on_result=on_result, on_start=on_start)
+    defaults to default_export_worker_count(jobs, device=device) if not given; `device` as
+    run_batch."""
+    workers = max_workers if max_workers is not None else default_export_worker_count(jobs, device=device)
+    return _run_pool(
+        jobs, _export_worker, (quality, *_device_worker_args(device, workers)), workers,
+        on_result=on_result, on_start=on_start,
+    )
 
 
 def run_print_batch(
@@ -436,13 +591,18 @@ def run_print_batch(
     max_workers: int | None = None,
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
+    device: ComputeDevice | None = None,
 ) -> list[BatchResult]:
     """`halide print` every job (flat positive -> print) in a process pool — see _run_pool for the
     shared failure-handling and progress-callback behavior. `max_workers` defaults to
-    default_worker_count(jobs): the full-pipeline memory estimate, a safe upper bound for the print
-    stage alone (which is the tail of that same pipeline)."""
-    workers = max_workers if max_workers is not None else default_worker_count(jobs)
-    return _run_pool(jobs, _print_worker, (tone_params,), workers, on_result=on_result, on_start=on_start)
+    default_worker_count(jobs, device=device): the full-pipeline memory estimate, a safe upper
+    bound for the print stage alone (which is the tail of that same pipeline); `device` as
+    run_batch."""
+    workers = max_workers if max_workers is not None else default_worker_count(jobs, device=device)
+    return _run_pool(
+        jobs, _print_worker, (tone_params, *_device_worker_args(device, workers)), workers,
+        on_result=on_result, on_start=on_start,
+    )
 
 
 def run_thumbnail_batch(
@@ -454,6 +614,8 @@ def run_thumbnail_batch(
 ) -> list[BatchResult]:
     """Contact-sheet thumbnails of already-processed files (`halide contact`), in a process pool.
     Sized with export's constants: reading + colour-converting one full-size file is the same
-    shape of work as an export, and the thumbnail itself is tiny."""
+    shape of work as an export, and the thumbnail itself is tiny. Always on the CPU: the frames are
+    already developed, and what's left — decode, (usually no) colour conversion, a block-average
+    down to thumbnail size — would spend longer uploading the frame than computing on it."""
     workers = max_workers if max_workers is not None else default_export_worker_count(jobs)
     return _run_pool(jobs, _thumbnail_worker, (thumbnail_long_edge,), workers, on_result=on_result, on_start=on_start)

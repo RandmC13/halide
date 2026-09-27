@@ -19,6 +19,7 @@ themselves; these hold the reasoning, evidence and designs behind them.
 - **`plans/` (draft, awaiting decisions):**
   - `gpu-acceleration.md`: where a frame's time goes, and a CuPy-based plan for running the
     pipeline on an NVIDIA GPU (`--device auto|cpu|gpu`). `gpu-acceleration-probe.py` is the
-    measurement script for the GPU machine.
+    measurement script for the GPU machine; `gpu-acceleration-bench.py` times the real `invert`/
+    `batch` on CPU vs GPU and measures a GPU worker's memory (sets the default and the worker count).
 
 New write-ups go in the matching folder, not the repo root.

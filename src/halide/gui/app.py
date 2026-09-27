@@ -9,17 +9,19 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
+from halide.device import ComputeDevice
 from halide.gui import theme
 from halide.gui.main_window import MainWindow
 
 
-def main(inputs: list[str] | None = None, profile: str | None = None) -> None:
+def main(inputs: list[str] | None = None, profile: str | None = None, device: ComputeDevice | None = None) -> None:
     """`inputs`: a roll folder, or one or more scans. `profile`: a saved profile (path or name) to
-    reopen - its points and extra information, and its roll if the folder is still there."""
+    reopen - its points and extra information, and its roll if the folder is still there. `device`:
+    the resolved --device, which the contact sheet window develops its frames on (None = CPU)."""
     app = QApplication.instance() or QApplication(sys.argv)
     theme.apply(app)
 
-    window = MainWindow(show_load_controls=True)
+    window = MainWindow(show_load_controls=True, device=device)
     window.setWindowTitle("halide · calibration picker")
     window.show()
     if profile:
