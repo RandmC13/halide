@@ -755,7 +755,7 @@ def test_auto_with_broken_driver_falls_back_and_says_why(monkeypatch):
 
 def test_gpu_request_without_cupy_raises_with_install_hint(monkeypatch):
     monkeypatch.setitem(sys.modules, "cupy", None)
-    with pytest.raises(DeviceUnavailableError, match=r"pip install .*halide\[gpu\]"):
+    with pytest.raises(DeviceUnavailableError, match=r"halide gpu --install"):
         resolve_device("gpu")
 
 def test_env_var_is_used_when_no_flag(monkeypatch):
@@ -780,8 +780,8 @@ def test_importing_processing_does_not_import_cupy():
   `Exception` around all of it (CuPy's error classes live in `cupy_backends`, and a broken install
   can raise others); for `"gpu"` re-raise as `DeviceUnavailableError` with the reason, for `"auto"`
   return CPU with `fallback_reason` set (None when CuPy simply isn't installed).
-  `pyproject.toml`: `gpu = ["cupy-cuda12x[ctk]"]` (or 13x per §7) under optional-dependencies, and
-  `markers = ["gpu: needs CuPy and a CUDA device"]` under `[tool.pytest.ini_options]`.
+  `pyproject.toml`: `cuda12 = ["cupy-cuda12x[ctk]>=14"]` and `cuda13 = ["cupy-cuda13x[ctk]>=14"]`
+  under optional-dependencies, and `markers = ["gpu: needs CuPy and a CUDA device"]` under `[tool.pytest.ini_options]`.
 - [ ] **Step 4: Run** — `pytest tests/unit/test_device.py -q` passes; full suite passes.
 - [ ] **Step 5: Commit** — `git commit -m "Detect and choose the compute device (auto/cpu/gpu)"`
 
@@ -876,7 +876,7 @@ keep the pool warm — Task 7).
   (turns `DeviceUnavailableError`/bad env into the CLI's usual error exit); `device_row(device) -> row`.
 
 - [ ] **Step 1: Failing tests** — `HEAVY` includes `cupy`; `halide invert --device cpu …` writes
-  `"device": "cpu"`; `--device gpu` on a machine without CuPy exits non-zero with the install hint;
+  `"device": "cpu"`; `--device gpu` on a machine without CuPy exits non-zero naming `halide gpu --install`;
   `--device` absent + `HALIDE_DEVICE=cpu` → cpu; run sheet shows `Compute  CPU` / `Compute  GPU — <name>`
   and the fallback reason when set.
 - [ ] **Step 2: Run to verify they fail.**
@@ -907,6 +907,75 @@ keep the pool warm — Task 7).
 
 Note for the user, not part of this plan: PNG export's real cost is Pillow's zlib (4.9 s of 6.7 s,
 measured); a GPU can't touch that. A lower PNG `compress_level` would, at the cost of bigger files.
+
+### Task 6b: GPU support is optional, discoverable, and one command to add (§3.7)
+
+**Files:**
+- Modify: `src/halide/device.py` (add `NvidiaDriver`, `detect_nvidia_driver`, `cupy_package_for`)
+- Create: `src/halide/cli/commands/gpu_cmd.py`; register it in `src/halide/cli/main.py`
+- Modify: `src/halide/cli/_device_args.py` / `_run_sheet.py` (Compute row hint), `invert_cmd.py`
+  (once-per-machine note), `src/halide/cli/completion.py` (the new command must complete: it is
+  generated from `build_parser()`, so check `test_completion.py` still passes and `gpu` appears)
+- Modify: `pyproject.toml` (extras `cuda12 = ["cupy-cuda12x[ctk]>=14"]`, `cuda13 = ["cupy-cuda13x[ctk]>=14"]`;
+  remove any `gpu` extra added in Task 3), `README.md` ("GPU acceleration (optional)" section)
+- Test: `tests/unit/test_gpu_cmd.py`
+
+**Interfaces:**
+- Consumes: `resolve_device`, `ComputeDevice`, `DeviceUnavailableError` (Task 3); run sheet rows (Task 5).
+- Produces:
+  ```python
+  @dataclass(frozen=True)
+  class NvidiaDriver:
+      cuda_version: int          # cuDriverGetVersion, e.g. 13040
+      device_name: str | None    # first device, None if cuDeviceGetName failed
+  def detect_nvidia_driver() -> NvidiaDriver | None     # ctypes only; never raises
+  def cupy_package_for(driver: NvidiaDriver) -> str | None
+      # >= 13000 -> "cupy-cuda13x[ctk]"; >= 12000 -> "cupy-cuda12x[ctk]"; else None (driver too old)
+  def gpu_support_installed() -> bool                  # importlib.util.find_spec("cupy") is not None
+  ```
+
+- [ ] **Step 1: Failing tests**
+  - `cupy_package_for`: 13040 → cuda13x, 12080 → cuda12x, 11080 → None.
+  - `detect_nvidia_driver` with `ctypes.CDLL` monkeypatched to raise `OSError` → None; with a fake
+    library whose `cuDriverGetVersion` writes 13040 and `cuDeviceGetName` writes
+    `b"NVIDIA GeForce RTX 3070"` → both fields. It must never raise, even if the fake returns error codes.
+  - `halide gpu` (status), for four machines: (a) no NVIDIA driver → "No NVIDIA GPU found" and exit 0;
+    (b) driver, no CuPy → names the card and says "GPU support is not installed — add it with:
+    halide gpu --install (about 1 GB download)"; (c) CuPy installed and working → "in use by default
+    (--device auto)"; (d) CuPy installed, device fails (the sandbox's real case: `CUDARuntimeError`
+    insufficient driver) → shows the reason.
+  - `halide gpu --install`, with `subprocess.run` monkeypatched: answers "n" → nothing runs;
+    answers "y" → runs `[sys.executable, "-m", "pip", "install", "cupy-cuda13x[ctk]"]` exactly;
+    with no pip in the environment (`importlib.util.find_spec("pip")` → None) → runs nothing and
+    prints the pip, pipx (`pipx inject halide 'cupy-cuda13x[ctk]'`) and uv
+    (`uv tool install --with 'cupy-cuda13x[ctk]' …`) commands. Non-interactive stdin without `--yes`
+    → refuses with a message naming `--yes`. With a driver too old → explains, runs nothing, exit 1.
+  - Run sheet Compute row: driver found + CuPy absent → `CPU — NVIDIA GeForce RTX 3070 found; add GPU
+    support with: halide gpu --install`. No driver → just `CPU`.
+  - `invert` prints the hint once: a stamp file under the same state directory
+    `cli/completion.py` uses (reuse its helper for the path). Second run → no hint.
+    `HALIDE_NO_GPU_HINT=1` → never.
+  - `--device gpu` without CuPy: the error names `halide gpu --install`.
+  - `test_cli_startup.py` still passes (`gpu_cmd` imports nothing heavy at parser build; ctypes is fine).
+- [ ] **Step 2: Run to verify they fail.**
+- [ ] **Step 3: Implement.** `detect_nvidia_driver`: `ctypes.CDLL("libcuda.so.1")` on Linux,
+  `ctypes.WinDLL("nvcuda.dll")` on Windows, other platforms → None. Call `cuDriverGetVersion(byref(c_int))`,
+  then `cuInit(0)`, `cuDeviceGet(byref(dev), 0)`, `cuDeviceGetName(buf, 256, dev)`. Check each CUresult
+  (0 = success). Wrap everything in `try/except Exception`. The install prompt text:
+  ```
+  GPU support for halide: NVIDIA GeForce RTX 3070 (driver supports CUDA 13.4)
+  This installs cupy-cuda13x[ctk] into halide's Python environment (<sys.prefix>) — about 1 GB,
+  mostly NVIDIA's CUDA libraries. Remove it later with:
+      <sys.executable> -m pip uninstall cupy-cuda13x
+  Install now? [y/N]
+  ```
+  After install, re-run the status check in a **fresh subprocess** (the current process may
+  have cached the failed import) and print the result.
+- [ ] **Step 4: Run** the new tests, `test_completion.py`, `test_cli_startup.py`, and the full suite.
+  In the sandbox (CuPy installed, no driver), run `halide gpu` for real and paste its output in the report.
+- [ ] **Step 5: README section** (short: what it does, "needs an NVIDIA card", `halide gpu`,
+  `halide gpu --install`, `--device cpu` / `HALIDE_DEVICE=cpu` to turn it off, the ~1 GB size).
+- [ ] **Step 6: Commit**: `git commit -m "halide gpu: find the card, offer and install optional GPU support"`
 
 ### Task 7: Batch workers on the GPU, and the benchmark that sets the default
 
