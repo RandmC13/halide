@@ -114,6 +114,18 @@ _SHM_USABLE_FRACTION = 0.8
 _SERVICE_KIND = "gpu"
 _SERVICE_INITIALIZER = None
 
+# A troubleshooting switch: HALIDE_GPU_SERVICE=0 (or "off") makes a GPU batch use per-worker GPU
+# mode — every worker its own CUDA context, as before the service existed — instead of the shared
+# service. On by default (unset, or any other value). Also how the benchmark
+# (docs/plans/gpu-acceleration-bench.py) and tests/gpu time and compare the two modes in one run.
+SERVICE_ENV = "HALIDE_GPU_SERVICE"
+_SERVICE_OFF = ("0", "off", "false", "no")
+
+
+def gpu_service_enabled() -> bool:
+    """False when $HALIDE_GPU_SERVICE turns the shared GPU service off (case and space ignored)."""
+    return os.environ.get(SERVICE_ENV, "").strip().lower() not in _SERVICE_OFF
+
 
 @dataclass(frozen=True)
 class BatchJob:
@@ -477,10 +489,15 @@ def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: 
     worker is gone (shared_frames.sweep), so the pool must have shut down by then.
 
     A GPU batch falls back to per-worker GPU mode (fallback_reason says why, for the run sheet) when
-    /dev/shm can't hold even one frame (a small container) or the service doesn't start. It never
-    fails the batch: that mode is what every GPU batch did before the service existed."""
+    /dev/shm can't hold even one frame (a small container), the service doesn't start, or
+    $HALIDE_GPU_SERVICE turns it off. It never fails the batch: that mode is what every GPU batch
+    did before the service existed."""
     if device is None or device.kind != "gpu":
         yield BatchCompute(device=device, workload=workload)
+        return
+    if not gpu_service_enabled():
+        value = os.environ.get(SERVICE_ENV, "").strip()
+        yield BatchCompute(device=device, workload=workload, fallback_reason=f"turned off by {SERVICE_ENV}={value}")
         return
     shm_cap = shared_memory_worker_cap(jobs, workload)
     if shm_cap == 0:

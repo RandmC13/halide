@@ -542,6 +542,20 @@ def test_the_run_sheet_says_why_the_gpu_service_isnt_used(roll_dir, tmp_path, mo
     assert "GPU service not used: shared memory (/dev/shm) has 0 KiB free" in out
 
 
+def test_halide_gpu_service_off_is_per_worker_gpu_mode_and_the_run_sheet_says_so(roll_dir, tmp_path, monkeypatch,
+                                                                                capsys, gpu_resolves, fake_gpu_service):
+    import halide.cli.commands.batch_cmd as batch_cmd
+
+    monkeypatch.setenv("HALIDE_GPU_SERVICE", "0")  # the troubleshooting switch (B4)
+    calls = []
+    monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner(calls, warning=None))
+    assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL]) == 0
+    assert calls[0]["compute"].mode == "per_worker" and calls[0]["compute"].service is None
+    out = " ".join(_strip(capsys.readouterr().out).split())  # rows wrap
+    assert "one GPU context per worker" in out
+    assert "GPU service not used: turned off by HALIDE_GPU_SERVICE=0" in out
+
+
 def test_a_real_gpu_batch_through_the_service(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves, fake_gpu_service):
     out_dir = tmp_path / "out"
     assert main(["batch", str(roll_dir), str(out_dir), *MANUAL, "--workers", "2", "--quiet"]) == 0

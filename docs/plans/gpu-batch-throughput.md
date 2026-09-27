@@ -349,8 +349,14 @@ accept `service: ServiceClient | None`); tests in `tests/unit/test_orchestrator.
 today), `docs/plans/gpu-acceleration-bench.py` (a service-mode GPU row: workers auto, plus 4 and 8,
 reporting the service's and the workers' host memory and VRAM).
 
-- [ ] Write the tests and bench changes; validate what can be validated here (`--devices cpu`,
-  and the `"cpu"`-kind service).
+- [x] Write the tests and bench changes; validate what can be validated here (`--devices cpu`,
+  and the `"cpu"`-kind service). Done: service vs per-worker parity tests in
+  `tests/gpu/test_gpu_parity.py` (real-scan outputs in the gitignored `.gpu-test-scratch/`, not
+  /tmp); `HALIDE_GPU_SERVICE=0`/`off` switches a GPU batch back to per-worker mode (a
+  troubleshooting switch, also what the bench and the parity tests use to reach that mode);
+  `tests/conftest.py`'s service guard exempts tests marked `gpu`. The bench gains service rows
+  (auto, 4, 8), per-worker rows (auto, 4), the service's own RSS/PSS/VRAM, PSS totals, swap, and
+  `--only batch`.
 - [ ] **User runs `pytest -m gpu` and the bench.** Acceptance:
   - all GPU tests pass;
   - the service-mode GPU batch is faster than today's GPU batch (0.73 s/frame) by a margin worth

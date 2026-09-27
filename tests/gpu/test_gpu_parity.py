@@ -9,6 +9,9 @@ float rounding in the GPU's matmuls, logs and powers), held to the D2 tolerance:
 
 The real scans (IMG_0151/0156/0156-nowb/0158.tif in the repo root, gitignored) are used when
 present — they are what the tolerance is really about.
+
+The last section (Task B4) is different: the shared GPU service against the in-process GPU path,
+both on the card, through the real batch code — held to bit-identity, not D2.
 """
 
 from __future__ import annotations
@@ -321,3 +324,185 @@ def test_real_scans_roll_auto_density_balance_on_gpu_matches_cpu():
     cpu = roll_auto_density_balance(frames)
     gpu = roll_auto_density_balance([cupy.asarray(f) for f in frames])
     _assert_profile_close(gpu, cpu)
+
+
+# ---------------------------------------------------------------------------
+# Task B4 (docs/plans/gpu-batch-throughput.md): the shared GPU service against the in-process GPU
+# path (per-worker mode, HALIDE_GPU_SERVICE=0), both through the real batch code. Same device code
+# on the same card, so these are held to bit-identity — not to D2: TIFF pixel bytes and provenance
+# (whose "device" is "gpu" on both sides), and export PNG pixels. Any difference is a service bug.
+#
+# Real-scan outputs don't go to tmp_path: /tmp is RAM on the user's machine, with only a few GiB
+# free, and each output is ~130 MiB. They go to a scratch folder inside the repo (gitignored),
+# deleted after every test, pass or fail, and each batch is at most two real scans.
+# ---------------------------------------------------------------------------
+
+import contextlib  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+
+from halide.batch.orchestrator import (  # noqa: E402
+    SERVICE_ENV,
+    BatchJob,
+    batch_compute,
+    run_batch,
+    run_export_batch,
+    run_print_batch,
+)
+
+SCRATCH_ROOT = REPO_ROOT / ".gpu-test-scratch"
+REAL_PAIRS = [REAL_SCANS[i:i + 2] for i in range(0, len(REAL_SCANS), 2)]
+REAL_PAIR_IDS = ["+".join(p.stem for p in pair) for pair in REAL_PAIRS]
+_BATCH_WORKERS = 2
+_MODES = ("service", "per_worker")
+
+
+@pytest.fixture
+def repo_scratch():
+    """A folder inside the repo for real-scan outputs, removed when the test ends however it ends."""
+    SCRATCH_ROOT.mkdir(exist_ok=True)
+    path = Path(tempfile.mkdtemp(prefix="b4-", dir=SCRATCH_ROOT))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+        with contextlib.suppress(OSError):  # another test's folder may still be in it
+            SCRATCH_ROOT.rmdir()
+
+
+def _batch_in_mode(monkeypatch, mode, jobs, workload, run):
+    """Run one batch (`run(compute)`) with the GPU reached through `mode`: "service" (the shared GPU
+    service, the default) or "per_worker" (HALIDE_GPU_SERVICE=0: each worker its own CUDA context,
+    the in-process GPU path). Every frame must come out without an error or a CPU fallback."""
+    import cupy
+
+    # This process's own CuPy pool still holds frames' worth of blocks from the in-process tests
+    # above (and a test's own GPU-developed inputs): hand them back before the batch needs the card.
+    cupy.get_default_memory_pool().free_all_blocks()
+    if mode == "service":
+        monkeypatch.delenv(SERVICE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(SERVICE_ENV, "0")
+    with batch_compute(jobs, _DEVICE, workload) as compute:
+        assert compute.mode == mode, compute.fallback_reason
+        results = run(compute)
+    assert [(r.error, r.warning) for r in results] == [(None, None)] * len(jobs), (
+        f"{mode}: {[(r.error, r.warning) for r in results]}"  # a fallback would compare CPU with GPU
+    )
+
+
+def _assert_tiffs_identical(service_path, in_process_path):
+    service, in_process = read_tiff(service_path).image, read_tiff(in_process_path).image
+    assert service.dtype == in_process.dtype == np.float32 and service.shape == in_process.shape
+    if service.tobytes() != in_process.tobytes():
+        diff = np.abs(service.astype(np.float64) - in_process.astype(np.float64))
+        pytest.fail(f"{service_path.name}: not bit-identical — {np.count_nonzero(diff)} of {diff.size} values "
+                    f"differ, max |diff| {diff.max():.3g}")
+    service_record = read_provenance(read_tiff_description(service_path))
+    in_process_record = read_provenance(read_tiff_description(in_process_path))
+    assert service_record == in_process_record
+    assert service_record["device"] == "gpu"
+
+
+def _assert_pngs_identical(service_path, in_process_path):
+    service, in_process = _png_pixels(service_path), _png_pixels(in_process_path)
+    assert service.shape == in_process.shape
+    if not np.array_equal(service, in_process):
+        diff = np.abs(service - in_process)
+        pytest.fail(f"{service_path.name}: not pixel-identical — {np.count_nonzero(diff)} of {diff.size} values "
+                    f"differ, max {int(diff.max())} code values")
+
+
+def _develop_both_ways(monkeypatch, scans, folder, stage, profile, tone):
+    for mode in _MODES:
+        (folder / mode).mkdir()
+        jobs = [BatchJob(input_path=s, output_path=folder / mode / f"{s.stem}.tif") for s in scans]
+        _batch_in_mode(monkeypatch, mode, jobs, "develop", lambda compute: run_batch(
+            jobs, stage, profile, tone, max_workers=_BATCH_WORKERS, device=_DEVICE, compute=compute))
+    for s in scans:
+        _assert_tiffs_identical(folder / "service" / f"{s.stem}.tif", folder / "per_worker" / f"{s.stem}.tif")
+
+
+def _print_both_ways(monkeypatch, flats, folder):
+    for mode in _MODES:
+        (folder / mode).mkdir()
+        jobs = [BatchJob(input_path=f, output_path=folder / mode / f"{f.stem}-print.tif") for f in flats]
+        _batch_in_mode(monkeypatch, mode, jobs, "develop", lambda compute: run_print_batch(
+            jobs, ToneCurveParams(), max_workers=_BATCH_WORKERS, device=_DEVICE, compute=compute))
+    for f in flats:
+        _assert_tiffs_identical(folder / "service" / f"{f.stem}-print.tif", folder / "per_worker" / f"{f.stem}-print.tif")
+
+
+def _export_both_ways(monkeypatch, positives, folder):
+    for mode in _MODES:
+        (folder / mode).mkdir()
+        jobs = [BatchJob(input_path=p, output_path=folder / mode / f"{p.stem}.png") for p in positives]
+        _batch_in_mode(monkeypatch, mode, jobs, "export", lambda compute: run_export_batch(
+            jobs, max_workers=_BATCH_WORKERS, device=_DEVICE, compute=compute))
+    for p in positives:
+        _assert_pngs_identical(folder / "service" / f"{p.stem}.png", folder / "per_worker" / f"{p.stem}.png")
+
+
+BATCH_CASES = [
+    (ToneCurveParams(), PROFILE),
+    (ToneCurveParams(mode="linear"), PROFILE),
+    (ToneCurveParams(), None),
+    (ToneCurveParams(mode="linear"), None),
+]
+BATCH_CASE_IDS = ["print", "flat", "auto-density", "auto-density-flat"]
+
+
+def _synthetic_roll(folder, n=3, shape=(64, 96, 3)):
+    folder.mkdir()
+    return [_write_scan(folder / f"f{i}.tif", shape=shape, seed=i + 11) for i in range(n)]
+
+
+@pytest.mark.parametrize("tone, profile", BATCH_CASES, ids=BATCH_CASE_IDS)
+def test_service_batch_matches_in_process_gpu_batch(tmp_path, monkeypatch, tone, profile):
+    scans = _synthetic_roll(tmp_path / "in")
+    _develop_both_ways(monkeypatch, scans, tmp_path, Stage.FULL, profile, tone)
+
+
+def test_service_print_batch_matches_in_process_gpu_batch(tmp_path, monkeypatch):
+    scans = _synthetic_roll(tmp_path / "in")
+    flats = []
+    for s in scans:
+        flats.append(tmp_path / f"{s.stem}-flat.tif")
+        process_scan(s, flats[-1], Stage.FULL, PROFILE, ToneCurveParams(mode="linear"))
+    _print_both_ways(monkeypatch, flats, tmp_path)
+
+
+def test_service_export_batch_matches_in_process_gpu_batch(tmp_path, monkeypatch):
+    scans = _synthetic_roll(tmp_path / "in")
+    positives = []
+    for s in scans:
+        positives.append(tmp_path / f"{s.stem}-positive.tif")
+        process_scan(s, positives[-1], Stage.FULL, PROFILE, ToneCurveParams())
+    _export_both_ways(monkeypatch, positives, tmp_path)
+
+
+@pytest.mark.skipif(not REAL_SCANS, reason="no real scans (IMG_*.tif) in the repo root")
+@pytest.mark.parametrize("scans", REAL_PAIRS, ids=REAL_PAIR_IDS)
+@pytest.mark.parametrize("tone, profile", BATCH_CASES[:3], ids=BATCH_CASE_IDS[:3])
+def test_real_scans_service_batch_matches_in_process_gpu_batch(repo_scratch, monkeypatch, scans, tone, profile):
+    _develop_both_ways(monkeypatch, scans, repo_scratch, Stage.FULL, profile, tone)
+
+
+@pytest.mark.skipif(not REAL_SCANS, reason="no real scans (IMG_*.tif) in the repo root")
+@pytest.mark.parametrize("scans", REAL_PAIRS, ids=REAL_PAIR_IDS)
+def test_real_scans_service_print_batch_matches_in_process_gpu_batch(repo_scratch, monkeypatch, scans):
+    flats = []
+    for s in scans:
+        flats.append(repo_scratch / f"{s.stem}-flat.tif")
+        process_scan(s, flats[-1], Stage.FULL, PROFILE, ToneCurveParams(mode="linear"), device=_DEVICE)
+    _print_both_ways(monkeypatch, flats, repo_scratch)
+
+
+@pytest.mark.skipif(not REAL_SCANS, reason="no real scans (IMG_*.tif) in the repo root")
+@pytest.mark.parametrize("scans", REAL_PAIRS, ids=REAL_PAIR_IDS)
+def test_real_scans_service_export_batch_matches_in_process_gpu_batch(repo_scratch, monkeypatch, scans):
+    positives = []
+    for s in scans:
+        positives.append(repo_scratch / f"{s.stem}-positive.tif")
+        process_scan(s, positives[-1], Stage.FULL, PROFILE, ToneCurveParams(), device=_DEVICE)
+    _export_both_ways(monkeypatch, positives, repo_scratch)

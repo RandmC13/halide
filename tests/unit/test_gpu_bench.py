@@ -5,6 +5,7 @@ CuPy where the GPU would be) so a mistake in them shows up before the user spend
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import types
@@ -28,10 +29,38 @@ def bench():
     return module
 
 
-def test_gpu_rows_skip_eight_workers_by_default_but_the_cpu_keeps_them(bench):
-    assert bench._worker_counts("gpu", None) == [1, 2, 4]
-    assert bench._worker_counts("cpu", None) == [1, 2, 4, 8]
-    assert bench._worker_counts("gpu", [8]) == [8]  # an explicit list is used as given
+def test_per_worker_gpu_rows_skip_eight_workers_but_the_service_and_the_cpu_keep_them(bench):
+    assert bench._worker_counts("per-worker", None) == [4]
+    assert bench._worker_counts("service", None) == [4, 8]
+    assert bench._worker_counts("-", None) == [1, 2, 4, 8]  # the CPU
+    assert bench._worker_counts("service", [8]) == [8]  # an explicit list is used as given
+
+
+def test_the_gpu_is_timed_in_both_modes_and_per_worker_mode_is_halides_own_switch(bench):
+    assert [mode for mode, _ in bench._MODES["gpu"]] == ["service", "per-worker"]
+    env = dict(bench._MODES["gpu"])
+    assert env["per-worker"] == {"HALIDE_GPU_SERVICE": "0"}
+    assert env["service"] == {"HALIDE_GPU_SERVICE": "1"}  # explicit, so a stray =0 in the shell can't leak in
+    from halide.batch.orchestrator import SERVICE_ENV
+
+    assert SERVICE_ENV == "HALIDE_GPU_SERVICE"
+
+
+def test_host_rss_poller_reports_the_gpu_service_on_its_own(bench):
+    """A real service process (the "cpu" kind: the same spawned process, numpy instead of CUDA) is
+    found among the parent's children, and its memory is reported separately from the workers'."""
+    from halide.gpu_service import running_service
+
+    import psutil
+
+    with running_service("cpu") as address:
+        assert bench._is_gpu_service(psutil.Process(address.pid).cmdline())
+        poller = bench._HostRssPoller(os.getpid())
+        poller.sample()
+    assert poller.service_pids == {address.pid}
+    assert poller.service_rss > 0
+    assert poller.peak_total > poller.service_rss
+    assert not bench._is_gpu_service([sys.executable, "-c", "from multiprocessing.forkserver import main"])
 
 
 def test_host_rss_poller_sees_a_process_and_its_children(bench):
@@ -54,6 +83,15 @@ def test_run_reports_host_ram_and_output(bench):
     assert result["fallbacks"] == 1
     assert "host_peak_total_mib" in result and "host_peak_process_mib" in result
     assert result["vram_peaks_mib"] == []
+    assert result["service_seen"] is False and result["service_rss_mib"] is None
+    assert result["service_not_used"] is None
+
+
+def test_run_passes_the_mode_environment_and_spots_a_batch_that_didnt_use_the_service(bench):
+    script = "import os; print('⚠ Warning: GPU service not used: turned off by HALIDE_GPU_SERVICE=' + os.environ['HALIDE_GPU_SERVICE'])"
+    result = bench._run([sys.executable, "-c", script], "cpu", {"HALIDE_GPU_SERVICE": "0"})
+    assert result["ok"]
+    assert result["service_not_used"] == "⚠ Warning: GPU service not used: turned off by HALIDE_GPU_SERVICE=0"
 
 
 def test_auto_workers_asks_a_fresh_process(bench, tmp_path):
@@ -104,3 +142,28 @@ def test_memory_on_device_measures_the_given_calibration_and_auto(bench, tmp_pat
     assert "given calibration (its peak): 100 MiB" in text
     assert "--auto-density (its peak): 150 MiB" in text
     assert not (tmp_path / "m.tif").exists()
+
+
+def test_the_bench_runs_end_to_end_on_the_cpu_batch_rows_only(tmp_path):
+    """`--devices cpu --only batch` on a tiny roll through the real `halide batch`: a table row per
+    worker count, and nothing left in the scratch folder."""
+    roll = tmp_path / "roll"
+    roll.mkdir()
+    from tests.unit.test_icc import LINEAR_TAGS, build_icc
+
+    for i in range(2):
+        image = np.random.default_rng(i).uniform(0.01, 0.3, size=(24, 36, 3)).astype(np.float32)
+        write_tiff(roll / f"f{i}.tif", image, icc_profile=build_icc(LINEAR_TAGS))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    proc = subprocess.run(
+        [sys.executable, str(_BENCH), "--roll", str(roll), "--devices", "cpu", "--only", "batch", "--workers", "1",
+         "--scratch", str(scratch), *_MANUAL],
+        capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr
+    rows = [line for line in proc.stdout.splitlines() if line.startswith("| batch")]
+    assert [row.split("|")[4].strip() for row in rows] == ["1", "auto"]
+    assert all("| yes |" in row for row in rows)
+    assert not any(line.startswith("| invert") for line in proc.stdout.splitlines())  # --only batch
+    assert list(scratch.iterdir()) == []
