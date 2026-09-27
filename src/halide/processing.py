@@ -324,14 +324,18 @@ def _run_on_device(input_path, host: np.ndarray, device: ComputeDevice | None, w
         return None, host
 
 
-def _gpu_fallback_message(input_path, exc: Exception) -> str:
+def _gpu_fallback_message(input_path, exc: Exception, action: str = "developed this frame") -> str:
+    """`action` names what actually fell back to the CPU — "developed this frame" for
+    process_scan/print_scan's develop path (the default, unchanged wording), "exported this file"
+    for export_delivery_image's sRGB conversion (see _export_srgb_on_device): export doesn't
+    develop anything, so reusing the develop wording there would misdescribe what happened."""
     text = str(exc)
     # cupy.cuda.memory.OutOfMemoryError is a MemoryError; cuBLAS and the runtime report their own
     # allocation failures as status codes instead.
     if isinstance(exc, MemoryError) or "cudaErrorMemoryAllocation" in text or "ALLOC_FAILED" in text:
-        return f"{input_path}: out of GPU memory — developed this frame on the CPU instead"
+        return f"{input_path}: out of GPU memory — {action} on the CPU instead"
     detail = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
-    return f"{input_path}: the GPU failed ({detail}) — developed this frame on the CPU instead"
+    return f"{input_path}: the GPU failed ({detail}) — {action} on the CPU instead"
 
 
 def _warn(on_warning: Callable[[str], None] | None, message: str) -> None:
@@ -496,7 +500,7 @@ def _export_srgb_on_device(input_path, acescg_image: np.ndarray, device: Compute
     except Exception as exc:  # noqa: BLE001 — any GPU problem: redo on the CPU, never fail the export
         del frame
         _device.release_memory()
-        _warn(on_warning, _gpu_fallback_message(input_path, exc))
+        _warn(on_warning, _gpu_fallback_message(input_path, exc, action="exported this file"))
         return None
 
 

@@ -253,6 +253,7 @@ def test_export_out_of_memory_on_gpu_falls_back_to_cpu(tmp_path, monkeypatch):
     )
     assert np.array_equal(_png_pixels(tmp_path / "gpu.png"), _png_pixels(tmp_path / "cpu.png"))
     assert len(warnings) == 1 and "out of GPU memory" in warnings[0]
+    assert "exported this file" in warnings[0] and "developed" not in warnings[0]
 
 
 @pytest.mark.skipif(not REAL_SCANS, reason="no real scans (IMG_*.tif) in the repo root")
