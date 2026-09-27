@@ -14,7 +14,8 @@ How a request goes:
   - an error inside a request (out of GPU memory, a driver error) comes back as a reply carrying a
     processing.DeviceFailure; the client raises processing.DeviceJobFailed, and the worker redoes the
     frame on the CPU exactly as today (processing.fall_back_to_cpu), including re-reading the scan
-    when the failure came during the download;
+    when the failure came during the download (an export: processing.export_fallback, into a fresh
+    output buffer);
   - a dead, unreachable or stuck service raises ServiceUnavailable instead — promptly for a dead one
     (the connection breaks), after REQUEST_TIMEOUT for a stuck one — and the worker develops on the
     CPU from then on.
@@ -36,6 +37,7 @@ import os
 import queue
 import signal
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -50,6 +52,9 @@ REQUEST_TIMEOUT = 300.0
 # context — a few seconds cold) before running_service gives up on it.
 _STARTUP_TIMEOUT = 120.0
 
+# How long stopping the service waits for its own wake-up connection to the accept loop.
+_WAKE_TIMEOUT = 2.0
+
 # How long the service gets to exit on its own when asked to stop, before it's terminated. It
 # stops without finishing requests in flight, so this only has to cover interpreter shutdown.
 _STOP_GRACE = 3.0
@@ -59,9 +64,10 @@ class ServiceUnavailable(RuntimeError):
     """The service is dead, unreachable, stuck, or never started: the caller develops on the CPU,
     and a ServiceClient that raised this stays dead (it never reconnects).
 
-    `host_touched`: whether the service may have written into the request's frame — True once the
-    request was sent (it may have died, or still be running, mid-download), False when it never
-    got that far. See `failure`."""
+    `host_touched`: whether the service may have written, or may still write, into the request's
+    shared buffers (the frame for develop/print, `out` for export) — True once the request was sent
+    (it may have died mid-download, or be stuck and write later), False when it never got that far.
+    See `failure`; the fallback helpers never reuse such a buffer."""
 
     def __init__(self, message: str, host_touched: bool = False):
         super().__init__(message)
@@ -125,15 +131,17 @@ class ServiceClient:
         self._lock = threading.Lock()
 
     def develop(self, frame, request) -> DevelopReply:
-        resolved, profile = self._request(("develop", frame.descriptor(), request), writes_frame=True)
+        resolved, profile = self._request(("develop", frame.descriptor(), request))
         return DevelopReply(resolved=resolved, profile=profile)
 
     def print_(self, frame, request) -> PrintReply:
-        return PrintReply(resolved=self._request(("print", frame.descriptor(), request), writes_frame=True))
+        return PrintReply(resolved=self._request(("print", frame.descriptor(), request)))
 
     def export(self, frame, out, request) -> None:
-        # `frame` is only ever read; only `out` is written, and a CPU fallback recomputes all of it.
-        self._request(("export", frame.descriptor(), out.descriptor(), request), writes_frame=False)
+        """`frame` is only ever read; the service writes `out`. After a failure `out` can't be
+        trusted — partly written, and a service that stopped answering may still be writing into
+        it — so the CPU fallback goes into a buffer the worker owns (processing.export_fallback)."""
+        self._request(("export", frame.descriptor(), out.descriptor(), request))
 
     def close(self) -> None:
         with self._lock:
@@ -145,7 +153,7 @@ class ServiceClient:
     def __exit__(self, *exc_info) -> None:
         self.close()
 
-    def _request(self, message, writes_frame: bool):
+    def _request(self, message):
         with self._lock:
             if self._dead is not None:
                 raise ServiceUnavailable(self._dead)
@@ -157,9 +165,10 @@ class ServiceClient:
                     raise TimeoutError(f"no reply within {self._timeout:g} s")
                 status, payload = conn.recv()
             except (OSError, EOFError, TimeoutError) as exc:
-                # It may have died (or be stuck) mid-download, so the frame can't be trusted.
+                # It may have died mid-download, or be stuck and still write later: none of this
+                # request's shared buffers can be trusted any more.
                 raise self._give_up(f"the GPU service stopped responding ({_describe(exc)})",
-                                    host_touched=writes_frame) from exc
+                                    host_touched=True) from exc
         if status == "ok":
             return payload
         from halide.processing import DeviceJobFailed
@@ -170,8 +179,8 @@ class ServiceClient:
         if self._conn is None:
             address = self._address
             try:
-                self._conn = connection.Client(address.address, family=address.family, authkey=address.authkey)
-            except (OSError, EOFError, connection.AuthenticationError) as exc:
+                self._conn = _connect(address, self._timeout)
+            except (OSError, EOFError, TimeoutError, connection.AuthenticationError) as exc:
                 raise self._give_up(f"the GPU service can't be reached ({_describe(exc)})",
                                     host_touched=False) from exc
         return self._conn
@@ -188,6 +197,43 @@ class ServiceClient:
             except OSError:
                 pass
             self._conn = None
+
+
+class _Deadline:
+    """A connection whose recv_bytes gives up (TimeoutError) once `deadline` has passed — so the
+    stdlib's authkey handshake, which only ever calls recv_bytes/send_bytes on the connection it's
+    given, can't block forever on a service that accepted the connection but never answers (a
+    frozen process: the kernel completes a Unix socket's connect without it)."""
+
+    def __init__(self, conn, deadline: float):
+        self._conn = conn
+        self._deadline = deadline
+
+    def recv_bytes(self, maxlength=None):
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0 or not self._conn.poll(remaining):
+            raise TimeoutError("no answer to the connection handshake")
+        return self._conn.recv_bytes(maxlength)
+
+    def send_bytes(self, buf):
+        # A handshake message is ~100 bytes: it always fits the socket/pipe buffer, never blocks.
+        self._conn.send_bytes(buf)
+
+
+def _connect(address: ServiceAddress, timeout: float):
+    """connection.Client(address, authkey=...), with the handshake under one `timeout`. The
+    connect itself is bounded already: a Unix socket's connect doesn't wait for the service
+    process, and Windows' PipeClient retries for at most ~20 s. The handshake is the stdlib's own
+    (answer_challenge then deliver_challenge, as Client does), run against a _Deadline."""
+    conn = connection.Client(address.address, family=address.family)  # no authkey: no handshake yet
+    try:
+        bounded = _Deadline(conn, time.monotonic() + timeout)
+        connection.answer_challenge(bounded, address.authkey)
+        connection.deliver_challenge(bounded, address.authkey)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
 
 
 def _describe(exc: BaseException) -> str:
@@ -225,9 +271,8 @@ class _Server:
         # Wake the accept loop with one last connection of our own: closing a listener doesn't
         # reliably interrupt an accept() already blocked on it (not on Linux, not on Windows pipes).
         try:
-            connection.Client(self._address.address, family=self._address.family,
-                              authkey=self._address.authkey).close()
-        except (OSError, EOFError, connection.AuthenticationError):
+            _connect(self._address, _WAKE_TIMEOUT).close()
+        except (OSError, EOFError, TimeoutError, connection.AuthenticationError):
             pass
         self._accepting.join(5)
         self._listener.close()
@@ -265,7 +310,19 @@ class _Server:
     def _compute_loop(self) -> None:
         while (job := self._jobs.get()) is not None:
             message, slot, done = job
-            slot.append(self._handle(message))
+            try:
+                reply = self._handle(message)
+            except BaseException as exc:  # noqa: BLE001
+                # _handle already turns every Exception into a reply; this is the rest (a stray
+                # SystemExit/KeyboardInterrupt from request code — SIGINT itself is ignored in the
+                # service). Answered like any failure, and the loop carries on: dying here would
+                # strand every connection thread waiting on its reply. Not re-raised — genuine
+                # interpreter shutdown doesn't come through here (daemon threads are just stopped).
+                # host_touched: where it struck isn't known, so the frame isn't trusted.
+                from halide.processing import DeviceFailure
+
+                reply = ("failed", DeviceFailure.from_exception(exc, host_touched=True))
+            slot.append(reply)
             done.set()
 
     def _handle(self, message):
@@ -300,7 +357,7 @@ class _Server:
         # left it half-developed.
         try:
             return job(host, request)
-        except Exception as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001 — see _compute_loop
             raise processing.DeviceJobFailed(processing.DeviceFailure.from_exception(exc, host_touched=True)) from exc
 
     def _run_export(self, host, out, request) -> None:

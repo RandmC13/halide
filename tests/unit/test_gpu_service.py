@@ -18,9 +18,11 @@ import signal
 import sys
 import threading
 import time
+from functools import partial
 from pathlib import Path
 
 import numpy as np
+import psutil
 import pytest
 
 import halide.banding
@@ -42,6 +44,7 @@ from halide.processing import (
     PrintRequest,
     _read_scan,
     develop_request,
+    export_fallback,
     fall_back_to_cpu,
     print_request,
 )
@@ -70,13 +73,30 @@ class OutOfMemoryError(MemoryError):
 # --- helpers run inside a spawned service child (module-level so spawn can find them) -----------
 
 
-def _slow_develop_in_child() -> None:
-    """Initializer: every develop request in the service sleeps for a minute first — a live but
-    stuck service, or simply a request still in flight."""
+def _slow_develop_in_child(arrived: str) -> None:
+    """Initializer (bound with functools.partial): every develop request in the service first
+    creates the file `arrived` — so a test knows its request really is in flight — then sleeps for
+    a minute: a live but stuck service."""
     def slow(*args, **kwargs):
+        Path(arrived).touch()
         time.sleep(60)
 
     halide.processing.develop_request = slow
+
+
+def _late_export_in_child(arrived: str) -> None:
+    """Initializer: every export request signals `arrived`, stalls past the client's timeout, then
+    writes its output buffer anyway — a stuck service that comes back to life."""
+    def late(frame, out, request, band_bytes=None):
+        Path(arrived).touch()
+        time.sleep(1.5)
+        out[...] = 77
+
+    halide.processing.export_request = late
+
+
+class _Abort(BaseException):
+    """Not an Exception: what a stray SystemExit/KeyboardInterrupt from request code looks like."""
 
 
 def _fail_at_startup() -> None:
@@ -192,17 +212,20 @@ def _service_alive(pid):
     """Whether `pid` is still running. A killed child stays a zombie until its parent reaps it (which
     running_service's join does), so a zombie counts as gone."""
     try:
-        with open(f"/proc/{pid}/stat") as stat:
-            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    except OSError:
-        pass
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+
+
+def _wait_for(path, seconds=30):
+    deadline = time.monotonic() + seconds
+    while not path.exists():
+        assert time.monotonic() < deadline, f"{path.name} never appeared"
+        time.sleep(0.02)
+
+
+posix_signals = pytest.mark.skipif(not hasattr(signal, "SIGKILL") or not hasattr(signal, "SIGSTOP"),
+                                   reason="needs POSIX SIGKILL/SIGSTOP")
 
 
 # --- a "cpu"-kind service in a real process: the plumbing ---------------------------------------
@@ -366,6 +389,7 @@ def test_device_failure_matches_todays_fallback_wording(tmp_path):
 # --- a dead, stuck, or stopping service never hangs a worker ------------------------------------
 
 
+@posix_signals
 def test_killed_service_makes_the_next_request_raise_promptly(tmp_path):
     scan = _write_scan(tmp_path / "neg.tif")
     with running_service("cpu") as address:
@@ -391,7 +415,8 @@ def test_killed_service_makes_the_next_request_raise_promptly(tmp_path):
 
 def test_stuck_service_times_out(tmp_path):
     scan = _write_scan(tmp_path / "neg.tif")
-    with running_service("cpu", initializer=_slow_develop_in_child) as address:
+    arrived = tmp_path / "arrived"
+    with running_service("cpu", initializer=partial(_slow_develop_in_child, str(arrived))) as address:
         with ServiceClient(address, timeout=0.5) as client:
             start = time.monotonic()
             with pytest.raises(ServiceUnavailable) as stuck:
@@ -416,10 +441,12 @@ def test_leaving_running_service_stops_it_with_a_request_in_flight(tmp_path):
             except ServiceUnavailable:
                 outcome.append("unavailable")
 
-    with running_service("cpu", initializer=_slow_develop_in_child) as address:
+    arrived = tmp_path / "arrived"
+    with running_service("cpu", initializer=partial(_slow_develop_in_child, str(arrived))) as address:
         thread = threading.Thread(target=worker, args=(address,))
         thread.start()
-        time.sleep(1.0)  # the request is now sleeping inside the service
+        _wait_for(arrived)  # the request is now sleeping inside the service
+        assert outcome == []
         start = time.monotonic()
     assert time.monotonic() - start < 10
     assert not _service_alive(address.pid)
@@ -427,6 +454,79 @@ def test_leaving_running_service_stops_it_with_a_request_in_flight(tmp_path):
     assert not thread.is_alive() and outcome == ["unavailable"]
     if address.family == "AF_UNIX":
         assert not os.path.exists(address.address)  # its socket file is gone too
+
+
+@posix_signals
+def test_first_connect_to_a_frozen_service_is_bounded(tmp_path):
+    """A stopped (SIGSTOP) process still gets its Unix socket connections completed by the kernel,
+    so only the authkey handshake can notice it isn't answering — it must give up too."""
+    scan = _write_scan(tmp_path / "neg.tif")
+    with running_service("cpu") as address:
+        os.kill(address.pid, signal.SIGSTOP)
+        try:
+            with ServiceClient(address, timeout=1.0) as client:
+                start = time.monotonic()
+                with pytest.raises(ServiceUnavailable) as frozen:
+                    _develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
+                assert time.monotonic() - start < 5
+                assert not frozen.value.failure.host_touched  # the request was never sent
+        finally:
+            os.kill(address.pid, signal.SIGCONT)
+        # Thawed, it serves new clients again.
+        with ServiceClient(address) as client:
+            _check_develop(*_develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0))
+
+
+def test_a_stuck_export_never_hands_back_its_output_buffer(tmp_path):
+    """The service can write `out` after the client has given up on it; the fallback must go
+    into a buffer the worker owns."""
+    arrived = tmp_path / "arrived"
+    image = _positive()
+    expected = srgb_8bit_from_acescg(image)
+    warnings = []
+    with running_service("cpu", initializer=partial(_late_export_in_child, str(arrived))) as address:
+        with ServiceClient(address, timeout=0.3) as client, \
+                new_frame(image.shape, image.dtype) as frame, new_frame(image.shape, np.uint8) as out:
+            frame.array[...] = image
+            with pytest.raises(ServiceUnavailable) as stuck:
+                client.export(frame, out, ExportRequest())
+            assert stuck.value.failure.host_touched
+            result = export_fallback("pos.tif", frame.array, stuck.value.failure, warnings.append)
+            assert not np.shares_memory(result, out.array)
+            _wait_for(arrived)
+            deadline = time.monotonic() + 10
+            while not (out.array == 77).all():  # the late write really happens...
+                assert time.monotonic() < deadline
+                time.sleep(0.05)
+            _assert_same_bits(result, expected)  # ...and doesn't reach what the worker delivers
+    assert len(warnings) == 1 and "exported this file on the CPU instead" in warnings[0]
+
+
+def test_export_fallback_converts_into_a_fresh_buffer():
+    image = _positive()
+    warnings = []
+    failure = DeviceFailure(type_name="OutOfMemoryError", message="", out_of_memory=True)
+    result = export_fallback("pos.tif", image, failure, warnings.append)
+    _assert_same_bits(result, srgb_8bit_from_acescg(image))
+    assert warnings == ["pos.tif: out of GPU memory — exported this file on the CPU instead"]
+
+
+def test_a_base_exception_in_a_request_is_a_reply_and_the_service_keeps_serving(tmp_path, fake_gpu, monkeypatch):
+    real = halide.processing.negative_to_positive
+
+    def aborting(band, *args, **kwargs):
+        if isinstance(band, FakeDeviceArray):  # only in the service; the CPU reference runs as usual
+            raise _Abort("stray interrupt")
+        return real(band, *args, **kwargs)
+
+    monkeypatch.setattr(halide.processing, "negative_to_positive", aborting)
+    scan = _write_scan(tmp_path / "neg.tif")
+    with gpu_service._serving(fake_gpu) as address, ServiceClient(address, timeout=10) as client:
+        with pytest.raises(DeviceJobFailed) as failed:
+            _develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
+        assert failed.value.failure.type_name == "_Abort" and failed.value.failure.host_touched
+        monkeypatch.setattr(halide.processing, "negative_to_positive", real)
+        _check_develop(*_develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0))
 
 
 def test_a_service_that_cannot_start_raises_in_the_parent():

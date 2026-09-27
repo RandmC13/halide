@@ -37,7 +37,7 @@ from halide.io.contact_sheet import (
     thumbnail_from_display,
     thumbnail_from_linear,
 )
-from halide.io.raster import to_srgb_8bit, write_delivery_image, write_srgb_8bit_image
+from halide.io.raster import srgb_8bit_from_acescg, to_srgb_8bit, write_delivery_image, write_srgb_8bit_image
 from halide.io.scan_metadata import DarktableState, ScanSettings, read_scan_metadata
 from halide.io.tiff import copy_exif_metadata, read_tiff, read_tiff_description, set_description, write_tiff
 
@@ -356,8 +356,11 @@ class DeviceFailure:
 
     `host_touched`: the failure happened after the device began writing back into the host buffer
     (the download — a GPU runs asynchronously, so an earlier kernel's error can surface there), or
-    it can't be ruled out (a service that died or stopped answering mid-request). The buffer may
-    then be half-written, and the scan must be read again from disk before the CPU starts over."""
+    it can't be ruled out (a service that died or stopped answering mid-request — and one that is
+    merely stuck may still write into it later). The buffer may then be half-written, and the scan
+    must be read again from disk, into a fresh buffer, before the CPU starts over
+    (fall_back_to_cpu). An export never writes its input; its output buffer is never trusted after
+    any failure, whatever this says (export_fallback)."""
 
     type_name: str
     message: str
@@ -441,6 +444,17 @@ def fall_back_to_cpu(input_path, host: np.ndarray, failure: DeviceFailure,
     if failure.host_touched:
         host, _ = _read_scan(input_path)
     return host
+
+
+def export_fallback(input_path, acescg_image: np.ndarray, failure: DeviceFailure,
+                    on_warning: Callable[[str], None] | None) -> np.ndarray:
+    """After a device export failed (in this process or in the GPU service): warn, and convert
+    `acescg_image` on the CPU into a fresh uint8 buffer the caller owns. Never into the buffer the
+    device was writing: it is partly written, and a GPU service that stopped answering may still be
+    writing bands into it. `acescg_image` itself is only ever read by the device, so it is always
+    safe to convert from, and never needs a re-read."""
+    _warn(on_warning, failure.warning(input_path, "exported this file"))
+    return srgb_8bit_from_acescg(acescg_image)
 
 
 def _run_on_device(input_path, host: np.ndarray, device: ComputeDevice | None, job, request, on_warning):
@@ -599,16 +613,15 @@ def _export_srgb_on_device(input_path, acescg_image: np.ndarray, device: Compute
     uint8 buffer this function owns alone — never into `acescg_image` itself (see
     run_device_export), so a failure never needs a re-read.
 
-    Returns the finished (H, W, 3) uint8 array, or None when there's no GPU to use or it failed
-    (then `on_warning` is told why, as with `_run_on_device`)."""
+    Returns the finished (H, W, 3) uint8 array — converted on the CPU after all if the GPU failed
+    (see export_fallback; `on_warning` is told why) — or None when there's no GPU to use."""
     if device is None or device.kind != "gpu":
         return None
     srgb_8bit = np.empty(acescg_image.shape, dtype=np.uint8)
     try:
         run_device_export(acescg_image, srgb_8bit, ExportRequest())
     except DeviceJobFailed as failed:
-        fall_back_to_cpu(input_path, acescg_image, failed.failure, on_warning, action="exported this file")
-        return None
+        return export_fallback(input_path, acescg_image, failed.failure, on_warning)
     return srgb_8bit
 
 
