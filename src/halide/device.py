@@ -12,7 +12,10 @@ imports cupy lazily, only when asked for anything other than `"cpu"`.
 
 from __future__ import annotations
 
+import ctypes
+import importlib.util
 import os
+import sys
 from dataclasses import dataclass
 
 DEVICE_ENV = "HALIDE_DEVICE"
@@ -116,6 +119,72 @@ def to_host(a, out=None):
     """Download a CuPy array back to numpy, optionally into a caller-owned buffer (`out`) so a
     banded pipeline (see `banding.py`) can reuse one host array instead of allocating per band."""
     return a.get(out=out)
+
+
+@dataclass(frozen=True)
+class NvidiaDriver:
+    """What halide can learn about an NVIDIA driver *without* CuPy installed at all — just enough
+    to tell a user with a card that GPU support exists, and which CuPy build fits it. `cuda_version`
+    is exactly `cuDriverGetVersion`'s own integer form (e.g. `13040` = CUDA 13.4: `major*1000 +
+    minor*10`)."""
+
+    cuda_version: int
+    device_name: str | None = None  # the first device's name, or None if that lookup itself failed
+
+
+def detect_nvidia_driver() -> NvidiaDriver | None:
+    """Look for an NVIDIA driver directly via `ctypes` — no CuPy, no subprocess, and no parsing
+    `nvidia-smi`'s output (its header format changes between driver versions; the user's own reads
+    "CUDA UMD Version", not "CUDA Version"). This runs in the main process only (see `halide gpu`
+    and the CLI's GPU hint), and only bothers when CuPy itself isn't already importable — most
+    people running this have no NVIDIA card at all, so "not found" must be the fast, silent, normal
+    result, and any surprise here (a stub library, a driver returning nonsense) must come back as
+    that same "not found" rather than a traceback.
+
+    Loads `libcuda.so.1` (Linux) / `nvcuda.dll` (Windows) and calls `cuDriverGetVersion`, then
+    `cuInit`/`cuDeviceGet`/`cuDeviceGetName` for the first device's name — each guarded by its own
+    CUresult check (0 = success), so a driver that answers the version call but not the name call
+    still gets its version reported."""
+    try:
+        if sys.platform == "win32":
+            lib = ctypes.WinDLL("nvcuda.dll")
+        elif sys.platform.startswith("linux"):
+            lib = ctypes.CDLL("libcuda.so.1")
+        else:
+            return None
+
+        version = ctypes.c_int(0)
+        if lib.cuDriverGetVersion(ctypes.byref(version)) != 0:
+            return None
+        cuda_version = version.value
+
+        device_name: str | None = None
+        device = ctypes.c_int(0)
+        if lib.cuInit(0) == 0 and lib.cuDeviceGet(ctypes.byref(device), 0) == 0:
+            name_buf = ctypes.create_string_buffer(256)
+            if lib.cuDeviceGetName(name_buf, 256, device) == 0:
+                device_name = name_buf.value.decode("utf-8", errors="replace")
+        return NvidiaDriver(cuda_version=cuda_version, device_name=device_name)
+    except Exception:  # noqa: BLE001 -- see docstring: this is a "does a card exist" probe, never fatal
+        return None
+
+
+def cupy_package_for(driver: NvidiaDriver) -> str | None:
+    """Which pip extra (`pyproject.toml`'s `cuda12`/`cuda13`) fits this driver's CUDA version, or
+    None if the driver is too old for either CuPy build currently packaged (needs CUDA 12+)."""
+    if driver.cuda_version >= 13000:
+        return "cupy-cuda13x[ctk]"
+    if driver.cuda_version >= 12000:
+        return "cupy-cuda12x[ctk]"
+    return None
+
+
+def gpu_support_installed() -> bool:
+    """Whether CuPy is importable, without actually importing it: `import cupy` alone costs ~0.2s
+    even before touching a device (see the module docstring's speed priority), so this is the check
+    used on every command's run-sheet Compute row and the once-per-machine invert hint, not just
+    `halide gpu`."""
+    return importlib.util.find_spec("cupy") is not None
 
 
 def release_memory() -> None:
