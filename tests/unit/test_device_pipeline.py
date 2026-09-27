@@ -21,7 +21,7 @@ from halide.core.types import DensityProfile, ToneCurveParams
 from halide.device import ComputeDevice
 from halide.io.icc import output_profile_bytes
 from halide.io.tiff import read_tiff, read_tiff_description, write_tiff
-from halide.processing import Stage, print_scan, process_scan
+from halide.processing import Stage, export_delivery_image, print_scan, process_scan
 from tests.unit import _fake_device
 from tests.unit._fake_device import FakeDeviceArray, fake_xp
 from tests.unit.test_icc import LINEAR_TAGS, build_icc
@@ -295,3 +295,92 @@ def test_scan_already_in_halides_own_profile_is_not_converted_on_device(tmp_path
     process_scan(scan, tmp_path / "cpu.tif", Stage.FULL, PROFILE, ToneCurveParams())
     process_scan(scan, tmp_path / "gpu.tif", Stage.FULL, PROFILE, ToneCurveParams(), device=fake_gpu)
     _assert_same_bits(_pixels(tmp_path / "gpu.tif"), _pixels(tmp_path / "cpu.tif"))
+
+
+# ---------------------------------------------------------------------------
+# Task 6: export_delivery_image's device path (io/raster.py's namespace-generic to_srgb_8bit,
+# uploaded once and downloaded band by band into a host uint8 buffer this function owns alone —
+# see processing.py::_export_srgb_on_device).
+# ---------------------------------------------------------------------------
+
+
+def _write_positive(path, shape=(37, 53, 3), seed=5):
+    rng = np.random.default_rng(seed)
+    image = rng.uniform(0.0, 1.5, size=shape).astype(np.float32)
+    image.flat[:3] = -0.02  # a few out-of-gamut negatives, exercising to_srgb_8bit's clip
+    write_tiff(path, image, icc_profile=output_profile_bytes())
+    return path
+
+
+def _png_pixels(path):
+    from PIL import Image
+
+    with Image.open(path) as img:
+        return np.asarray(img)
+
+
+def test_export_delivery_image_on_device_matches_cpu(tmp_path, fake_gpu, uploads):
+    positive = _write_positive(tmp_path / "positive.tif")
+    warning_cpu = export_delivery_image(positive, tmp_path / "cpu.png")
+    warnings = []
+    warning_gpu = export_delivery_image(
+        positive, tmp_path / "gpu.png", device=fake_gpu, on_warning=warnings.append
+    )
+    assert warnings == [] and warning_cpu is None and warning_gpu is None
+    assert len(uploads) == 1  # really went through the device, once
+    assert np.array_equal(_png_pixels(tmp_path / "gpu.png"), _png_pixels(tmp_path / "cpu.png"))
+
+
+def test_export_delivery_image_on_device_one_row_bands(tmp_path, fake_gpu, monkeypatch):
+    positive = _write_positive(tmp_path / "positive.tif")
+    export_delivery_image(positive, tmp_path / "cpu.png")
+    monkeypatch.setattr(halide.banding, "DEVICE_BAND_BYTES", 1)
+    export_delivery_image(positive, tmp_path / "gpu.png", device=fake_gpu)
+    assert np.array_equal(_png_pixels(tmp_path / "gpu.png"), _png_pixels(tmp_path / "cpu.png"))
+
+
+def test_export_delivery_image_cpu_device_takes_the_cpu_path(tmp_path, fake_gpu, uploads):
+    positive = _write_positive(tmp_path / "positive.tif")
+    export_delivery_image(positive, tmp_path / "out.png", device=ComputeDevice(kind="cpu"))
+    assert uploads == []
+
+
+def test_export_delivery_image_device_error_redoes_on_cpu(tmp_path, fake_gpu, monkeypatch):
+    positive = _write_positive(tmp_path / "positive.tif")
+    export_delivery_image(positive, tmp_path / "cpu.png")
+    _fail_on_device_call(monkeypatch, "to_srgb_8bit", RuntimeError("cudaErrorLaunchFailure"), on_call=1)
+    warnings = []
+    export_delivery_image(positive, tmp_path / "gpu.png", device=fake_gpu, on_warning=warnings.append)
+    assert len(warnings) == 1 and "cudaErrorLaunchFailure" in warnings[0] and "CPU" in warnings[0]
+    assert np.array_equal(_png_pixels(tmp_path / "gpu.png"), _png_pixels(tmp_path / "cpu.png"))
+
+
+def test_export_delivery_image_out_of_memory_on_device_falls_back(tmp_path, fake_gpu, monkeypatch):
+    positive = _write_positive(tmp_path / "positive.tif")
+    export_delivery_image(positive, tmp_path / "cpu.png")
+    # Several bands, so the failure lands after the device has already converted part of the frame.
+    monkeypatch.setattr(halide.banding, "DEVICE_BAND_BYTES", 53 * 3 * 4 * 5)
+    calls = _fail_on_device_call(monkeypatch, "to_srgb_8bit", OutOfMemoryError("out of memory allocating"), on_call=2)
+    warnings = []
+    export_delivery_image(positive, tmp_path / "gpu.png", device=fake_gpu, on_warning=warnings.append)
+    assert calls["device"] == 2
+    assert len(warnings) == 1 and "out of GPU memory" in warnings[0]
+    assert np.array_equal(_png_pixels(tmp_path / "gpu.png"), _png_pixels(tmp_path / "cpu.png"))
+
+
+def test_export_delivery_image_device_fallback_without_on_warning_still_succeeds(tmp_path, fake_gpu, monkeypatch):
+    positive = _write_positive(tmp_path / "positive.tif")
+    export_delivery_image(positive, tmp_path / "cpu.png")
+    _fail_on_device_call(monkeypatch, "to_srgb_8bit", OutOfMemoryError(), on_call=1)
+    export_delivery_image(positive, tmp_path / "gpu.png", device=fake_gpu)
+    assert np.array_equal(_png_pixels(tmp_path / "gpu.png"), _png_pixels(tmp_path / "cpu.png"))
+
+
+def test_export_delivery_image_does_not_mutate_the_source_image_on_failure(tmp_path, fake_gpu, monkeypatch):
+    """Unlike process_scan's develop path, export never writes into its own source array — a GPU
+    failure needs no re-read from disk to recover a clean buffer to redo on the CPU."""
+    positive = _write_positive(tmp_path / "positive.tif")
+    before = read_tiff(positive).image.copy()
+    _fail_on_device_call(monkeypatch, "to_srgb_8bit", RuntimeError("boom"), on_call=1)
+    export_delivery_image(positive, tmp_path / "gpu.png", device=fake_gpu)
+    assert np.array_equal(read_tiff(positive).image, before)

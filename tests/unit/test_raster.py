@@ -4,7 +4,14 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from halide.io.raster import srgb_matrix, to_srgb_8bit, write_delivery_image
+from halide.core._xp import register_namespace
+from halide.io.raster import encode_srgb, srgb_matrix, to_srgb_8bit, write_delivery_image
+from tests.unit._fake_device import FakeDeviceArray, fake_xp, to_device, to_host
+
+
+@pytest.fixture(autouse=True)
+def _fake():
+    register_namespace(FakeDeviceArray, fake_xp)
 
 
 def test_to_srgb_8bit_shape_and_dtype():
@@ -104,3 +111,48 @@ def test_to_srgb_8bit_matches_colour_science_on_random_values():
     expected = _to_srgb_8bit_with_colour(acescg)
     n_diff = int(np.count_nonzero(actual != expected))
     assert n_diff == 0, f"{n_diff} of {actual.size} uint8 values differ from colour-science"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: to_srgb_8bit / encode_srgb on the device (a strict fake here; the real GPU is checked in
+# tests/gpu/test_gpu_parity.py against the D2 tolerance, not exact equality).
+# ---------------------------------------------------------------------------
+
+
+def _random_acescg(shape=(41, 7, 3), seed=11):
+    rng = np.random.default_rng(seed)
+    # Includes negative (out-of-gamut) and >1 (highlight) values, same reasoning as the
+    # colour-science comparison above: encode_srgb's xp.where must pick the right branch for both.
+    return rng.uniform(-0.2, 1.6, size=shape).astype(np.float32)
+
+
+def test_encode_srgb_matches_colour_science_cctf_encoding():
+    import colour
+
+    linear = _random_acescg(shape=(1000,), seed=13)
+    actual = encode_srgb(linear)
+    expected = colour.RGB_COLOURSPACES["sRGB"].cctf_encoding(linear)
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-9)
+
+
+def test_to_srgb_8bit_on_fake_device_matches_cpu_exactly():
+    acescg = _random_acescg()
+    cpu = to_srgb_8bit(acescg)
+    gpu = to_host(to_srgb_8bit(to_device(acescg)))
+    assert gpu.dtype == np.uint8 and gpu.shape == cpu.shape
+    assert np.array_equal(gpu, cpu)
+
+
+def test_to_srgb_8bit_on_fake_device_never_touches_numpy_directly():
+    # The strict fake device (tests/unit/_fake_device.py) raises on any bare numpy leak — a stage
+    # that quietly reached for colour.RGB_COLOURSPACES["sRGB"].cctf_encoding or plain np. functions
+    # on a device array instead of encode_srgb/xp would fail here, not silently work.
+    acescg = to_device(_random_acescg(shape=(3, 3, 3)))
+    result = to_srgb_8bit(acescg)
+    assert isinstance(result, FakeDeviceArray)
+
+
+def test_to_srgb_8bit_on_fake_device_clips_out_of_range_values():
+    acescg = to_device(np.array([[[100.0, 100.0, 100.0], [-1.0, -1.0, -1.0]]], dtype=np.float32))
+    result = to_host(to_srgb_8bit(acescg))
+    assert result.min() >= 0 and result.max() <= 255

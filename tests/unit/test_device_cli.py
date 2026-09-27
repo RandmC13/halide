@@ -1,7 +1,7 @@
 """`--device`/`$HALIDE_DEVICE` wired into the CLI: the shared flag, its resolution into the CLI's
 usual clean error exit, the run-sheet/summary-line Compute row, and end-to-end behaviour on
-`invert`/`print` (the two commands that actually pass the resolved device into processing in this
-task — see docs/plans/gpu-acceleration.md Task 5 and its Ruling R7)."""
+`invert`/`print` (Task 5, Ruling R7) and `export`'s single-file mode (Task 6 — its bulk-directory
+mode still runs the export worker pool CPU-only until Task 7)."""
 
 from __future__ import annotations
 
@@ -208,6 +208,39 @@ def test_print_prints_the_device_on_its_summary_line(negative_tiff, tmp_path, ca
     assert main(["print", str(flat), str(printed), "--device", "cpu"]) == 0
     out = _strip(capsys.readouterr().out)
     assert "CPU" in out
+
+
+# ---------------------------------------------------------------------------
+# end to end: export (single file — Task 6; the bulk-directory mode is Task 7)
+# ---------------------------------------------------------------------------
+
+
+def test_export_device_cpu_writes_a_delivery_image(negative_tiff, tmp_path):
+    positive = tmp_path / "positive.tiff"
+    assert main(["invert", str(negative_tiff), str(positive), *MANUAL]) == 0
+    delivery = tmp_path / "delivery.png"
+    assert main(["export", str(positive), str(delivery), "--device", "cpu"]) == 0
+    assert delivery.exists()
+
+
+def test_export_prints_the_device_on_its_summary_line(negative_tiff, tmp_path, capsys):
+    positive = tmp_path / "positive.tiff"
+    assert main(["invert", str(negative_tiff), str(positive), *MANUAL]) == 0
+    capsys.readouterr()
+    delivery = tmp_path / "delivery.png"
+    assert main(["export", str(positive), str(delivery), "--device", "cpu"]) == 0
+    out = _strip(capsys.readouterr().out)
+    assert "CPU" in out
+
+
+def test_export_device_gpu_without_cupy_errors_naming_install(negative_tiff, tmp_path, monkeypatch):
+    positive = tmp_path / "positive.tiff"
+    assert main(["invert", str(negative_tiff), str(positive), *MANUAL]) == 0
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    delivery = tmp_path / "delivery.png"
+    with pytest.raises(SystemExit, match="halide gpu --install"):
+        main(["export", str(positive), str(delivery), "--device", "gpu"])
+    assert not delivery.exists()
 
 
 # ---------------------------------------------------------------------------
