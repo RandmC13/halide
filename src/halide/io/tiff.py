@@ -51,10 +51,17 @@ def read_tiff(path: str | Path, out: np.ndarray | None = None) -> RawScan:
         icc_profile = icc_tag.value if icc_tag is not None else None
         description = page.description or None
 
+        # Shape/dtype come from series[0], not pages[0]: `tif.asarray()` below decodes the series
+        # (tifffile's own unit for "the array this file represents"), which for some files isn't
+        # simply the first page's own raw shape/dtype (e.g. a file whose series stacks multiple
+        # pages). They agree for every real scan this project reads, but validating/sizing `out`
+        # against the page instead of the series could pass a header check here and then still
+        # mismatch what asarray() actually decodes.
+        series = tif.series[0]
         if out is not None:
-            _validate_out(out, page.shape)
+            _validate_out(out, series.shape)
 
-        if out is not None and page.dtype == np.dtype(np.float32):
+        if out is not None and series.dtype == np.dtype(np.float32):
             tif.asarray(out=out, buffersize=_READ_BUFFER_BYTES)
             raw = None
         else:
@@ -129,13 +136,16 @@ def read_tiff_description(path: str | Path) -> str | None:
 
 
 def read_tiff_shape(path: str | Path) -> tuple[int, ...]:
-    """The first page's pixel shape (e.g. (H, W, C)) only, without decoding any pixel data — for
-    sizing a shared-memory frame (halide.shared_frames.new_frame) before decoding a scan into it
-    with `read_tiff(path, out=...)`. Same header-only approach as
+    """The pixel shape (e.g. (H, W, C)) `read_tiff` will decode, without decoding any pixel data —
+    for sizing a shared-memory frame (halide.shared_frames.new_frame) before decoding a scan into it
+    with `read_tiff(path, out=...)`. Reads `series[0].shape`, matching what `tif.asarray()` (what
+    `read_tiff` actually decodes) reports — not `pages[0].shape`, which isn't guaranteed to agree
+    (see `read_tiff`'s own comment on this). Similar header-only idea to
     halide.batch.orchestrator._decoded_pixel_bytes, which reads page.shape/page.dtype for the same
-    reason (sizing the worker pool without paying for a decode)."""
+    reason (sizing the worker pool without paying for a decode) but only ever needs a byte count, not
+    an exact shape to allocate."""
     with tifffile.TiffFile(path) as tif:
-        return tuple(tif.pages[0].shape)
+        return tuple(tif.series[0].shape)
 
 
 def set_description(path: str | Path, text: str) -> None:
