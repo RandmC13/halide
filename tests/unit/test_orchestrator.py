@@ -605,3 +605,61 @@ def test_print_worker_passes_the_device_and_reports_fallback(tmp_path, worker_gp
     _fail_on_device_call(monkeypatch, "apply_tone", RuntimeError("cudaErrorLaunchFailure"), on_call=1)
     result = _print_worker(BatchJob(input_path=positive, output_path=tmp_path / "print2.tif"), ToneCurveParams(), "gpu", None)
     assert result.error is None and "cudaErrorLaunchFailure" in result.warning
+
+
+# The user's RTX 3070 benchmark (docs/plans/gpu-acceleration.md §7): a GPU worker's host memory is
+# ~1.2 GiB against a CPU worker's ~0.4 GiB (CUDA/CuPy's own host-side libraries), so the RAM cap must
+# count that for GPU pools — or a machine with a big card and little RAM starts too many workers.
+_USER_RAM = int(7.6 * 2**30)
+_USER_VRAM = int(6.58 * 2**30)
+
+
+def test_a_gpu_worker_is_estimated_to_need_more_host_memory_than_a_cpu_worker(tmp_path):
+    jobs = [BatchJob(input_path=tmp_path / "a.tif", output_path=None)]
+    gpu = ComputeDevice(kind="gpu", name="Fake", memory_free=_USER_VRAM)
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME):
+        cpu_estimate = estimate_worker_memory_bytes(jobs)
+        gpu_estimate = estimate_worker_memory_bytes(jobs, device=gpu)
+    assert gpu_estimate == cpu_estimate + orchestrator._GPU_HOST_OVERHEAD_BYTES
+    # Measured: largest GPU worker 1235 MiB on a 181 MiB frame — the estimate must cover it.
+    assert gpu_estimate >= 1235 * _MIB
+
+
+def test_default_worker_count_on_a_gpu_is_also_capped_by_host_memory(tmp_path):
+    jobs = [BatchJob(input_path=tmp_path / f"{i}.tif", output_path=None) for i in range(37)]
+    lots_of_vram = ComputeDevice(kind="gpu", name="Fake", memory_free=48 * 2**30)
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
+        "psutil.virtual_memory", return_value=SimpleNamespace(available=4 * 2**30)
+    ), patch("halide.batch.orchestrator._cpu_cap", return_value=16):
+        per_worker = estimate_worker_memory_bytes(jobs, device=lots_of_vram)
+        assert default_worker_count(jobs, device=lots_of_vram) == (4 * 2**30) // per_worker
+        assert default_worker_count(jobs, device=lots_of_vram) < default_worker_count(jobs)
+
+
+def test_on_the_users_machine_the_gpu_default_is_the_benchmarked_four(tmp_path):
+    # 8 physical cores, 7.6 GiB RAM and 6.58 GiB VRAM free: the benchmark ran 4 GPU workers with no
+    # CPU fallbacks and ~1.2 GiB host memory each; 5 would leave too little RAM.
+    jobs = [BatchJob(input_path=tmp_path / f"{i}.tif", output_path=None) for i in range(37)]
+    gpu = ComputeDevice(kind="gpu", name="NVIDIA GeForce RTX 3070", memory_free=_USER_VRAM)
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
+        "psutil.virtual_memory", return_value=SimpleNamespace(available=_USER_RAM)
+    ), patch("halide.batch.orchestrator._cpu_cap", return_value=8):
+        assert default_worker_count(jobs, device=gpu) == 4
+
+
+def test_measured_device_memory_fits_the_device_estimate(tmp_path):
+    # Benchmark, one 181 MiB frame: CuPy pool peak 878 MiB (--auto-density; 821 with a profile) plus
+    # ~168 MiB CUDA context/library overhead = 1046 MiB. The estimate must cover that.
+    job = BatchJob(input_path=tmp_path / "a.tif", output_path=None)
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME):
+        assert estimate_worker_device_bytes([job]) >= (878 + 168) * _MIB
+
+
+def test_memory_budget_warning_counts_gpu_host_memory(tmp_path):
+    jobs = [BatchJob(input_path=tmp_path / "a.tif", output_path=None)]
+    gpu = ComputeDevice(kind="gpu", name="Fake", memory_free=_USER_VRAM)
+    with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
+        "psutil.virtual_memory", return_value=SimpleNamespace(available=_USER_RAM)
+    ):
+        assert memory_budget_warning(jobs, requested_workers=6) is None  # fine for CPU workers
+        assert memory_budget_warning(jobs, requested_workers=6, device=gpu) is not None

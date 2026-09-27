@@ -6,7 +6,7 @@ automatic choice. It answers three things the plan leaves to measurement:
 
   1. Is the GPU faster for a whole roll, and with how many workers (a GPU worker's time is mostly
      decode + write, so fewer may be enough) — which sets the default device and worker count.
-  2. How much GPU memory one worker really needs, to refit the PROVISIONAL constants in
+  2. How much GPU memory one worker really needs, to fit the constants in
      src/halide/batch/orchestrator.py (`_CUDA_CONTEXT_BYTES`, `_DEVICE_CONTEXT_BYTES`,
      `_DEVICE_FRAME_MULTIPLIER`): one frame is developed in this process on the GPU and CuPy's
      memory pool is read afterwards (it keeps every block it allocated, so what it holds is the
@@ -14,11 +14,13 @@ automatic choice. It answers three things the plan leaves to measurement:
      (`--auto-density`, the least-margin case); `nvidia-smi` adds the CUDA context on top, and is
      also polled during every GPU batch for each worker's peak.
   3. How much host RAM the workers use while they run (all of halide's processes, sampled with
-     psutil) — a GPU worker's host footprint isn't modelled by the worker-count default yet.
+     psutil) — for the GPU host-memory term (`_GPU_HOST_OVERHEAD_BYTES`).
+
+First run on the user's RTX 3070 on 2026-09-27; its results and what they set are in the plan's §7.
+Rerun it on new hardware to refit.
 
 Every batch row also shows how many workers `--workers` auto would pick on that device. The GPU
-rows skip 8 workers by default: the provisional estimate fits about 4 GPU workers on an 8 GiB
-card, so at 8 most frames would likely fall back to the CPU and the row would time that instead. Before any GPU
+rows skip 8 workers by default: about 4 GPU workers fit on an 8 GiB card, so at 8 most frames would likely fall back to the CPU and the row would time that instead. Before any GPU
 timing, one untimed GPU `invert` warms up CuPy (its first-ever run compiles kernels).
 
     .venv/bin/python docs/plans/gpu-acceleration-bench.py --scan IMG_0158.tif --roll Roll16-Testing \\

@@ -372,12 +372,15 @@ def test_print_directory_hands_the_device_to_its_workers(roll_dir, tmp_path, mon
     assert "out of GPU memory" in _strip(capsys.readouterr().out)
 
 
-def test_batch_warns_when_explicit_workers_look_too_many_for_the_gpu(roll_dir, tmp_path, monkeypatch, capsys,
-                                                                   gpu_resolves):
-    # 6 GiB free and ~768 MiB per GPU worker: 8 workers won't all fit. Frames that don't are redone
-    # on the CPU, so --workers 8 would mostly measure CPU fallbacks — say so up front.
+def test_batch_warns_when_explicit_workers_look_too_many_for_the_gpu(roll_dir, tmp_path, monkeypatch, capsys):
+    # 1 GiB free and at least a CUDA context (256 MiB) per GPU worker: 8 workers won't all fit.
+    # Frames that don't are redone on the CPU, so --workers 8 would mostly measure CPU fallbacks —
+    # say so up front.
+    import halide.cli._device_args as device_args
     import halide.cli.commands.batch_cmd as batch_cmd
 
+    small = ComputeDevice(kind="gpu", name="Fake GPU", memory_free=1 * 2**30, memory_total=2 * 2**30)
+    monkeypatch.setattr(device_args, "resolve_device", lambda requested: small)
     monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner([], warning=None))
     assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL, "--workers", "8"]) == 0
     out = _strip(capsys.readouterr().out)
@@ -388,7 +391,8 @@ def test_batch_names_gpu_memory_when_it_set_the_worker_count(roll_dir, tmp_path,
     import halide.cli._device_args as device_args
     import halide.cli.commands.batch_cmd as batch_cmd
 
-    small = ComputeDevice(kind="gpu", name="Fake GPU", memory_free=1 * 2**30, memory_total=2 * 2**30)
+    # Room for one GPU worker's CUDA context and a small frame, not two: the card sets the count.
+    small = ComputeDevice(kind="gpu", name="Fake GPU", memory_free=300 * 2**20, memory_total=2 * 2**30)
     monkeypatch.setattr(device_args, "resolve_device", lambda requested: small)
     monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner([], warning=None))
     assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL]) == 0

@@ -60,28 +60,28 @@ _FALLBACK_PER_WORKER_BYTES = 5 * 1024**3  # used only if a file's header can't b
 _EXPORT_PEAK_RSS_MULTIPLIER = 2
 _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 
-# GPU workers (docs/plans/gpu-acceleration.md §3.5): peak *device* memory per worker, modelled like
-# RAM as `context + K * decoded_pixel_bytes`. PROVISIONAL — not yet measured on a real card; refit
-# from `docs/plans/gpu-acceleration-bench.py`'s memory section on the user's RTX 3070. Evidence so
-# far, and why each is rounded up (a too-high estimate costs a worker; too low costs frames redone
-# on the CPU after running out of VRAM):
-#   - a CUDA context is ~300 MB (an estimate, not measured here) -> 384 MiB;
-#   - the banded device path (banding.DEVICE_BAND_BYTES = 64 MiB) keeps the frame resident and
-#     needs a few bands' temporaries at once — the plan's §3.3 budget is ~6 x 64 MiB -> 384 MiB;
-#   - the frame itself (181 MiB for a real scan) plus the print fit's whole-frame luminance and
-#     percentile scratch (~1/3 frame each, sorted copies included): ~2 frames. K = 4 doubles that.
-#     Upper bound: the probe's *unbanded* whole-frame run held 2.1 GiB of pool on a 181 MiB frame
-#     (~12 frames); banded, this estimate (768 MiB + 4 x 181 MiB = ~1.5 GiB) is ~70% of that.
-#   - per-frame auto calibration (calibration/auto.py, on the device since Task 8) is the peak for
-#     `--auto-density`: the luminance argsort holds its keys (1/3 frame) and int64 order (2/3
-#     frame) plus the sort's own scratch, then the candidate mask/boolean index and percentile
-#     sorts ~1/2 frame each — ~2-3 frames beside the resident one, not banded (whole-frame
-#     statistics). Within K = 4, but the least-margin case; measure it when refitting.
-# On the RTX 3070 (~6.8 GiB free on the desktop) that is 4 workers.
-_CUDA_CONTEXT_BYTES = 384 * 1024 * 1024
-_DEVICE_BAND_SCRATCH_BYTES = 6 * 64 * 1024 * 1024
-_DEVICE_CONTEXT_BYTES = _CUDA_CONTEXT_BYTES + _DEVICE_BAND_SCRATCH_BYTES
-_DEVICE_FRAME_MULTIPLIER = 4
+# GPU workers (docs/plans/gpu-acceleration.md §3.5, §7): peak *device* memory per worker, modelled
+# like RAM as `context + K * decoded_pixel_bytes`. Fitted from the user's RTX 3070 benchmark
+# (docs/plans/gpu-acceleration-bench.py, 2026-09-27), one 181 MiB frame developed on the GPU:
+#   - CuPy's pool peaked at 821 MiB with a given profile and 878 MiB with --auto-density (4.54 and
+#     4.86 x the frame) — the resident frame, the 64 MiB device bands' temporaries (banding.
+#     DEVICE_BAND_BYTES) and the whole-frame statistics together, so they need no terms of their own;
+#   - nvidia-smi showed 1046 MiB for that process: ~168 MiB of CUDA context and library overhead.
+# Rounded up (too high costs a worker; too low costs frames redone on the CPU after running out of
+# VRAM): 256 MiB + 5 x frame = 1161 MiB for a real scan, 11% over the measured 1046. The same
+# benchmark's 4-worker batch ran with no CPU fallbacks.
+# Previously PROVISIONAL (768 MiB + 4 x frame = 1492 MiB, from estimates before any real card ran).
+_CUDA_CONTEXT_BYTES = 256 * 1024 * 1024
+_DEVICE_CONTEXT_BYTES = _CUDA_CONTEXT_BYTES
+_DEVICE_FRAME_MULTIPLIER = 5
+
+# A GPU worker's *host* memory is much larger than a CPU worker's: the same benchmark measured the
+# largest GPU worker at 1212-1235 MiB RSS against 392-403 MiB for a CPU worker on the same frames
+# (and a single GPU `invert` 1209 vs 369 MiB) — CUDA's and CuPy's own host-side libraries, ~840 MiB.
+# Added to the RAM estimate for GPU pools (rounded up to 1 GiB), so a machine with a big card and
+# little RAM isn't given more workers than its RAM holds. On the user's machine (7.6 GiB free) this,
+# not the card, is what limits GPU batch to 4 workers — the count the benchmark ran best at.
+_GPU_HOST_OVERHEAD_BYTES = 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -136,21 +136,24 @@ def estimate_worker_memory_bytes(
     *,
     baseline_bytes: int = _BASELINE_PROCESS_OVERHEAD_BYTES,
     multiplier: int = _PEAK_RSS_MULTIPLIER,
+    device: ComputeDevice | None = None,
 ) -> int:
     """Estimate the peak RSS a single worker needs to process the largest job in this batch (see
     the module-level constants' docstring for how the estimate itself was derived). `baseline_bytes`
     /`multiplier` default to the full-inversion-pipeline fit; pass export's own calibrated constants
-    (or use estimate_export_worker_memory_bytes) when sizing a pool of export workers instead."""
+    (or use estimate_export_worker_memory_bytes) when sizing a pool of export workers instead. A GPU
+    `device` adds the CUDA/CuPy host-side overhead (_GPU_HOST_OVERHEAD_BYTES) every GPU worker carries."""
     sizes = [b for b in (_decoded_pixel_bytes(job.input_path) for job in jobs) if b is not None]
     if not sizes:
         return _FALLBACK_PER_WORKER_BYTES
-    return baseline_bytes + max(sizes) * multiplier
+    gpu_overhead = _GPU_HOST_OVERHEAD_BYTES if device is not None and device.kind == "gpu" else 0
+    return baseline_bytes + max(sizes) * multiplier + gpu_overhead
 
 
 def estimate_worker_device_bytes(jobs: list[BatchJob]) -> int:
     """Estimate the peak GPU memory one worker needs for the largest job in this batch: its own
-    CUDA context and band scratch, plus the frame resident on the device and the print fit's
-    whole-frame statistics (see the PROVISIONAL constants above). Used for every GPU pool — develop,
+    CUDA context, plus the frame resident on the device, its band temporaries and the whole-frame
+    statistics (see the constants above, fitted on a real RTX 3070). Used for every GPU pool — develop,
     print and export alike: export keeps the same resident frame and less scratch, so this bounds
     it too."""
     sizes = [b for b in (_decoded_pixel_bytes(job.input_path) for job in jobs) if b is not None]
@@ -242,7 +245,9 @@ def default_worker_count(
         available = psutil.virtual_memory().available
     except Exception:  # noqa: BLE001 — an unsupported platform must not break batch processing
         return cap
-    per_worker = estimate_worker_memory_bytes(jobs, baseline_bytes=baseline_bytes, multiplier=multiplier)
+    per_worker = estimate_worker_memory_bytes(
+        jobs, baseline_bytes=baseline_bytes, multiplier=multiplier, device=device
+    )
     memory_cap = max(1, available // per_worker)
     return max(1, min(cap, memory_cap, len(jobs)))
 
@@ -253,19 +258,23 @@ def memory_budget_warning(
     *,
     baseline_bytes: int = _BASELINE_PROCESS_OVERHEAD_BYTES,
     multiplier: int = _PEAK_RSS_MULTIPLIER,
+    device: ComputeDevice | None = None,
 ) -> str | None:
     """Returns a human-readable warning if an explicitly-requested worker count looks likely to
     exceed available memory, or None if it looks safe (or memory couldn't be checked at all). Pure
     computation only, matching this module's no-UI-concerns design (see module docstring) — the
     caller decides whether/how to display it. `baseline_bytes`/`multiplier` default to the
-    full-inversion-pipeline fit — see estimate_worker_memory_bytes."""
+    full-inversion-pipeline fit — see estimate_worker_memory_bytes; a GPU `device` counts each
+    worker's CUDA/CuPy host memory too."""
     try:
         import psutil
 
         available = psutil.virtual_memory().available
     except Exception:  # noqa: BLE001 — an unsupported platform must not break batch processing
         return None
-    per_worker = estimate_worker_memory_bytes(jobs, baseline_bytes=baseline_bytes, multiplier=multiplier)
+    per_worker = estimate_worker_memory_bytes(
+        jobs, baseline_bytes=baseline_bytes, multiplier=multiplier, device=device
+    )
     safe_workers = max(1, available // per_worker)
     if requested_workers <= safe_workers:
         return None
@@ -291,13 +300,16 @@ def default_export_worker_count(jobs: list[BatchJob], *, device: ComputeDevice |
     )
 
 
-def export_memory_budget_warning(jobs: list[BatchJob], requested_workers: int) -> str | None:
+def export_memory_budget_warning(
+    jobs: list[BatchJob], requested_workers: int, device: ComputeDevice | None = None
+) -> str | None:
     """Same as memory_budget_warning, using export's own calibrated constants."""
     return memory_budget_warning(
         jobs,
         requested_workers,
         baseline_bytes=_EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES,
         multiplier=_EXPORT_PEAK_RSS_MULTIPLIER,
+        device=device,
     )
 
 

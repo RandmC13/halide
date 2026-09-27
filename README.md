@@ -164,9 +164,10 @@ exposure) in its metadata, and `invert` prints it too.
 
 ## GPU acceleration (optional)
 
-If you have an NVIDIA card, halide can develop frames on it instead of the CPU. Early
-measurements of the individual steps on a full-resolution scan showed large speed-ups; how much
-faster a whole frame or roll gets hasn't been measured yet. It needs an NVIDIA GPU; there's
+If you have an NVIDIA card, halide can develop frames on it instead of the CPU. Measured on one
+machine (RTX 3070, 8-core CPU, a 37-frame roll of full-resolution scans): one `invert` took 2.7 s
+instead of 3.4 s, and a whole `batch` 27 s instead of 33 s — about 20% faster. Most of what's
+left is reading and writing the TIFFs, which a GPU can't speed up. It needs an NVIDIA GPU; there's
 nothing to gain on other hardware, so halide doesn't mention this unless it finds one.
 
 ```bash
@@ -179,8 +180,8 @@ uses it automatically (`--device auto`, the default) whenever it's usable, and f
 CPU on its own if it isn't. Force the CPU with `--device cpu` or `HALIDE_DEVICE=cpu`. GPU and CPU
 output aren't bit-for-bit identical — the two round the last digit of some calculations
 differently — but halide's GPU tests require them to match to within 1 part in 100,000, and
-8-bit exports to within one code value. Each output TIFF records which one made it. `halide gpu --install` also prints the command to remove it
-again later.
+8-bit exports to within one code value. Each output TIFF records which one made it. `halide gpu
+--install` also prints the command to remove it again later.
 
 ## How it works
 
