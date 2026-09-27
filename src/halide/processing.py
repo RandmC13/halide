@@ -206,14 +206,13 @@ def process_scan(
     # One full-frame host buffer for the whole run: decoded, developed (or downloaded into) and
     # written in place.
     image, source_profile = _read_scan(input_path)
+    request = DevelopRequest(source_profile=source_profile, scan_gain=scan_gain, density_profile=density_profile,
+                             stage=stage, tone_params=tone_params)
 
-    def develop(frame, band_bytes=None):
-        return _develop_frame(frame, source_profile, scan_gain, density_profile, stage, tone_params, band_bytes)
-
-    developed, image = _run_on_device(input_path, image, device, develop, on_warning)
+    developed, image = _run_on_device(input_path, image, device, develop_request, request, on_warning)
     used_device = "gpu" if developed is not None else "cpu"
     if developed is None:
-        developed = develop(image)
+        developed = develop_request(image, request)
     resolved, profile = developed
 
     record = provenance_json(resolved, profile, scan_gain, used_device) if resolved is not None else None
@@ -235,29 +234,56 @@ def process_scan(
     return resolved
 
 
-def _develop_frame(
-    frame,
-    source_profile: LinearRGBProfile | None,
-    scan_gain: float,
-    density_profile: DensityProfile | None,
-    stage: Stage,
-    tone_params: ToneCurveParams,
-    band_bytes: int | None = None,
-) -> tuple[ResolvedTone | None, DensityProfile]:
+@dataclasses.dataclass(frozen=True)
+class DevelopRequest:
+    """Everything `develop_request` needs besides the frame itself — process_scan's arithmetic as
+    plain, picklable data, so the GPU service process (halide/gpu_service.py) can run exactly what
+    the in-process device path runs. `source_profile` is the profile to convert the scan from
+    (None when it's already in the working space); the rest are process_scan's own arguments."""
+
+    source_profile: LinearRGBProfile | None
+    scan_gain: float
+    density_profile: DensityProfile | None
+    stage: Stage
+    tone_params: ToneCurveParams
+
+
+@dataclasses.dataclass(frozen=True)
+class PrintRequest:
+    """print_scan's print stage as picklable data (see DevelopRequest). `scale` is the flat file's
+    recorded linear_scale to undo first, or None; `print_params` are the tone parameters actually
+    printed with (a pinned exposure already dropped when it can't be reproduced)."""
+
+    source_profile: LinearRGBProfile | None
+    scale: float | None
+    print_params: ToneCurveParams
+
+
+@dataclasses.dataclass(frozen=True)
+class ExportRequest:
+    """export_delivery_image's sRGB conversion takes no settings today (quality only matters when
+    the file is written, in the worker). A dataclass anyway, so every service request has the same
+    shape and a future export option has somewhere to go."""
+
+
+def develop_request(frame, request: DevelopRequest, band_bytes: int | None = None
+                    ) -> tuple[ResolvedTone | None, DensityProfile]:
     """All of process_scan's arithmetic, in place on `frame` — the decoded, not yet converted scan,
-    as a host (numpy) array or a device (CuPy) array. One implementation for both: core/ picks the
-    array library from the array (core/_xp.py), so the GPU runs exactly the CPU's steps in the
-    CPU's order, and the CPU path is the code it always was. Returns (tone used, profile used)."""
-    _to_working_space(frame, source_profile, band_bytes)
-    if scan_gain != 1.0:
+    as a host (numpy) array or a device (CuPy) array. One implementation for the CPU, the
+    in-process GPU path and the GPU service: core/ picks the array library from the array
+    (core/_xp.py), so the GPU runs exactly the CPU's steps in the CPU's order, and the CPU path is
+    the code it always was. Returns (tone used, profile used)."""
+    _to_working_space(frame, request.source_profile, band_bytes)
+    if request.scan_gain != 1.0:
         # A scalar of the frame's own dtype: the multiply stays in float32, and a scalar (unlike a
         # 0-d numpy array) is accepted as an operand by a device array too.
-        frame *= frame.dtype.type(scan_gain)
+        frame *= frame.dtype.type(request.scan_gain)
 
+    stage = request.stage
     if stage is Stage.INVERT_ONLY:
         profile = IDENTITY_PROFILE
-    elif density_profile is not None:
-        profile = density_profile
+    elif request.density_profile is not None:
+        profile = request.density_profile
     else:
         # On a GPU this runs on the device frame itself; only the two 3-vector percentiles it
         # solves from come back to the host (calibration/auto.py).
@@ -267,7 +293,33 @@ def _develop_frame(
         map_in_bands(frame, lambda band: apply_density_balance(apply_white_balance(band, profile), profile),
                      band_bytes=band_bytes)
         return None, profile
-    return _develop_in_place(frame, profile, tone_params, band_bytes), profile
+    return _develop_in_place(frame, profile, request.tone_params, band_bytes), profile
+
+
+def print_request(frame, request: PrintRequest, band_bytes: int | None = None) -> ResolvedTone:
+    """print_scan's whole print stage in place on `frame` (host or device array) — see
+    develop_request."""
+    _to_working_space(frame, request.source_profile, band_bytes)
+    if request.scale is not None:
+        frame /= frame.dtype.type(request.scale)  # a scalar of the frame's dtype: see develop_request
+    print_params = request.print_params
+    resolved = _tone_on_host(resolve_tone(frame, print_params))
+    map_in_bands(frame, lambda band: apply_tone(band, resolved, print_params.curve_path), band_bytes=band_bytes)
+    return resolved
+
+
+def export_request(frame, out: np.ndarray, request: ExportRequest, band_bytes: int | None = None) -> None:
+    """export_delivery_image's sRGB conversion of `frame` (host or device array, only ever read)
+    into `out`, a host uint8 buffer of the same shape, band by band. On the host this is
+    io/raster.py's srgb_8bit_from_acescg exactly; on a device each band comes straight back into
+    its rows of `out`, so the device never holds a second full-size frame."""
+    row_bytes = int(np.prod(frame.shape[1:], dtype=np.int64)) * frame.dtype.itemsize
+    for band in banding.band_slices(frame.shape[0], row_bytes, band_bytes):
+        srgb = to_srgb_8bit(frame[band])
+        if isinstance(srgb, np.ndarray):
+            out[band] = srgb
+        else:
+            _device.to_host(srgb, out=out[band])
 
 
 def _develop_in_place(
@@ -295,48 +347,120 @@ def _tone_on_host(resolved: ResolvedTone) -> ResolvedTone:
     return dataclasses.replace(resolved, linear_scale=_device.to_host(scale)[()])
 
 
-def _run_on_device(input_path, host: np.ndarray, device: ComputeDevice | None, work, on_warning):
-    """Run `work(frame, band_bytes)` on a GPU copy of `host` and download the result into `host`.
+@dataclasses.dataclass(frozen=True)
+class DeviceFailure:
+    """Why a device job failed, as plain data — what the in-process device path and the GPU
+    service's reply both carry, so a worker applies the same fallback rules either way (see
+    fall_back_to_cpu). Not the exception itself: a CuPy exception can't be unpickled in a worker
+    that must never import CuPy.
 
-    Returns (work's result, host), or (None, host) when there's no GPU to use or it failed — then
-    `host` is the decoded, unconverted scan, ready for the CPU to start over on. That is why the
-    device path writes into `host` only once, at the very end (the plan's "out-of-memory never
-    fails a frame", §3.3): up to then a failure leaves it as decoded. The one exception is the
-    download itself — a GPU runs asynchronously, so an earlier kernel's error can surface there,
-    after part of `host` may have been overwritten — and then the scan is read again from disk.
+    `host_touched`: the failure happened after the device began writing back into the host buffer
+    (the download — a GPU runs asynchronously, so an earlier kernel's error can surface there), or
+    it can't be ruled out (a service that died or stopped answering mid-request). The buffer may
+    then be half-written, and the scan must be read again from disk before the CPU starts over."""
 
-    Host memory stays ~1 frame: `host` is both the upload source and the download target."""
-    if device is None or device.kind != "gpu":
-        return None, host
+    type_name: str
+    message: str
+    out_of_memory: bool
+    host_touched: bool = False
+
+    @classmethod
+    def from_exception(cls, exc: BaseException, host_touched: bool = False) -> DeviceFailure:
+        text = str(exc)
+        # cupy.cuda.memory.OutOfMemoryError is a MemoryError; cuBLAS and the runtime report their
+        # own allocation failures as status codes instead.
+        out_of_memory = isinstance(exc, MemoryError) or "cudaErrorMemoryAllocation" in text or "ALLOC_FAILED" in text
+        return cls(type_name=type(exc).__name__, message=text, out_of_memory=out_of_memory,
+                   host_touched=host_touched)
+
+    def warning(self, input_path, action: str = "developed this frame") -> str:
+        """The fallback warning, worded as it always has been. `action` names what actually fell
+        back to the CPU — "developed this frame" for the develop path (the default), "exported this
+        file" for export: export doesn't develop anything, so the develop wording would misdescribe
+        what happened."""
+        if self.out_of_memory:
+            return f"{input_path}: out of GPU memory — {action} on the CPU instead"
+        detail = f"{self.type_name}: {self.message}" if self.message else self.type_name
+        return f"{input_path}: the GPU failed ({detail}) — {action} on the CPU instead"
+
+
+class DeviceJobFailed(Exception):
+    """A device job failed; `failure` says how (see DeviceFailure). Raised by run_device_job /
+    run_device_export and, from a reply, by the GPU service's client."""
+
+    def __init__(self, failure: DeviceFailure):
+        super().__init__(f"{failure.type_name}: {failure.message}" if failure.message else failure.type_name)
+        self.failure = failure
+
+
+def run_device_job(host: np.ndarray, job, request):
+    """Upload `host`, run `job(frame, request, DEVICE_BAND_BYTES)` on the device copy (job is
+    develop_request or print_request), and download the result back into `host`. Returns job's
+    result, or raises DeviceJobFailed after handing CuPy's cached memory back.
+
+    `host` is written only once, at the very end (the plan's "out-of-memory never fails a frame",
+    §3.3): up to the download a failure leaves it exactly as decoded, ready for the CPU to start
+    over on. Host memory stays ~1 frame: `host` is both the upload source and the download target.
+    The one place this runs: the in-process device path (_run_on_device) and the GPU service."""
     frame = None
     downloading = False
     try:
         frame = _device.to_device(host)
-        result = work(frame, banding.DEVICE_BAND_BYTES)
+        result = job(frame, request, banding.DEVICE_BAND_BYTES)
         downloading = True
         _device.to_host(frame, out=host)
-        return result, host
-    except Exception as exc:  # noqa: BLE001 — any GPU problem: redo on the CPU, never fail the frame
+        return result
+    except Exception as exc:  # noqa: BLE001 — any GPU problem: reported, then redone on the CPU
         del frame
         _device.release_memory()
-        _warn(on_warning, _gpu_fallback_message(input_path, exc))
-        if downloading:
-            host, _ = _read_scan(input_path)
+        raise DeviceJobFailed(DeviceFailure.from_exception(exc, host_touched=downloading)) from exc
+
+
+def run_device_export(host: np.ndarray, out: np.ndarray, request: ExportRequest) -> None:
+    """export_request on a device copy of `host`, downloaded band by band into `out`. Raises
+    DeviceJobFailed on any device problem; `host` is only ever read, so a failure never needs a
+    re-read (host_touched stays False) — a plain CPU conversion of it afterwards is exactly as if
+    the GPU had never been tried."""
+    frame = None
+    try:
+        frame = _device.to_device(host)
+        export_request(frame, out, request, banding.DEVICE_BAND_BYTES)
+    except Exception as exc:  # noqa: BLE001 — any GPU problem: reported, then redone on the CPU
+        del frame
+        _device.release_memory()
+        raise DeviceJobFailed(DeviceFailure.from_exception(exc)) from exc
+
+
+def fall_back_to_cpu(input_path, host: np.ndarray, failure: DeviceFailure,
+                     on_warning: Callable[[str], None] | None, action: str = "developed this frame") -> np.ndarray:
+    """After a device job failed (in this process or in the GPU service): warn, and return the
+    buffer the CPU should start over on — `host` itself when the device never wrote into it, else
+    the scan decoded again from disk into a fresh buffer. Fresh rather than back into `host`: a
+    GPU service that stopped answering may still be writing into a shared frame it was given."""
+    _warn(on_warning, failure.warning(input_path, action))
+    if failure.host_touched:
+        host, _ = _read_scan(input_path)
+    return host
+
+
+def _run_on_device(input_path, host: np.ndarray, device: ComputeDevice | None, job, request, on_warning):
+    """Run `job(frame, request, band_bytes)` on a GPU copy of `host` and download the result into
+    `host` (see run_device_job).
+
+    Returns (job's result, host), or (None, host) when there's no GPU to use or it failed — then
+    `host` is the decoded, unconverted scan, ready for the CPU to start over on (read again from
+    disk if the failure came during the download; see fall_back_to_cpu)."""
+    if device is None or device.kind != "gpu":
         return None, host
+    try:
+        return run_device_job(host, job, request), host
+    except DeviceJobFailed as failed:
+        return None, fall_back_to_cpu(input_path, host, failed.failure, on_warning)
 
 
 def _gpu_fallback_message(input_path, exc: Exception, action: str = "developed this frame") -> str:
-    """`action` names what actually fell back to the CPU — "developed this frame" for
-    process_scan/print_scan's develop path (the default, unchanged wording), "exported this file"
-    for export_delivery_image's sRGB conversion (see _export_srgb_on_device): export doesn't
-    develop anything, so reusing the develop wording there would misdescribe what happened."""
-    text = str(exc)
-    # cupy.cuda.memory.OutOfMemoryError is a MemoryError; cuBLAS and the runtime report their own
-    # allocation failures as status codes instead.
-    if isinstance(exc, MemoryError) or "cudaErrorMemoryAllocation" in text or "ALLOC_FAILED" in text:
-        return f"{input_path}: out of GPU memory — {action} on the CPU instead"
-    detail = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
-    return f"{input_path}: the GPU failed ({detail}) — {action} on the CPU instead"
+    """The fallback warning for `exc` — see DeviceFailure.warning."""
+    return DeviceFailure.from_exception(exc).warning(input_path, action)
 
 
 def _warn(on_warning: Callable[[str], None] | None, message: str) -> None:
@@ -413,19 +537,11 @@ def print_scan(
         mode="paper", exposure=exposure, contrast=tone_params.contrast, curve_path=tone_params.curve_path
     )
 
-    def print_frame(frame, band_bytes=None) -> ResolvedTone:
-        # The whole print stage in place on `frame` (host or device array) — see _develop_frame.
-        _to_working_space(frame, source_profile, band_bytes)
-        if scale is not None:
-            frame /= frame.dtype.type(scale)  # a scalar of the frame's dtype: see _develop_frame
-        resolved = _tone_on_host(resolve_tone(frame, print_params))
-        map_in_bands(frame, lambda band: apply_tone(band, resolved, print_params.curve_path), band_bytes=band_bytes)
-        return resolved
-
-    resolved, image = _run_on_device(input_path, image, device, print_frame, on_warning)
+    request = PrintRequest(source_profile=source_profile, scale=scale, print_params=print_params)
+    resolved, image = _run_on_device(input_path, image, device, print_request, request, on_warning)
     used_device = "gpu" if resolved is not None else "cpu"
     if resolved is None:
-        resolved = print_frame(image)
+        resolved = print_request(image, request)
     write_tiff(output_path, image, icc_profile=output_profile_bytes())
     del image  # before exiftool runs — see process_scan
     copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
@@ -479,30 +595,21 @@ def export_delivery_image(
 
 
 def _export_srgb_on_device(input_path, acescg_image: np.ndarray, device: ComputeDevice | None, on_warning):
-    """`export_delivery_image`'s device path: upload `acescg_image` once, run `to_srgb_8bit`
-    (namespace-generic, halide.io.raster) over it in DEVICE_BAND_BYTES bands, and download each
-    band straight into a host uint8 buffer this function owns alone — never into `acescg_image`
-    itself. That means a failure partway through never needs to re-read the scan the way
-    `_run_on_device` does for the develop path: `acescg_image` was only ever read from, so a plain
-    CPU conversion of it afterwards is exactly as if the GPU had never been tried.
+    """`export_delivery_image`'s device path: `acescg_image` converted on the device into a host
+    uint8 buffer this function owns alone — never into `acescg_image` itself (see
+    run_device_export), so a failure never needs a re-read.
 
     Returns the finished (H, W, 3) uint8 array, or None when there's no GPU to use or it failed
     (then `on_warning` is told why, as with `_run_on_device`)."""
     if device is None or device.kind != "gpu":
         return None
-    frame = None
+    srgb_8bit = np.empty(acescg_image.shape, dtype=np.uint8)
     try:
-        frame = _device.to_device(acescg_image)
-        srgb_8bit = np.empty(acescg_image.shape, dtype=np.uint8)
-        row_bytes = int(np.prod(acescg_image.shape[1:], dtype=np.int64)) * acescg_image.dtype.itemsize
-        for band in banding.band_slices(acescg_image.shape[0], row_bytes, banding.DEVICE_BAND_BYTES):
-            _device.to_host(to_srgb_8bit(frame[band]), out=srgb_8bit[band])
-        return srgb_8bit
-    except Exception as exc:  # noqa: BLE001 — any GPU problem: redo on the CPU, never fail the export
-        del frame
-        _device.release_memory()
-        _warn(on_warning, _gpu_fallback_message(input_path, exc, action="exported this file"))
+        run_device_export(acescg_image, srgb_8bit, ExportRequest())
+    except DeviceJobFailed as failed:
+        fall_back_to_cpu(input_path, acescg_image, failed.failure, on_warning, action="exported this file")
         return None
+    return srgb_8bit
 
 
 def estimate_roll_density_profile(
