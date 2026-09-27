@@ -17,6 +17,9 @@ themselves; these hold the reasoning, evidence and designs behind them.
     `gpu-acceleration-probe.py` is the one-off measurement script that produced the plan's first
     §7 numbers; `gpu-acceleration-bench.py` times the real `invert`/`batch` on CPU vs. GPU and
     measures a GPU worker's memory — rerun it to refit the worker-count constants on new hardware.
+  - `gpu-batch-throughput.md`: draft — one exiftool kept open per worker, and one GPU process
+    shared by CPU-only workers, to make batch faster. Part B is gated on a disk/throughput
+    measurement.
 - **`specs/`**: designs agreed but not built yet.
   - `enlarger-skin.md`: the deferred skeuomorphic "enlarger controller" look for the GUI's
     controls.
@@ -24,6 +27,7 @@ themselves; these hold the reasoning, evidence and designs behind them.
   - `anchor-frame.md`: can halide suggest the best frame to calibrate from? It led to the
     multi-point picker. The `check --suggest-anchor` design in it is still unbuilt.
   - `gpu-batch-throughput.md`: why GPU batch is only ~20% faster (the GPU is idle ~90% of the
-    time; exiftool and TIFF I/O dominate), and what would speed it up. Not acted on yet.
+    time; exiftool and TIFF I/O dominate), and what would speed it up. Planned in
+    `plans/gpu-batch-throughput.md`.
 
 New write-ups go in the matching folder, not the repo root.
