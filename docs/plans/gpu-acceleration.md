@@ -2,8 +2,51 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: **approved 2026-09-27, being built on branch `gpu-acceleration`** (subagent-driven). The
-user's decisions are in §6 and their machine's numbers in §7. Written against `dff3cb2`.
+Status: **built on branch `gpu-acceleration`** (commits `164af8e..d2284c2`; Task 9's documentation
+commit follows), subagent-driven, against base `dff3cb2`. All 9 tasks are done and every test in
+`tests/unit/`, `tests/integration/` and the fake-device path of `tests/gpu/` passes. **Awaiting the
+user's verification on real GPU hardware** — this dev sandbox has CuPy installed but no usable
+NVIDIA driver, so no `@pytest.mark.gpu` test has ever run against a real card. Before trusting the
+GPU path beyond "it plumbs through", the user needs to, on their RTX 3070 machine:
+```bash
+.venv/bin/python -m pytest -m gpu -q
+.venv/bin/python docs/plans/gpu-acceleration-bench.py --scan IMG_0158.tif --roll Roll16-Testing \
+    --profile Roll16-KodakGold200 > gpu-bench.txt
+```
+and feed `gpu-bench.txt` back so `DEFAULT_DEVICE`, the D3 default-per-command question, and the
+PROVISIONAL worker-memory constants in `batch/orchestrator.py` can be confirmed or refit (see
+`CLAUDE.md`'s GPU "Decisions and why" entry for what's built and what that entry itself flags as
+unverified). The user's decisions are in §6, their probe's numbers in §7, and every ruling made
+along the way (ambiguities the plan itself didn't resolve) in "Rulings made during implementation"
+below.
+
+### Rulings made during implementation
+
+One line each; full reasoning and cost-if-wrong are in the SDD ledger
+(`.superpowers/sdd/gpu-acceleration/progress.md`).
+
+- **R1** — the GPU ICC step reuses Task 1's CPU structure (float32 matmul → float64 two matmuls →
+  float32) with CuPy, held to D2; no custom FMA-free kernel (§6 D1's kernel text predated the
+  user's "looks identical" answer).
+- **R2** — Task 7's benchmark script lives at `docs/plans/gpu-acceleration-bench.py`, beside the
+  probe, not in a new `scripts/` directory (`CLAUDE.md` asks to keep the repo root uncluttered).
+- **R3** — `DEFAULT_DEVICE = "auto"` was set immediately (the user's D3 answer), rather than waiting
+  for the benchmark; the GPU worker-count constants started from the probe plus estimates, marked
+  PROVISIONAL, for the user's own benchmark run to refit.
+- **R4** — Task 8 (auto calibration on the device) was built: the probe showed its sort dropping
+  from 0.96 s to 0.006 s on the user's RTX 3070, against a 4.9 s/frame CPU auto-density cost.
+- **R5** — Task 3's `DeviceUnavailableError` text names `halide gpu --install` before Task 6b
+  creates that command; the branch ships both together, so this is never released half-built.
+- **R6** — a Task 4 review minor (a real-scan GPU parity test that could pass even on a silent
+  fallback to CPU) was folded into Task 6's dispatch, which touches the same GPU test file.
+- **R7** — Task 5 wired `--device` and the Compute row into all six commands before every command's
+  actual processing call took a device (export in Task 6; batch/contact/calibrate's workers in
+  Task 7); the interim "row says GPU, work still runs on CPU" state is real mid-branch but never
+  reaches a release, since the branch ships as a whole.
+- **R8** — on a machine with no NVIDIA card, `invert`'s GPU hint keeps re-probing on every run
+  (rather than stamping "no card" once) so a card added later still gets the hint — kept after
+  measuring the probe's real cost at ~0.11 ms median / 0.22 ms max in this sandbox, well under the
+  ruling's 5 ms budget for switching to a one-time stamp instead.
 
 **Goal:** Run halide's per-frame number crunching on an NVIDIA GPU when one is available — on by
 default if (and only if) it measurably speeds up the user's real runs — with `--device cpu` /

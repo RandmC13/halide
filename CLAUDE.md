@@ -57,7 +57,13 @@ halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sR
 halide profile list|show|edit|rename|delete  # edit: film stock/process/scanner/notes
 halide calibrate [roll_dir | scans… | --profile NAME]  # Qt picker: neutral points on any frames of a
                                                 # roll, fitted together; --profile reopens a saved one
+halide gpu [--install]                         # optional NVIDIA GPU support: what halide sees, and
+                                                # add it (`pip install -e ".[cuda13]"` also works)
 ```
+`invert`/`batch`/`print`/`export`/`contact`/`calibrate` all take `--device auto|cpu|gpu`
+(also `$HALIDE_DEVICE`; default `auto` — GPU whenever one is usable) — see "Decisions and why",
+GPU acceleration. Its tests that need a real card are marked `@pytest.mark.gpu` and skip without
+one; run them with `pytest -m gpu`.
 Tab completion (zsh, bash, fish) sets itself up on the first run from a terminal (see "Decisions
 and why").
 With no calibration source given in a terminal, `invert`/`batch` offer the saved profiles (newest
@@ -73,7 +79,9 @@ src/halide/
   core/        # PURE functions only: no file I/O, no print, no globals, no argparse.
                # density.py (white/density balance), invert.py, tone_render.py, pipeline.py
                # (run_pipeline = the single composed entry point), types.py (DensityProfile,
-               # ToneCurveParams — both frozen dataclasses).
+               # ToneCurveParams — both frozen dataclasses), _xp.py (array_namespace — numpy or
+               # CuPy, whichever the input array belongs to, so every function above runs on
+               # either; see "Decisions and why", GPU acceleration).
   io/          # tiff.py (read/write + dtype normalization), icc.py (validate + color-manage
                # the embedded ICC profile), raster.py (ACEScg -> sRGB delivery export),
                # lut.py (.cube reader, used by tone_render.py at runtime AND by golden tests).
@@ -82,8 +90,10 @@ src/halide/
                # (the picker's neutral-point model: scan-gain normalisation, agreement, gates).
   batch/       # orchestrator.py (ProcessPoolExecutor over processing.py, one bad frame doesn't
                # abort the batch), progress.py (terminal rendering only, no math).
-  cli/         # main.py + commands/*.py (argparse), _calibration_args.py (shared flag
-               # definitions/resolution used by both invert and batch).
+  cli/         # main.py + commands/*.py (argparse) including gpu_cmd.py (`halide gpu`/`--install`),
+               # _calibration_args.py (shared flag definitions/resolution used by both invert and
+               # batch), _device_args.py (the shared `--device auto|cpu|gpu` flag/resolution/Compute
+               # row, used by every command).
   gui/         # PySide6/Qt app. Pure, tested, no Qt: sampling.py (picking math), roll.py (the
                # session model), render.py (negative/positive display). Widgets: main_window.py
                # (the picker), filmstrip.py, step_wedge.py, point_list.py, drawers.py,
@@ -91,9 +101,13 @@ src/halide/
   processing.py # The glue layer: read -> validate ICC -> convert to working space -> calibrate
                # -> run_pipeline -> write. Both the single-file CLI command and the batch worker
                # call this same function rather than duplicating the chain.
-  banding.py   # map_in_bands: runs per-pixel core/ functions over ~4 MiB bands of rows into a
-               # buffer the caller owns — how every full-resolution path stays near 1 frame of
-               # memory. Bit-identical to the whole-array call (see "Decisions and why").
+  banding.py   # map_in_bands: runs per-pixel core/ functions over ~4 MiB bands of rows (64 MiB on
+               # the device — DEVICE_BAND_BYTES) into a buffer the caller owns — how every
+               # full-resolution path stays near 1 frame of memory. Bit-identical to the
+               # whole-array call (see "Decisions and why").
+  device.py    # ComputeDevice, resolve_device (auto/cpu/gpu, $HALIDE_DEVICE), to_device/to_host,
+               # detect_nvidia_driver (card detection without CuPy) — optional GPU acceleration,
+               # see "Decisions and why".
 ```
 
 The internal working color space is **ACEScg**, chosen (not just used) — the blog is explicit that
@@ -385,6 +399,156 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     bit-identical. Scaling flattens past ~4 workers there (1: 66 s, 2: 35 s, 4: 22 s, 6: 20 s, 8:
     17 s) — probably disk writes (~2 GB of TIFFs per run) and memory bandwidth, not re-tuned from
     one sandbox; re-check on the user's own machine before lowering the physical-core cap.
+- **GPU acceleration (optional, CuPy) — built on branch `gpu-acceleration`
+  (`docs/plans/gpu-acceleration.md`), NOT YET VERIFIED ON REAL HARDWARE — see the last sub-bullet.**
+  The user asked for a "thorough investigation ... if it increases performance I'd like it to be on
+  by default but able to be disabled." Answered with `--device auto|cpu|gpu` (`auto` = default,
+  GPU whenever it's usable).
+  - **Why CuPy, and why optional.** halide's core is plain numpy ufunc code (`np.maximum`,
+    `np.power(out=)`, `np.percentile`, fancy indexing) and CuPy implements the same API, including
+    `out=` and `percentile(overwrite_input=)` — PyTorch/JAX would mean rewriting every stage in a
+    different idiom plus a multi-GB dependency, Numba CUDA would mean hand-written kernels per
+    stage, and neither buys accuracy or speed CuPy doesn't. CuPy plus NVIDIA's CUDA runtime
+    libraries is ~1 GB, so `pip install -e .`/`.[dev]` never pull it in — it's the `cuda12`/`cuda13`
+    extras (`cupy-cuda12x[ctk]` / `cupy-cuda13x[ctk]`; `[ctk]` bundles cudart/NVRTC/cuBLAS as pip
+    wheels so no system CUDA Toolkit is needed, only the driver). `halide gpu` reports what halide
+    sees (card, driver's CUDA version, whether support is installed, whether it actually works,
+    what `--device auto` will use); `halide gpu --install` names the exact package and its ~1 GB
+    size, asks y/N, runs `pip install` in halide's own environment, then re-checks in a **fresh
+    subprocess** (the current process may have cached the failed import). No pip in that
+    environment → prints the matching pip/pipx/uv commands instead of guessing.
+  - **Finding the card without CuPy** (`device.py::detect_nvidia_driver()`): pure `ctypes`
+    (`libcuda.so.1` / `nvcuda.dll`), `cuDriverGetVersion`/`cuInit`/`cuDeviceGetName` — no subprocess,
+    no `nvidia-smi` parsing (its header format changes; the user's own machine reports "CUDA UMD
+    Version", not a plain version number). Any failure means "no card", never an exception. The hint
+    ("`<card>` found; add GPU support with: `halide gpu --install`") is shown only when a card is
+    found and support isn't installed — nobody without an NVIDIA card gets pitched a 1 GB download.
+    `invert` shows it once per machine via a stamp file (the same state directory tab-completion's
+    stamps live in) — **except** on a no-card machine, which never writes that stamp and so
+    re-probes on every single `invert`, forever, so a card added later still gets the hint (a
+    review initially flagged the report's claim that the probe "runs once per machine" as false for
+    exactly this common case; the ruling was to measure the cost before deciding whether to fix it).
+    Measured in this sandbox (no `libcuda.so.1` at all — the fastest possible failure path): a
+    fresh-process call is 0.11 ms median / 0.22 ms max, about 45x under a 5 ms budget the ruling set
+    — negligible next to a multi-second `invert`, so the re-probe-forever behavior was kept as
+    correct rather than "fixed" into a wrong stamp. (Not measured: the probe's cost on a machine
+    that *does* have a driver, where the ctypes calls do more work.)
+  - **`--device auto|cpu|gpu` + `HALIDE_DEVICE`** (`cli/_device_args.py`, `halide.device.
+    resolve_device`), the same flag on `invert`/`batch`/`print`/`export`/`contact`/`calibrate`.
+    `DEFAULT_DEVICE = "auto"` lives in `halide.device` itself, not copied into the CLI module (an
+    early version defined its own copy of the same string that `resolve_device` never actually
+    read, so changing it would silently have done nothing — fixed to one source of truth). The user
+    chose `auto` (GPU whenever usable) before any benchmark could run on real hardware, since that
+    benchmark needs a card this dev sandbox doesn't have — flag name `--device` was chosen over
+    `--gpu`/`--no-gpu` to leave room for a later device value (an AMD/ROCm build is out of scope for
+    now, but the namespace design doesn't preclude it). `auto` on a machine with no CuPy at all
+    falls back to CPU silently (the ordinary case, not a problem); with CuPy installed but a probe
+    failure (e.g. a driver mismatch) it falls back with a `fallback_reason` shown on the run sheet's
+    Compute row and the CLI's own warning line. An explicit `--device gpu` that isn't usable is a
+    hard error naming `halide gpu --install`, before any file I/O.
+  - **Namespace-generic `core/`** (`core/_xp.py::array_namespace(a)`): one implementation of every
+    core function, not a GPU-specific copy — it returns numpy for a numpy array, cupy for a cupy
+    array (checked only via `sys.modules.get("cupy")`, so `core/` itself never imports cupy), or a
+    namespace registered for tests. On numpy input this is `xp is numpy`, so **the CPU path calls
+    exactly the functions it always has and stays bit-identical** — verified against every existing
+    pin (`test_banding.py` etc.), 106 sha256'd before/after output records across the touched
+    functions, and real-scan `invert` (IMG_0156, IMG_0158, `--auto-density`, print and flat) diffed
+    pixel-identical against the pre-change code.
+  - **A strict fake device** (`tests/unit/_fake_device.py`) stands in for CuPy in every test outside
+    `tests/gpu/`. It refuses implicit conversion to numpy (`np.asarray`/`np.percentile` on it
+    raise) and refuses mixing with a plain numpy array or a Python tuple/list (matching CuPy's own
+    refusal — a profile tuple never uploaded with `xp.asarray` would otherwise silently work against
+    the CPU-backed fake but explode on real CuPy). It computes with numpy underneath, so its output
+    must be bit-identical to the CPU path — anything it catches is a plumbing bug (a missed `xp.`, a
+    dtype that changed hands), never device arithmetic. It's a wrapper that blocks `__array_ufunc__`/
+    `__array__`, not the originally-sketched `ndarray` subclass — numpy converts a subclass silently,
+    which would have defeated the whole point.
+  - **A frame is resident on the device for the whole develop/print/export pipeline**: one upload,
+    per-pixel stages banded at `DEVICE_BAND_BYTES` (64 MiB, vs. 4 MiB on the CPU — bigger transfers
+    suit VRAM bandwidth and PCIe better), one download at the end straight into the same host buffer
+    the scan was decoded into (host RAM stays ~1 frame, as on the CPU path). Any device exception —
+    OOM or otherwise — is caught, the CuPy pool freed, and the frame is redeveloped on the CPU from
+    that still-untouched host buffer; if the exception surfaced during the *download* itself (CUDA
+    runs asynchronously, so an earlier error can appear there, with the host buffer possibly
+    half-written), the scan is re-read from disk before the CPU retry. Every fallback prints a
+    warning naming what happened — "out of GPU memory" for an OOM/`MemoryError`, else "the GPU
+    failed (...)" — worded per the action that fell back ("developed this frame" vs. export's
+    "exported this file"; a review finding, since the shared message helper originally hardcoded
+    develop's wording onto export's own fallback too).
+  - **Provenance gains `"device": "cpu"`/`"gpu"`** in the TIFF's JSON (whichever path actually ran —
+    a fallback still records `"cpu"`), since the two paths are held to a tolerance, not bit-identity,
+    so a file should say which one made it.
+  - **GPU vs. CPU accuracy bar (D2): float32 pixels within 1e-5 relative (or 1e-7 absolute), fitted
+    exposure/contrast within 1e-5, 8-bit exports within 1 code value (and ≥ 99.9% of pixels
+    identical, reported, so a systematic offset can't hide inside "≤ 1").** Bit-identity isn't
+    achievable on a GPU even in principle — `pow`/`log10` round the last hardware bit differently,
+    and summation/BLAS order differs from the CPU's — which is the same FMA-ordering effect
+    documented for the CPU-only **D1** decision above (colour-profile/sRGB matrix fusion): D2 is
+    that same phenomenon one step further from bit-identity, not a new one.
+  - **Kept CPU-only, deliberately:** profile solving and the `--auto-density-roll` pre-pass (both
+    tiny/already downsampled); and contact sheets (`halide contact`, `batch --contact-sheet`) —
+    their thumbnails come from frames that are *already developed*, so all that's left is decode
+    and a block average, and uploading a 181 MiB frame just for that would cost about what it saves.
+    `contact`'s Compute row now reads plain `CPU` (it used to name a card it never touched) plus
+    " · developed frames need no GPU" when a GPU was resolved anyway.
+  - **Auto calibration runs on the device** (`calibration/auto.py`'s `_density_local_saturation`,
+    `_saturation`, `_neutral_candidate_mask`, `_shadow_and_highlight_from_candidates`, all made
+    namespace-generic) because the probe showed it was worth it (below) — `solve_density_balance`
+    itself stays CPU, since it only ever receives 3-element host arrays. Its one CuPy-specific
+    wrinkle: `argsort` doesn't keep tied (equal-luminance) values in the same order a CPU sort does,
+    so a density bin's edge pixel can differ between devices — the probe measured only 58% of sort
+    orders agreeing on a real scan, without moving the solved profile outside tolerance. Its parity
+    tests therefore compare the **solved `DensityProfile` within D2**, never the sort order or bin
+    membership.
+  - **Batch workers and CUDA/forkserver.** Workers never import cupy inside the forkserver
+    (`_FORKSERVER_PRELOAD` is unchanged — a forked CUDA context is unusable in the child); only a
+    `device_kind` string (`"cpu"`/`"gpu"`) and a VRAM pool-limit number cross the process boundary,
+    and each worker resolves its own `ComputeDevice`/CUDA context and CuPy memory-pool limit
+    (`cupy.get_default_memory_pool().set_limit(size=share)`) on its first GPU job, keeping both warm
+    across frames after that. `default_worker_count` gains a third cap for a GPU device:
+    `memory_free // estimate_worker_device_bytes(jobs)`, alongside the existing CPU-core and RAM
+    caps — an unusable GPU inside one worker falls that worker back to the CPU with a warning on
+    every frame it develops, rather than crashing the batch.
+    - **PROVISIONAL constants** (marked as such in `batch/orchestrator.py`, not yet measured on a
+      real card): `_CUDA_CONTEXT_BYTES = 384 MiB` (rounded up from the probe's ~300 MB context);
+      `_DEVICE_BAND_SCRATCH_BYTES = 6 x 64 MiB = 384 MiB` (six `DEVICE_BAND_BYTES` temporaries, per
+      §3.3's budget); `_DEVICE_CONTEXT_BYTES = 768 MiB` (the two above); `_DEVICE_FRAME_MULTIPLIER =
+      4` (the resident frame plus the print fit's whole-frame luminance/percentile scratch, doubled
+      for margin — the unbanded probe held 2.1 GiB of pool on a 181 MiB frame, and 768 MiB + 4 x
+      181 MiB ≈ 1.5 GiB is ~70% of that). On the user's RTX 3070 (~6.8 GiB free) this gives **4 GPU
+      workers** by default, against 8 CPU workers on that same machine — expected, since a GPU
+      worker's own time shifts toward decode/write, which §1's timing table already predicted would
+      make batch's GPU gain smaller than a single frame's. **The user's own run of
+      `docs/plans/gpu-acceleration-bench.py` is what refits all four constants and the worker-count
+      default — until then, treat them as a starting estimate, not a measurement.**
+  - **`tests/conftest.py` forces `HALIDE_DEVICE=cpu` for the whole suite (autouse fixture).** With
+    `DEFAULT_DEVICE = "auto"` live on every command, any CLI test that didn't pass `--device` would
+    otherwise resolve `auto` against whatever machine actually runs the suite — harmless here (no
+    usable GPU) but on the user's own RTX 3070 (which runs this same suite) it would silently take
+    the GPU path, which is only held to D2, not bit-identity, so an exact-pixel/exact-provenance
+    test could fail for a reason unrelated to what it's actually testing. Tests about device
+    *selection itself* (`test_device.py`, `test_device_cli.py`) override this per-test via the same
+    `monkeypatch` instance; tests that inject a `ComputeDevice` directly, or
+    `tests/gpu/test_gpu_parity.py` (which resolves `"auto"` at **import** time, before any fixture
+    runs, so it still targets a real GPU when one exists), are unaffected either way.
+  - **The user's probe** (§7 of the plan, `gpu-probe.txt`, untracked — RTX 3070, 8 GiB, driver
+    615.71.09 = CUDA 13.4, 6.7 GiB free, warm run): CuPy import 0.24 s / CUDA context 0.19 s / first
+    kernel 0.17 s (roughly 2x on a cold run); upload of a 181 MiB frame 66 ms, download 26 ms;
+    per-stage CPU→GPU: ICC matrix 0.058 s → 0.009 s, `negative_to_positive` 2.03 s → 0.005 s
+    (1.7e-7 rel), print-fit percentile 0.52 s → 0.013 s (6.3e-8 rel), paper curve 3.51 s → 0.018 s
+    (2.9e-6 rel), auto-calibration argsort 0.96 s → 0.006 s (58% of sort orders agree, expected —
+    see above). Baselines on that machine: `halide invert` 4.4 s; `halide batch` (37 frames)
+    35.1 s (0.95 s/frame). This is the only real-hardware number available so far, and it came from
+    a short standalone measurement script, not from running halide itself on a GPU.
+  - **NOT YET VERIFIED ON REAL HARDWARE: every GPU code path above.** This dev sandbox has CuPy
+    installed but no usable driver (`cudaErrorInsufficientDriver`), so every GPU test here ran
+    either against the strict fake device (bit-identical by construction — it can catch a plumbing
+    bug but can't validate real device arithmetic) or was confirmed only to *collect and skip
+    cleanly* (`tests/gpu/test_gpu_parity.py`, `@pytest.mark.gpu`). Before trusting the device
+    develop/print/export pipeline, the CPU fallback, `halide gpu --install` against a real driver,
+    the batch VRAM-aware worker count, or auto calibration on the device beyond "it plumbs
+    through", the user needs to run `pytest -m gpu` and `docs/plans/gpu-acceleration-bench.py` on
+    their RTX 3070 and feed the results back in.
 - **`--auto-density-roll` selects neutral candidates per frame, then pools candidates — never pools
   raw pixels across frames first.** The per-channel median used to judge "how neutral is this
   pixel" (`calibration/auto.py::_saturation`) is only a valid proxy for the film's own systematic
@@ -631,19 +795,24 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   - Verified by driving real interactive `zsh -i`, `bash -i` (with and without the bash-completion
     package) and `fish -i` in a pty. Not covered: tcsh, PowerShell/Windows, and the macOS system
     bash 3.2 (untested).
-- **Starting the CLI imports no numpy, tifffile, Pillow or colour-science** — they're imported
-  inside the functions that use them. Before, `halide --help`/`profile list` took ~0.75 s in the dev
-  sandbox (over 1 s on the user's machine): `import colour` (it drags in scipy and its plotting
-  module) was ~0.55 s of it, numpy/tifffile/Pillow ~0.15 s. Now ~0.1 s, the rest being Python and
-  the stdlib. How: colour only in `io/icc.py::convert_to_working_space`,
-  `io/raster.py::to_srgb_8bit`, `processing.py::_acescg_matrix`; tifffile only in the header
-  readers (`io/scan_metadata.py`, `batch/orchestrator.py`); the orchestrator's workers import
-  `halide.processing` themselves; CLI commands import `halide.processing`/`io.contact_sheet` in
-  `run()`-level functions; `Stage` moved to `core/types.py` and the sheet defaults to
-  `io/contact_sheet_defaults.py` (both re-exported from their old homes), because the parser needs
-  them. Workers still get everything preloaded: `colour` is listed in `_FORKSERVER_PRELOAD`
-  explicitly. `tests/unit/test_cli_startup.py` fails if building the parser imports any of them
-  again. Outputs unchanged bit-for-bit (verified on real scans: invert, export, batch, contact).
+- **Starting the CLI imports no numpy, tifffile, Pillow, colour-science or cupy** — they're
+  imported inside the functions that use them. Before, `halide --help`/`profile list` took ~0.75 s
+  in the dev sandbox (over 1 s on the user's machine): `import colour` (it drags in scipy and its
+  plotting module) was ~0.55 s of it, numpy/tifffile/Pillow ~0.15 s. Now ~0.1 s, the rest being
+  Python and the stdlib. How: colour only inside `io/icc.py::working_space_matrices`,
+  `io/raster.py::srgb_matrix`/`to_srgb_8bit`'s CPU branch, `processing.py::_acescg_matrix`;
+  tifffile only in the header readers (`io/scan_metadata.py`, `batch/orchestrator.py`); the
+  orchestrator's workers import `halide.processing` themselves; CLI commands import
+  `halide.processing`/`io.contact_sheet` in `run()`-level functions; `Stage` moved to
+  `core/types.py` and the sheet defaults to `io/contact_sheet_defaults.py` (both re-exported from
+  their old homes), because the parser needs them. `cupy` is never imported at all unless
+  `--device`/`$HALIDE_DEVICE` actually resolves to a GPU (`halide.device`, GPU acceleration above)
+  — even `halide gpu`'s own status check only uses `ctypes`/`importlib`, not cupy. Workers still get
+  everything preloaded except cupy: `colour` is listed in `_FORKSERVER_PRELOAD`, but cupy is
+  deliberately not (a forked CUDA context is unusable in the child; each GPU worker resolves its own
+  device instead). `tests/unit/test_cli_startup.py` fails if building the parser imports any of
+  them again (`HEAVY` includes `"cupy"`). Outputs unchanged bit-for-bit (verified on real scans:
+  invert, export, batch, contact).
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 
