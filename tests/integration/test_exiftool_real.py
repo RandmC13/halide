@@ -66,12 +66,14 @@ def test_session_writes_the_same_bytes_as_the_oneshot_call(scan, tmp_path, drop_
     _oneshot(scan, expected, drop_icc)
     actual = _output(tmp_path / name)
     assert copy_exif_metadata(scan, actual, drop_icc=drop_icc) is True
-    assert exiftool.session() is not None  # it really went through the session
+    if exiftool._KEPT_OPEN_SUPPORTED:
+        assert exiftool.session() is not None  # it really went through the session
     assert _sha(actual) == _sha(expected)
     with tifffile.TiffFile(actual) as tif:
         assert tif.pages[0].tags[272].value == "Canon EOS R6"
 
 
+@pytest.mark.skipif(not exiftool._KEPT_OPEN_SUPPORTED, reason="the kept-open session is Linux-only")
 def test_one_process_serves_many_files_and_survives_a_failed_one(scan, tmp_path):
     copy_exif_metadata(scan, _output(tmp_path / "a.tif"))
     session = exiftool.session()

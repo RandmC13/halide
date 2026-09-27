@@ -40,8 +40,11 @@ TIFF_SUFFIXES = (".tif", ".tiff")
 # sampled from /proc/<pid>/status's VmHWM): worst case `--auto-density` 509 MiB RSS (481 PSS),
 # `--output flat` 487, print output 365, `halide print` 386 — K ~= 2.2 over a ~106 MiB process.
 # K = 3 with the 150 MiB baseline (695 MiB for such a scan) leaves ~37% margin over the worst case.
-# exiftool (run after every output) needs no term of its own: it streams the file (measured 67 MiB
-# peak on a 130 MiB output), and process_scan frees the frame before running it.
+# exiftool (run after every output) has no term of its own but does use part of that margin: on
+# Linux each worker keeps one exiftool running between frames (halide.io.exiftool), a separate
+# process that streams the file (measured 67 MiB peak on a 130 MiB output). Worst worker plus a
+# whole exiftool peak is 509 + 67 = 576 MiB, still ~17% under the 695 MiB estimate; process_scan
+# frees the frame before exiftool writes, so its peak doesn't even coincide with the worker's.
 #
 # History, so K isn't "tuned" back up: it was ~23, then 11 after fixing a float64 upcast and
 # per-line temporaries in core/ (see git history), then 3 after moving every full-resolution path
