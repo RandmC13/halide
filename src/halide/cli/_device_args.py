@@ -1,6 +1,7 @@
 """Shared `--device` CLI argument, resolution, and run-sheet row — used by every command that
-develops a frame (see docs/plans/gpu-acceleration.md Tasks 5-7; `contact` resolves it too, though its
-thumbnails of already-developed frames stay on the CPU).
+develops a frame (see docs/plans/gpu-acceleration.md Tasks 5-7). `contact` takes the flag too, but
+its thumbnails of already-developed frames stay on the CPU, so it resolves only an explicit `gpu`
+(to fail fast, like every command) and never probes for `auto`.
 
 Deliberately tiny and importable at parser-build time: `halide.device` itself imports no heavy
 dependency (not even cupy) at module level, so pulling in `resolve_device`/`ComputeDevice` here
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 
-from halide.device import DEFAULT_DEVICE, ComputeDevice, DeviceUnavailableError, resolve_device
+from halide.device import DEFAULT_DEVICE, ComputeDevice, DeviceUnavailableError, requested_device, resolve_device
 
 # Re-exported from halide.device (the single place that actually acts on it — resolve_device falls
 # back to this same value when neither --device nor $HALIDE_DEVICE is given) so CLI code, and a
@@ -24,14 +25,21 @@ __all__ = [
     "device_fallback_warning",
     "device_row",
     "gpu_hint",
+    "requested_device_arg",
     "resolve_device_arg",
 ]
+
+
+def _device_value(value: str) -> str:
+    """`--device GPU` / `--device " cpu"` mean what they say, as $HALIDE_DEVICE does."""
+    return value.strip().lower()
 
 
 def add_device_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--device",
         choices=("auto", "cpu", "gpu"),
+        type=_device_value,
         default=None,
         help="where to do the arithmetic: auto (GPU if one is usable; default), cpu, or gpu (fail "
         "if unusable). Also HALIDE_DEVICE.",
@@ -46,6 +54,16 @@ def resolve_device_arg(args: argparse.Namespace) -> ComputeDevice:
     try:
         return resolve_device(getattr(args, "device", None))
     except (ValueError, DeviceUnavailableError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def requested_device_arg(args: argparse.Namespace) -> str:
+    """What --device/$HALIDE_DEVICE asks for (`"auto" | "cpu" | "gpu"`), without resolving it —
+    for a command that only needs to know whether a GPU was explicitly requested (`contact`). A
+    bad $HALIDE_DEVICE is the same clean error exit as resolve_device_arg's."""
+    try:
+        return requested_device(getattr(args, "device", None))
+    except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
 

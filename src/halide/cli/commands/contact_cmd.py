@@ -19,7 +19,7 @@ from halide.batch.orchestrator import (
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
-from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
+from halide.cli._device_args import add_device_argument, device_row, requested_device_arg, resolve_device_arg
 from halide.device import ComputeDevice
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
@@ -76,18 +76,18 @@ def run(args: argparse.Namespace) -> int:
     if sheet_path.exists() and not console.confirm_overwrite(sheet_path):
         return 1
 
-    # Resolved even though the thumbnails are made on the CPU (run_thumbnail_batch: the frames are
-    # already developed, and what's left isn't worth uploading a frame for), so --device gpu still
-    # fails fast without CuPy/a driver, like every command (Ruling R7). The Compute line says CPU
-    # rather than naming a card that won't be used. Warnings print even with --quiet, as on the
-    # run-sheet commands.
-    device = resolve_device_arg(args)
+    # The thumbnails are made on the CPU (run_thumbnail_batch: the frames are already developed,
+    # and what's left isn't worth uploading a frame for). So the device is resolved only when a GPU
+    # was explicitly asked for (--device gpu or HALIDE_DEVICE=gpu), which still fails fast without
+    # CuPy/a driver like every command (Ruling R7). `auto` is never resolved here: that would import
+    # CuPy and make a CUDA context (~0.6 s, ~300 MB of GPU memory), and could warn "GPU not usable"
+    # for a command that never uses one.
+    note = ""
+    if requested_device_arg(args) == "gpu":
+        resolve_device_arg(args)
+        note = f"{console.RunSheet.SEP}developed frames need no GPU"
     if not args.quiet:
-        note = f"{console.RunSheet.SEP}developed frames need no GPU" if device.kind == "gpu" else ""
         print(f"Compute: {device_row(ComputeDevice(kind='cpu'))}{note}")
-    fallback_warning = device_fallback_warning(device)
-    if fallback_warning:
-        print(console.warning(fallback_warning))
 
     first = Path(args.inputs[0])
     default_title = first.name if first.is_dir() else first.parent.name or "contact sheet"
