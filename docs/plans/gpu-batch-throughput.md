@@ -2,8 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: **draft for the user's review (2026-09-27).** Branch `gpu-acceleration` (not merged; the
-user wants this done first). Part B is gated on a measurement the user runs (Task B0).
+Status: **Part A implemented; B0 measured (go, see Task B0); B1-B5 in progress (2026-09-27).** Branch
+`gpu-acceleration` (not merged; the user wants this done first).
 
 **Goal:** Make `halide batch` (and bulk `print`/`export`, contact sheets) substantially faster,
 above all on the GPU, without changing any output byte.
@@ -192,12 +192,35 @@ Build it with `--devices cpu` checks in this sandbox (steps 1-3 need no GPU), th
 user.
 
 - [ ] Write the probe; validate steps 1-3 here on 2-4 Roll16 frames; commit.
-- [ ] **User runs it; decision recorded in this plan:**
+- [x] **User runs it; decision recorded in this plan:**
   - **Go** if the 8-process ceiling is at least ~2x today's GPU batch (≥ 2.8 frames/s);
     otherwise B1-B5 are dropped. Also record the actual ceiling, which becomes B5's target.
   - If the disk is the limit, record it and stop. Options for a separate plan: a lower zlib level
     or no compression for the output TIFF (bigger files), or writing outputs to a faster disk.
     Both are user decisions.
+
+**B0 as actually run (2026-09-27): go, on RAM, not on the probe above.** The probe script was
+not written (a first attempt was cut off by a safety filter). The same questions were answered with
+the existing bench (`gpu-acceleration-bench.py`, rerun after Part A), `dd` and `vmstat`/
+`nvidia-smi dmon` during real GPU batches on the user's machine (37 frames of Roll 16):
+- **Disk: not the limit.** The project's NVMe writes 1.3 GB/s with `fsync` (the HDD holding the
+  original rolls: 180 MB/s); a batch needs ~0.45 GB/s.
+- **Part A worked where one frame runs at a time** (GPU, 1 worker: 1.44 -> 1.14 s/frame), but
+  multi-worker GPU batch didn't speed up (2 workers 0.92 s/frame before and after).
+- **GPU batch is limited by host RAM.** Per worker, a frame took 1.19 s alone, 1.61 s with 2
+  workers and 3.24 s with 4 (wall 44.2 / 29.9 / 29.9 s — 2 and 4 workers identical). During the
+  4-worker run the machine swapped out ~167 MB/s (swap in use 5.0 -> 10.4 GB), 29% of CPU time went
+  to the kernel, the CPU was still 34% idle and the GPU was busy only ~30% of the time. 1.2 GiB per
+  GPU worker (vs ~0.4 GiB per CPU-only worker) is what Part B removes, so Part B goes ahead.
+- **CPU batch** is limited by cores and memory bandwidth, not disk (dev sandbox, 16 frames, vmstat:
+  iowait 0, 8 workers keep all 8 physical cores busy; Part A took 8 workers from 17 s to 14.3 s).
+  Part B doesn't change the CPU path.
+- Not measured (was probe item 4): the service's own host memory. B3 starts from the measured GPU
+  worker overhead (`_GPU_HOST_OVERHEAD_BYTES`, 1 GiB) plus one frame's working memory, and B4's
+  bench refits it.
+- One odd result, not reproduced: in the bench's first CPU run (1 worker) 7 of 37 input scans failed
+  to decode (`LIBDEFLATE_BAD_DATA`) and read fine in every other run, on both machines; the files
+  are unmodified.
 
 ### Task B1: Frames in shared memory; decode straight into them
 
