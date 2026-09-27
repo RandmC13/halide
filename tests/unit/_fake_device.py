@@ -8,8 +8,11 @@ arithmetic.
 What it emulates, because each is a real way CuPy code breaks:
   - no implicit conversion to numpy: `np.asarray(a)`, `np.array(a)` and any numpy module function
     (`np.maximum(a, …)`, `np.percentile(a, …)`) raise — a stage must call `xp.<name>`;
-  - no mixing with a plain numpy array: an operator or `fake_xp` function given one raises — it has
-    to be uploaded with `xp.asarray` first. Python and numpy *scalars* mix freely, as with CuPy;
+  - no mixing with a plain numpy array, tuple or list: an operator or `fake_xp` function given one
+    raises — it has to be uploaded with `xp.asarray` first (CuPy rejects a tuple operand where numpy
+    would silently build a float64 array from it). Sequences stay allowed where CuPy takes them:
+    `xp.asarray`/`xp.array`, percentile's `q`, `reshape`'s shape, index tuples. Python and numpy
+    *scalars* mix freely, as with CuPy;
   - reductions return a 0-d device array, not a host scalar (CuPy's `percentile`, `median`, …),
     which `float()`/`bool()` bring back to the host;
   - operators, in-place operators, indexing, `.astype`, `.reshape`, `.shape`/`.ndim`/`.dtype` work
@@ -84,10 +87,10 @@ class FakeDeviceArray:
 
 def _binary(op):
     def forward(self, other):
-        return _wrap(op(self._data, _unwrap(other)))
+        return _wrap(op(self._data, _operand(other)))
 
     def reflected(self, other):
-        return _wrap(op(_unwrap(other), self._data))
+        return _wrap(op(_operand(other), self._data))
 
     return forward, reflected
 
@@ -95,7 +98,7 @@ def _binary(op):
 def _inplace(op):
     def method(self, other):
         # The ufunc writes into this array's own buffer — same aliasing as numpy's `a *= b`.
-        op(self._data, _unwrap(other), out=self._data)
+        op(self._data, _operand(other), out=self._data)
         return self
 
     return method
@@ -143,9 +146,21 @@ def _unwrap(x):
     return x
 
 
-def _namespaced(fn):
+def _operand(x):
+    """An array operand: a device array or a scalar. A tuple/list is refused as CuPy refuses it
+    ("Unsupported type <class 'tuple'>") — numpy would quietly make a float64 array of it, which is
+    exactly the "profile tuple not uploaded with xp.asarray" mistake this fake has to catch."""
+    if isinstance(x, (tuple, list)):
+        raise TypeError(f"{type(x).__name__} used as a device-array operand — upload it with xp.asarray")
+    return _unwrap(x)
+
+
+def _namespaced(fn, sequence_args=()):
+    # Positional arguments are array operands (see _operand), except the indices in
+    # `sequence_args`, where CuPy itself takes a plain sequence (percentile's `q`).
     def call(*args, **kwargs):
-        return _wrap(fn(*_unwrap(args), **_unwrap(kwargs)))
+        args = tuple(_unwrap(a) if i in sequence_args else _operand(a) for i, a in enumerate(args))
+        return _wrap(fn(*args, **_unwrap(kwargs)))
 
     call.__name__ = fn.__name__
     return call
@@ -164,8 +179,9 @@ def _upload(fn):
 fake_xp = types.SimpleNamespace(
     **{
         name: _namespaced(getattr(np, name))
-        for name in ("maximum", "minimum", "power", "divide", "log10", "clip", "floor", "percentile")
+        for name in ("maximum", "minimum", "power", "divide", "log10", "clip", "floor")
     },
+    percentile=_namespaced(np.percentile, sequence_args=(1,)),
     asarray=_upload(np.asarray),
     array=_upload(np.array),
     float32=np.float32,

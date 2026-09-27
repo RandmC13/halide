@@ -81,6 +81,15 @@ def test_fake_device_refuses_numpy_leaks():
         np.ones(3, np.float32) * a
     with pytest.raises(TypeError):
         fake_xp.maximum(a, np.ones(3, np.float32))
+    # A profile tuple must be uploaded with xp.asarray, as CuPy requires — not multiplied in raw.
+    with pytest.raises(TypeError):
+        a * (1.0, 2.0, 3.0)
+    with pytest.raises(TypeError):
+        (1.0, 2.0, 3.0) * a
+    with pytest.raises(TypeError):
+        a *= [1.0, 2.0, 3.0]
+    with pytest.raises(TypeError):
+        fake_xp.maximum(a, [1, 2, 3])
 
 
 def test_fake_device_allows_scalars_and_returns_device_reductions():
@@ -90,6 +99,8 @@ def test_fake_device_allows_scalars_and_returns_device_reductions():
     assert isinstance(b, FakeDeviceArray)
     median = fake_xp.percentile(b, 50)
     assert isinstance(median, FakeDeviceArray) and median.ndim == 0
+    assert fake_xp.percentile(b, [10, 90]).shape == (2,)  # CuPy takes a plain sequence for q
+    assert isinstance(fake_xp.asarray((1.0, 2.0, 3.0), dtype=np.float32) * a[:3], FakeDeviceArray)
     assert float(median) == float(np.percentile(np.arange(4, dtype=np.float32) * 2 * 3 + 3, 50))
 
 
