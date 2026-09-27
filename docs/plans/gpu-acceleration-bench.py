@@ -2,7 +2,7 @@
 
 Unlike the probe beside it, this times halide itself: the real `halide invert` and `halide batch`
 commands, at `--device cpu` and `--device gpu`, and `batch` at several `--workers` counts plus the
-automatic choice. It answers two things the plan leaves to measurement:
+automatic choice. It answers three things the plan leaves to measurement:
 
   1. Is the GPU faster for a whole roll, and with how many workers (a GPU worker's time is mostly
      decode + write, so fewer may be enough) — which sets the default device and worker count.
@@ -10,8 +10,16 @@ automatic choice. It answers two things the plan leaves to measurement:
      src/halide/batch/orchestrator.py (`_CUDA_CONTEXT_BYTES`, `_DEVICE_CONTEXT_BYTES`,
      `_DEVICE_FRAME_MULTIPLIER`): one frame is developed in this process on the GPU and CuPy's
      memory pool is read afterwards (it keeps every block it allocated, so what it holds is the
-     frame's peak); `nvidia-smi` adds the CUDA context on top, and is also polled during every GPU
-     batch for each worker's peak.
+     frame's peak) — once with the given calibration and once with per-frame auto calibration
+     (`--auto-density`, the least-margin case); `nvidia-smi` adds the CUDA context on top, and is
+     also polled during every GPU batch for each worker's peak.
+  3. How much host RAM the workers use while they run (all of halide's processes, sampled with
+     psutil) — a GPU worker's host footprint isn't modelled by the worker-count default yet.
+
+Every batch row also shows how many workers `--workers` auto would pick on that device. The GPU
+rows skip 8 workers by default: the provisional estimate fits about 4 GPU workers on an 8 GiB
+card, so at 8 most frames would likely fall back to the CPU and the row would time that instead. Before any GPU
+timing, one untimed GPU `invert` warms up CuPy (its first-ever run compiles kernels).
 
     .venv/bin/python docs/plans/gpu-acceleration-bench.py --scan IMG_0158.tif --roll Roll16-Testing \\
         --profile Roll16-KodakGold200 > gpu-bench.txt
@@ -81,14 +89,63 @@ class _VramPoller:
         return False
 
 
+class _HostRssPoller:
+    """Peak host RAM of a process and all its descendants (halide's parent, its forkserver and
+    every worker), sampled with psutil: the largest total seen at once, and the largest single
+    process. Zero if psutil can't read them."""
+
+    def __init__(self, pid: int, interval: float = 0.2) -> None:
+        self.pid = pid
+        self.interval = interval
+        self.peak_total = 0
+        self.peak_process = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def sample(self) -> None:
+        try:
+            import psutil
+
+            root = psutil.Process(self.pid)
+            processes = [root, *root.children(recursive=True)]
+        except Exception:  # noqa: BLE001 — the process has already exited, or no psutil
+            return
+        sizes = []
+        for process in processes:
+            try:
+                sizes.append(process.memory_info().rss)
+            except Exception:  # noqa: BLE001 — exited between listing and reading
+                pass
+        if sizes:
+            self.peak_total = max(self.peak_total, sum(sizes))
+            self.peak_process = max(self.peak_process, max(sizes))
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.sample()
+            self._stop.wait(self.interval)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join()
+        return False
+
+
 def _run(cmd: list[str], device: str) -> dict:
-    """Run one halide command; on the GPU, the peak GPU memory of every process that used it (the
-    halide parent's own CUDA context — it resolves the device — plus each worker's)."""
+    """Run one halide command; its peak host RAM (all its processes), and on the GPU the peak GPU
+    memory of every process that used it (the halide parent's own CUDA context — it resolves the
+    device — plus each worker's)."""
     with _VramPoller() if device == "gpu" else contextlib.nullcontext() as poller:
         start = time.perf_counter()
-        proc = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                stdin=subprocess.DEVNULL)
+        with _HostRssPoller(proc.pid) as host:
+            output, _ = proc.communicate()
         elapsed = time.perf_counter() - start
-    output = proc.stdout + proc.stderr
     peaks = poller.peaks if poller is not None else {}
     return {
         "seconds": elapsed,
@@ -96,7 +153,40 @@ def _run(cmd: list[str], device: str) -> dict:
         "output": output,
         "fallbacks": output.count(_FALLBACK),
         "vram_peaks_mib": sorted(peaks.values(), reverse=True),
+        "host_peak_total_mib": host.peak_total // _MIB,
+        "host_peak_process_mib": host.peak_process // _MIB,
     }
+
+
+_AUTO_WORKERS = """
+import json, sys
+from pathlib import Path
+from halide.batch.orchestrator import default_worker_count, device_worker_cap, discover_jobs
+from halide.device import resolve_device
+device = resolve_device(sys.argv[2])
+jobs = discover_jobs(Path(sys.argv[1]), Path("."))
+print(json.dumps({"kind": device.kind, "workers": default_worker_count(jobs, device=device),
+                  "gpu_cap": device_worker_cap(jobs, device), "memory_free": device.memory_free}))
+"""
+
+
+def _auto_workers(roll: Path, device: str) -> dict:
+    """What `halide batch --workers` auto would pick on this device, asked in a fresh process (so
+    this one never makes a CUDA context of its own that would hold GPU memory during the runs)."""
+    import json
+
+    proc = subprocess.run([sys.executable, "-c", _AUTO_WORKERS, str(roll), device],
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    if proc.returncode != 0:
+        return {"error": (proc.stderr.strip().splitlines() or ["?"])[-1]}
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def _worker_counts(device: str, requested: list[int] | None) -> list[int]:
+    """The explicit worker counts to time on this device (the automatic choice is always added)."""
+    if requested is not None:
+        return requested
+    return [1, 2, 4] if device == "gpu" else [1, 2, 4, 8]
 
 
 def _frames(roll: Path) -> list[Path]:
@@ -104,7 +194,9 @@ def _frames(roll: Path) -> list[Path]:
 
 
 def _memory_on_device(scan: Path, calibration: list[str], scratch: Path) -> list[str]:
-    """Develop one frame in this process on the GPU; report what the device needed for it."""
+    """Develop one frame in this process on the GPU, twice — with the given calibration, then with
+    per-frame auto calibration (`--auto-density`, the least-margin case for the worker-count
+    constants) — and report what the device needed for each."""
     import cupy
 
     from halide.cli._calibration_args import resolve_density_profile, resolve_tone_params
@@ -120,22 +212,27 @@ def _memory_on_device(scan: Path, calibration: list[str], scratch: Path) -> list
     profile, saved_tone = resolve_density_profile(args)
     tone = resolve_tone_params(args, saved_tone=saved_tone)
     pool = cupy.get_default_memory_pool()
-    pool.free_all_blocks()
-    warnings: list[str] = []
-    process_scan(scan, scratch / "m.tif", Stage.FULL, profile, tone, device=device, on_warning=warnings.append)
-    pool_bytes = pool.total_bytes()
     lines = [
         f"GPU: {device.name}, free before {device.memory_free / 2**30:.2f} / {device.memory_total / 2**30:.2f} GiB",
         f"frame (decoded): {frame_bytes / _MIB:.0f} MiB",
-        f"CuPy pool after one frame (its peak): {pool_bytes / _MIB:.0f} MiB = {pool_bytes / frame_bytes:.2f} x frame",
     ]
-    if warnings:
-        lines.append(f"!! the frame fell back to the CPU: {warnings}")
+    largest_pool = 0
+    for label, density_profile in (("given calibration", profile), ("--auto-density", None)):
+        pool.free_all_blocks()
+        warnings: list[str] = []
+        process_scan(scan, scratch / "m.tif", Stage.FULL, density_profile, tone, device=device,
+                     on_warning=warnings.append)
+        pool_bytes = pool.total_bytes()
+        largest_pool = max(largest_pool, pool_bytes)
+        lines.append(f"CuPy pool after one frame, {label} (its peak): {pool_bytes / _MIB:.0f} MiB = "
+                     f"{pool_bytes / frame_bytes:.2f} x frame")
+        if warnings:
+            lines.append(f"!! the frame ({label}) fell back to the CPU: {warnings}")
     with _VramPoller() as poller:
         time.sleep(1.0)
     used = poller.peaks.get(str(os.getpid()))
     if used is not None:
-        context = used * _MIB - pool_bytes
+        context = used * _MIB - largest_pool
         lines.append(f"nvidia-smi, this process: {used} MiB -> CUDA context + CuPy/library overhead ~{context / _MIB:.0f} MiB")
     else:
         lines.append("nvidia-smi per-process memory unavailable (context size not measured)")
@@ -149,7 +246,8 @@ def main() -> int:
     parser.add_argument("--roll", required=True, type=Path, help="a roll folder (batch)")
     parser.add_argument("--profile", help="saved profile to calibrate with (or pass --rm/--bm/... instead)")
     parser.add_argument("--devices", nargs="+", default=["cpu", "gpu"], choices=["cpu", "gpu"])
-    parser.add_argument("--workers", nargs="+", type=int, default=[1, 2, 4, 8])
+    parser.add_argument("--workers", nargs="+", type=int, default=None,
+                        help="worker counts to time (default: 1 2 4 8 on the CPU, 1 2 4 on the GPU)")
     parser.add_argument("--scratch", type=Path, help="where outputs go meanwhile (default: beside the roll)")
     args, calibration = parser.parse_known_args()
     if args.profile:
@@ -171,13 +269,18 @@ def main() -> int:
     print(f"scratch {scratch}\n")
 
     rows = []
+    autos = {}
     try:
         for device in args.devices:
+            autos[device] = _auto_workers(args.roll, device)
             out = scratch / "invert.tif"
+            if device == "gpu":  # untimed: CuPy compiles its kernels on the first-ever run
+                _run(_halide("invert", str(args.scan), str(out), "--device", device, *calibration), device)
+                out.unlink(missing_ok=True)
             result = _run(_halide("invert", str(args.scan), str(out), "--device", device, *calibration), device)
             out.unlink(missing_ok=True)
             rows.append(("invert", device, "-", result, 1))
-            for workers in [*args.workers, None]:
+            for workers in [*_worker_counts(device, args.workers), None]:
                 out_dir = scratch / "batch"
                 cmd = _halide("batch", str(args.roll), str(out_dir), "--device", device, "--quiet", *calibration)
                 if workers is not None:
@@ -187,16 +290,27 @@ def main() -> int:
                 rows.append(("batch", device, "auto" if workers is None else str(workers), result, len(frames)))
                 print(f"  done: batch {device} workers {workers or 'auto'}: {result['seconds']:.1f} s", file=sys.stderr)
 
-        print("GPU procs: every process that used the card; the smallest is usually the halide parent's own")
-        print("CUDA context (it resolves the device), the rest are workers.\n")
-        print("| command | device | workers | wall s | s/frame | ok | CPU fallbacks | GPU procs | peak VRAM/proc MiB |")
-        print("|---|---|---:|---:|---:|---|---:|---:|---|")
+        for device, auto in autos.items():
+            if "error" in auto:
+                print(f"--workers auto on {device}: couldn't ask ({auto['error']})")
+            else:
+                cap = f", GPU memory fits {auto['gpu_cap']}" if auto.get("gpu_cap") is not None else ""
+                free = f", {auto['memory_free'] / 2**30:.2f} GiB GPU memory free" if auto.get("memory_free") else ""
+                print(f"--workers auto on {device}: {auto['workers']} (resolved to {auto['kind']}{cap}{free})")
+        print("\nGPU procs: every process that used the card; the smallest is usually the halide parent's own")
+        print("CUDA context (it resolves the device), the rest are workers. Host RAM: all of halide's")
+        print("processes together at their peak, and the largest single one.\n")
+        print("| command | device | workers | auto picks | wall s | s/frame | ok | CPU fallbacks | GPU procs "
+              "| peak VRAM/proc MiB | host RAM peak MiB (total / largest) |")
+        print("|---|---|---:|---:|---:|---:|---|---:|---:|---|---|")
         for command, device, workers, r, n in rows:
             peaks = r["vram_peaks_mib"]
+            auto = autos.get(device, {}).get("workers", "?") if command == "batch" else "-"
             print(
-                f"| {command} | {device} | {workers} | {r['seconds']:.1f} | {r['seconds'] / n:.2f} | "
+                f"| {command} | {device} | {workers} | {auto} | {r['seconds']:.1f} | {r['seconds'] / n:.2f} | "
                 f"{'yes' if r['ok'] else 'NO'} | {r['fallbacks']} | {len(peaks) if device == 'gpu' else '-'} | "
-                f"{', '.join(map(str, peaks)) if peaks else '-'} |"
+                f"{', '.join(map(str, peaks)) if peaks else '-'} | "
+                f"{r['host_peak_total_mib']} / {r['host_peak_process_mib']} |"
             )
         failed = [r for *_, r, _ in rows if not r["ok"]]
         for r in failed[:3]:
