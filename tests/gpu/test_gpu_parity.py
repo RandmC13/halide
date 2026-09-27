@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
 pytestmark = pytest.mark.gpu
 
@@ -34,7 +35,13 @@ import halide.banding  # noqa: E402
 from halide.core.types import DensityProfile, ToneCurveParams  # noqa: E402
 from halide.io.icc import output_profile_bytes  # noqa: E402
 from halide.io.tiff import read_tiff, read_tiff_description, write_tiff  # noqa: E402
-from halide.processing import Stage, print_scan, process_scan, read_provenance  # noqa: E402
+from halide.processing import (  # noqa: E402
+    Stage,
+    export_delivery_image,
+    print_scan,
+    process_scan,
+    read_provenance,
+)
 from tests.unit.test_icc import LINEAR_TAGS, build_icc  # noqa: E402
 
 PROFILE = DensityProfile(white_balance=(1.0, 1.2, 1.5), density_scale=(1.0, 1.05, 1.1))
@@ -172,6 +179,90 @@ def test_real_scan_on_gpu_matches_cpu(tmp_path, scan, tone, profile):
 def test_real_scan_print_on_gpu_matches_cpu(tmp_path, scan):
     process_scan(scan, tmp_path / "flat.tif", Stage.FULL, PROFILE, ToneCurveParams(mode="linear"))
     cpu, _ = print_scan(tmp_path / "flat.tif", tmp_path / "cpu.tif", ToneCurveParams())
-    gpu, _ = print_scan(tmp_path / "flat.tif", tmp_path / "gpu.tif", ToneCurveParams(), device=_DEVICE)
+    warnings = []
+    gpu, _ = print_scan(tmp_path / "flat.tif", tmp_path / "gpu.tif", ToneCurveParams(), device=_DEVICE,
+                        on_warning=warnings.append)
+    assert warnings == [], warnings  # a silent fallback would make this a CPU-vs-CPU comparison
     _assert_pixels_close(tmp_path / "gpu.tif", tmp_path / "cpu.tif")
     _assert_tone_close(gpu, cpu)
+    assert read_provenance(read_tiff_description(tmp_path / "gpu.tif"))["device"] == "gpu"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: export_delivery_image's device path (io/raster.py's namespace-generic to_srgb_8bit).
+# Held to its own, 8-bit tolerance — the brief's bar, checked explicitly rather than folded into
+# "<= 1 code value" so a systematic offset can't hide inside that check.
+# ---------------------------------------------------------------------------
+
+EXPORT_MAX_CODE_DIFF = 1
+EXPORT_MIN_FRACTION_IDENTICAL = 0.999
+
+
+def _png_pixels(path):
+    with Image.open(path) as img:
+        return np.asarray(img).astype(np.int16)
+
+
+def _assert_export_close(gpu_png, cpu_png, label):
+    gpu, cpu = _png_pixels(gpu_png), _png_pixels(cpu_png)
+    assert gpu.shape == cpu.shape
+    diff = np.abs(gpu - cpu)
+    max_diff = int(diff.max())
+    fraction_identical = 1.0 - np.count_nonzero(diff) / diff.size
+    print(f"{label}: max code-value diff {max_diff}, {fraction_identical:.6%} of pixels identical")
+    assert max_diff <= EXPORT_MAX_CODE_DIFF, f"{label}: max diff {max_diff} > {EXPORT_MAX_CODE_DIFF}"
+    assert fraction_identical >= EXPORT_MIN_FRACTION_IDENTICAL, (
+        f"{label}: only {fraction_identical:.4%} of pixels identical "
+        f"(need >= {EXPORT_MIN_FRACTION_IDENTICAL:.1%})"
+    )
+
+
+def test_export_delivery_image_on_gpu_matches_cpu(tmp_path):
+    scan = _write_scan(tmp_path / "neg.tif")
+    process_scan(scan, tmp_path / "positive.tif", Stage.FULL, PROFILE, ToneCurveParams())
+    warning_cpu = export_delivery_image(tmp_path / "positive.tif", tmp_path / "cpu.png")
+    warnings = []
+    warning_gpu = export_delivery_image(
+        tmp_path / "positive.tif", tmp_path / "gpu.png", device=_DEVICE, on_warning=warnings.append
+    )
+    assert warnings == [] and warning_cpu is None and warning_gpu is None
+    _assert_export_close(tmp_path / "gpu.png", tmp_path / "cpu.png", "synthetic")
+
+
+def test_export_out_of_memory_on_gpu_falls_back_to_cpu(tmp_path, monkeypatch):
+    """A real CuPy OutOfMemoryError mid-conversion, raised from the device path: the delivery image
+    still comes out, on the CPU, pixel-identical to a plain CPU export, with the warning."""
+    import cupy
+
+    import halide.processing
+
+    real = halide.processing.to_srgb_8bit
+
+    def oom_on_device(band, *args, **kwargs):
+        if isinstance(band, cupy.ndarray):
+            raise cupy.cuda.memory.OutOfMemoryError(1 << 40, 0, 0)
+        return real(band, *args, **kwargs)
+
+    scan = _write_scan(tmp_path / "neg.tif")
+    process_scan(scan, tmp_path / "positive.tif", Stage.FULL, PROFILE, ToneCurveParams())
+    export_delivery_image(tmp_path / "positive.tif", tmp_path / "cpu.png")
+    monkeypatch.setattr(halide.processing, "to_srgb_8bit", oom_on_device)
+    warnings = []
+    export_delivery_image(
+        tmp_path / "positive.tif", tmp_path / "gpu.png", device=_DEVICE, on_warning=warnings.append
+    )
+    assert np.array_equal(_png_pixels(tmp_path / "gpu.png"), _png_pixels(tmp_path / "cpu.png"))
+    assert len(warnings) == 1 and "out of GPU memory" in warnings[0]
+
+
+@pytest.mark.skipif(not REAL_SCANS, reason="no real scans (IMG_*.tif) in the repo root")
+@pytest.mark.parametrize("scan", REAL_SCANS, ids=[p.stem for p in REAL_SCANS])
+def test_real_scan_export_on_gpu_matches_cpu(tmp_path, scan):
+    process_scan(scan, tmp_path / "positive.tif", Stage.FULL, PROFILE, ToneCurveParams())
+    warning_cpu = export_delivery_image(tmp_path / "positive.tif", tmp_path / "cpu.png")
+    warnings = []
+    warning_gpu = export_delivery_image(
+        tmp_path / "positive.tif", tmp_path / "gpu.png", device=_DEVICE, on_warning=warnings.append
+    )
+    assert warnings == [] and warning_cpu is None and warning_gpu is None
+    _assert_export_close(tmp_path / "gpu.png", tmp_path / "cpu.png", scan.stem)

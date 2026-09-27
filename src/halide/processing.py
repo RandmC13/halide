@@ -38,7 +38,7 @@ from halide.io.contact_sheet import (
     thumbnail_from_display,
     thumbnail_from_linear,
 )
-from halide.io.raster import write_delivery_image
+from halide.io.raster import to_srgb_8bit, write_delivery_image, write_srgb_8bit_image
 from halide.io.scan_metadata import DarktableState, ScanSettings, read_scan_metadata
 from halide.io.tiff import copy_exif_metadata, read_tiff, read_tiff_description, set_description, write_tiff
 
@@ -428,7 +428,13 @@ def print_scan(
     return resolved, warning
 
 
-def export_delivery_image(input_path: str | Path, output_path: str | Path, quality: int = 95) -> str | None:
+def export_delivery_image(
+    input_path: str | Path,
+    output_path: str | Path,
+    quality: int = 95,
+    device: ComputeDevice | None = None,
+    on_warning: Callable[[str], None] | None = None,
+) -> str | None:
     """Convert one processed ACEScg TIFF into a delivery-ready sRGB PNG/JPEG. The single place this
     logic lives, so `halide export`'s single-file and bulk-directory modes, and the export worker
     pool, don't duplicate it — same reasoning as process_scan above.
@@ -436,6 +442,12 @@ def export_delivery_image(input_path: str | Path, output_path: str | Path, quali
     Returns a warning message if the input's embedded ICC profile doesn't look like ACEScg (or is
     missing/unusable), or None if it looks fine. Unlike ScanColorError elsewhere in this module,
     this is not fatal — export can still proceed by assuming ACEScg, it just may be wrong.
+
+    `device`: None or a CPU device runs the sRGB conversion on the CPU exactly as before. A GPU
+    device converts there instead (see `_export_srgb_on_device`); on any GPU problem the conversion
+    is redone on the CPU and `on_warning` is told why (printed if no callback is given) — the same
+    "never fail a frame the CPU could have handled" contract as `process_scan`/`_run_on_device`.
+    Nothing here is written into `scan.image` on the way, so a fallback needs no re-read.
     """
     scan = read_tiff(input_path)
     warning = None
@@ -453,8 +465,39 @@ def export_delivery_image(input_path: str | Path, output_path: str | Path, quali
         except UnsupportedICCProfileError as exc:
             warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway."
 
-    write_delivery_image(output_path, scan.image, quality=quality)
+    srgb_8bit = _export_srgb_on_device(input_path, scan.image, device, on_warning)
+    if srgb_8bit is not None:
+        write_srgb_8bit_image(output_path, srgb_8bit, quality=quality)
+    else:
+        write_delivery_image(output_path, scan.image, quality=quality)
     return warning
+
+
+def _export_srgb_on_device(input_path, acescg_image: np.ndarray, device: ComputeDevice | None, on_warning):
+    """`export_delivery_image`'s device path: upload `acescg_image` once, run `to_srgb_8bit`
+    (namespace-generic, halide.io.raster) over it in DEVICE_BAND_BYTES bands, and download each
+    band straight into a host uint8 buffer this function owns alone — never into `acescg_image`
+    itself. That means a failure partway through never needs to re-read the scan the way
+    `_run_on_device` does for the develop path: `acescg_image` was only ever read from, so a plain
+    CPU conversion of it afterwards is exactly as if the GPU had never been tried.
+
+    Returns the finished (H, W, 3) uint8 array, or None when there's no GPU to use or it failed
+    (then `on_warning` is told why, as with `_run_on_device`)."""
+    if device is None or device.kind != "gpu":
+        return None
+    frame = None
+    try:
+        frame = _device.to_device(acescg_image)
+        srgb_8bit = np.empty(acescg_image.shape, dtype=np.uint8)
+        row_bytes = int(np.prod(acescg_image.shape[1:], dtype=np.int64)) * acescg_image.dtype.itemsize
+        for band in banding.band_slices(acescg_image.shape[0], row_bytes, banding.DEVICE_BAND_BYTES):
+            _device.to_host(to_srgb_8bit(frame[band]), out=srgb_8bit[band])
+        return srgb_8bit
+    except Exception as exc:  # noqa: BLE001 — any GPU problem: redo on the CPU, never fail the export
+        del frame
+        _device.release_memory()
+        _warn(on_warning, _gpu_fallback_message(input_path, exc))
+        return None
 
 
 def estimate_roll_density_profile(

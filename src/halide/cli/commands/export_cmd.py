@@ -63,6 +63,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
+    from halide import device as halide_device
     from halide.processing import export_delivery_image
 
     if not input_path.exists():
@@ -82,7 +83,11 @@ def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
         console.ENLARGER_FRAMES, label, min_width=console.ENLARGER_MIN_SIZE[0],
         min_height=console.ENLARGER_MIN_SIZE[1], interval=0.45,
     ):
-        warning = export_delivery_image(input_path, args.output, quality=args.quality)
+        warning = export_delivery_image(
+            input_path, args.output, quality=args.quality,
+            device=device, on_warning=lambda msg: print(console.warning(msg)),
+        )
+    halide_device.release_memory()
     if warning:
         print(console.warning(warning))
 
@@ -113,7 +118,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
 
     with console.RunSheet(quiet=args.quiet) as sheet:
         roll_row(sheet, input_dir, len(jobs), str(output_dir))
-        compute_row(sheet, device)
+        compute_row(sheet, device)  # shown for consistency; not yet passed to the worker pool below
         workers = choose_workers(
             args, jobs, sheet,
             default_count=default_export_worker_count, budget_warning=export_memory_budget_warning,
@@ -162,9 +167,11 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
-    # Not yet passed into export_delivery_image (Task 6 wires the export step onto the device) —
-    # resolved and shown here regardless, so --device gpu still fails fast without CuPy/a driver,
-    # and every command's Compute row behaves the same way (see Ruling R7).
+    # Resolved here regardless of which mode runs, so --device gpu still fails fast without
+    # CuPy/a driver and every command's Compute row behaves the same way (Ruling R7). Task 6 wired
+    # this into the single-file path (_run_single, above); the bulk-directory path still runs the
+    # export worker pool CPU-only (_run_bulk -> run_export_batch -> batch/orchestrator.py's
+    # _export_worker, which doesn't take a device yet) — that pool is Task 7's job.
     device = resolve_device_arg(args)
     input_path = Path(args.input)
     if input_path.is_dir():

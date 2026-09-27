@@ -53,6 +53,9 @@ class FakeDeviceArray:
     def astype(self, dtype, copy=True):
         return _wrap(self._data.astype(dtype, copy=copy))
 
+    def round(self):
+        return _wrap(self._data.round())
+
     def reshape(self, *shape):
         return _wrap(self._data.reshape(*shape))
 
@@ -179,7 +182,7 @@ def _upload(fn):
 fake_xp = types.SimpleNamespace(
     **{
         name: _namespaced(getattr(np, name))
-        for name in ("maximum", "minimum", "power", "divide", "log10", "clip", "floor")
+        for name in ("maximum", "minimum", "power", "divide", "log10", "clip", "floor", "where", "sign", "abs")
     },
     percentile=_namespaced(np.percentile, sequence_args=(1,)),
     asarray=_upload(np.asarray),
@@ -187,6 +190,7 @@ fake_xp = types.SimpleNamespace(
     float32=np.float32,
     float64=np.float64,
     int32=np.int32,
+    uint8=np.uint8,
     __name__="fake_xp",
 )
 
