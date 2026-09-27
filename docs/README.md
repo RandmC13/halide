@@ -23,5 +23,7 @@ themselves; these hold the reasoning, evidence and designs behind them.
 - **`investigations/`**: questions looked into, with the evidence, including what didn't work.
   - `anchor-frame.md`: can halide suggest the best frame to calibrate from? It led to the
     multi-point picker. The `check --suggest-anchor` design in it is still unbuilt.
+  - `gpu-batch-throughput.md`: why GPU batch is only ~20% faster (the GPU is idle ~90% of the
+    time; exiftool and TIFF I/O dominate), and what would speed it up. Not acted on yet.
 
 New write-ups go in the matching folder, not the repo root.
