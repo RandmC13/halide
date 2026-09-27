@@ -8,6 +8,7 @@ that ruled it out for io/icc.py's job, only supporting LAB/XYZ/sRGB, is exactly 
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,21 @@ from PIL import Image, ImageCms
 from halide.banding import map_in_bands
 
 _SRGB_ICC_BYTES = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+
+@functools.cache
+def srgb_matrix() -> np.ndarray:
+    """colour-science's own float64 ACEScg -> sRGB matrix (`colour.matrix_RGB_to_RGB`, Bradford
+    adaptation), applied as one matrix multiply per band instead of colour.RGB_to_RGB's per-pixel
+    broadcast — see to_srgb_8bit and CLAUDE.md, "D1"."""
+    import colour
+
+    return np.asarray(
+        colour.matrix_RGB_to_RGB(
+            colour.RGB_COLOURSPACES["ACEScg"], colour.RGB_COLOURSPACES["sRGB"], "Bradford"
+        ),
+        dtype=np.float64,
+    )
 
 
 def to_srgb_8bit(acescg_image: np.ndarray) -> np.ndarray:
@@ -27,14 +43,16 @@ def to_srgb_8bit(acescg_image: np.ndarray) -> np.ndarray:
     TIFF intermediate is for)."""
     import colour  # imported here, not at module level: it's most of the CLI's startup time
 
-    srgb_linear = colour.RGB_to_RGB(
-        acescg_image,
-        input_colourspace=colour.RGB_COLOURSPACES["ACEScg"],
-        output_colourspace=colour.RGB_COLOURSPACES["sRGB"],
-        chromatic_adaptation_transform="Bradford",
-        apply_cctf_encoding=True,
-    )
-    clipped = np.clip(srgb_linear, 0.0, 1.0)
+    # colour.RGB_to_RGB with apply_cctf_decoding=False (its default, unchanged here) is exactly
+    # `vecmul(matrix_RGB_to_RGB(...), acescg)` — the same per-pixel-broadcast cost this project
+    # already fixed once for the ICC step (see icc.py::working_space_matrices). One BLAS matmul per
+    # band does the same maths; measured on a real scan, the matrix multiply was the small half of
+    # this function's cost (~0.3 s of ~1.7 s) — colour's own cctf_encoding call (applied unchanged
+    # below, so this step is bit-identical) is the rest. Still worth doing: it's free, and it's the
+    # same fix already validated for icc.py.
+    srgb_linear = acescg_image.astype(np.float64) @ srgb_matrix().T
+    encoded = colour.RGB_COLOURSPACES["sRGB"].cctf_encoding(srgb_linear)
+    clipped = np.clip(encoded, 0.0, 1.0)
     return (clipped * 255).round().astype(np.uint8)
 
 

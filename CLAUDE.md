@@ -326,11 +326,48 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     `tests/unit/test_banding.py` pins each banded path to the whole-array pipeline at 1- and 7-row
     bands plus a tracemalloc guard (9.0x the frame before, 1.4x after, on the same test). Bands
     bigger than ~4 MiB measurably cost memory (1000 rows: 713 MiB) for no speed gain. Deliberately
-    *not* done, because each would change output: fusing the two ICC matrices into one float32
-    matrix (~2 s/frame faster, output moves ~1e-7), replacing colour-science, measuring the fit or
+    *not* done, because each would change output: replacing colour-science, measuring the fit or
     auto calibration on a downsampled frame, float16 buffers. Known, pre-existing and untouched:
     export PNGs / contact-sheet JPEGs aren't byte-reproducible between runs even on unchanged code —
     Pillow stamps its synthesized sRGB ICC profile with the creation time (pixels are identical).
+  - **D1 (2026-09-27): fusing the two ICC matrices (and the ACEScg->sRGB matrix) *was* done after
+    all, once the user explicitly accepted "looks identical" rather than bit-identical for this one
+    step** — GPU acceleration (`docs/plans/gpu-acceleration.md`) needs the same two matrix multiplies
+    to run on a GPU later, and colour-science's own per-pixel broadcast (`vecmul` = `np.matmul`
+    broadcast over every pixel) doesn't map onto a GPU matmul either, so this was going to have to
+    change regardless. `io/icc.py::working_space_matrices()` and `io/raster.py::srgb_matrix()`
+    extract colour-science's own float64 matrices (Bradford D50->ACEScg CAT + ACEScg's XYZ->RGB;
+    ACEScg->sRGB, also Bradford) exactly as `colour.XYZ_to_RGB`/`colour.RGB_to_RGB` build them
+    internally, then apply them as one `@` per band instead of colour's per-pixel `vecmul`. Why it
+    isn't bit-identical: confirmed directly (not assumed) that BLAS and numpy's broadcast `vecmul`
+    round the last float64 bit differently even for the identical matrices and identical inputs —
+    `vecmul(m_cat, xyz)` vs `xyz @ m_cat.T` differ by up to 1 float64 ULP on the same seed, before
+    the second matrix is even applied (both paths use FMA, just differently). This is CPU-dependent,
+    confirmed by measuring on this project's own dev sandbox: bit-identical (`maxulp=0`) float32
+    output on all four real scans (190,351,044 values total) and a 60M-value synthetic stress test
+    spanning 1e-5 to 10^0.5 — better than the 1-of-60M/1-ULP difference measured on a different CPU
+    when this was accepted. Accepted tolerance, per unit test (`test_icc.py`/`test_raster.py`): 2
+    float32 ULPs on random data and on 512-row bands of each real scan. Measured cost (IMG_0158,
+    3276x4849, dev sandbox, warm process): `convert_to_working_space` alone 1.86 s -> 0.67 s
+    (~2.8x); `load_working_space_image` (read + convert, banded) 1.70 s -> 0.59 s. `to_srgb_8bit`'s
+    matrix step alone 0.93 s -> 0.29 s (~3.2x), but colour's own `cctf_encoding` call — applied
+    unchanged, so bit-identical — is the larger share of that function's cost (~2.4 s of the
+    function's ~2.4-3.1 s total), so the function's own total only drops ~3.1 s -> ~2.4 s; fusing
+    the matrix doesn't touch the cctf cost. End-to-end acceptance vs `dff3cb2` (pre-change), run
+    through the real CLI (`--rm 0.9 --bm 1.1 --rs 1 --bs 1` and `--auto-density`) on all four real
+    scans — 8/8 combinations passed every criterion, and every TIFF/PNG pair came out genuinely
+    bit-identical (not merely under the accepted bound):
+
+    | Scan | Calibration | invert max\|diff\| | values >= 1/65535 | export PNG | exposure match | contrast match |
+    |---|---|---|---|---|---|---|
+    | IMG_0151 | manual | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0151 | auto-density | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0156 | manual | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0156 | auto-density | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0156-nowb | manual | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0156-nowb | auto-density | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0158 | manual | 0.0 | 0 / 47,383,128 | pixel-identical | exact | exact |
+    | IMG_0158 | auto-density | 0.0 | 0 / 47,383,128 | pixel-identical | exact | exact |
   - **Worker pool after that pass**: `K = 3` (baseline 150 MiB) for inversion and `K = 2` (100 MiB)
     for export/contact, refit from real worker processes' peaks (worst: `--auto-density` 509 MiB RSS
     on a 182 MiB scan) — see the constants' comment in `batch/orchestrator.py`. exiftool needs no
