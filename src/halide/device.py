@@ -49,9 +49,24 @@ class DeviceUnavailableError(Exception):
     fixes it, not a CUDA error code."""
 
 
+def requested_device(requested: str | None = None) -> str:
+    """What was asked for — `"auto" | "cpu" | "gpu"` — without resolving it (no CuPy, no CUDA):
+    `requested` if given, else `$HALIDE_DEVICE`, else DEFAULT_DEVICE. Case and surrounding space
+    are ignored, and an empty (or all-space) `$HALIDE_DEVICE` counts as unset, so
+    `HALIDE_DEVICE= halide ...` isn't an error. Anything else raises ValueError."""
+    if requested is None:
+        requested = os.environ.get(DEVICE_ENV, "").strip() or DEFAULT_DEVICE
+    normalised = requested.strip().lower()
+    if normalised not in _VALID_REQUESTS:
+        raise ValueError(
+            f"{DEVICE_ENV}/--device is {requested!r}, but it must be one of {', '.join(_VALID_REQUESTS)}"
+        )
+    return normalised
+
+
 def resolve_device(requested: str | None = None) -> ComputeDevice:
     """Decide which device to run on. `requested` is `"auto" | "cpu" | "gpu"`; if None, falls back
-    to the `HALIDE_DEVICE` environment variable, then to `"auto"`.
+    to the `HALIDE_DEVICE` environment variable, then to `"auto"` (see requested_device).
 
     `"cpu"` never touches CuPy — it can't fail and returns immediately. `"auto"` and `"gpu"` both
     probe for a real, working GPU the same way (import CuPy, count devices, run a tiny kernel);
@@ -59,13 +74,7 @@ def resolve_device(requested: str | None = None) -> ComputeDevice:
     (recording why only if CuPy was installed at all — the normal case, no CuPy, gets no reason to
     show), `"gpu"` raises so the user's explicit request isn't silently downgraded.
     """
-    if requested is None:
-        requested = os.environ.get(DEVICE_ENV, DEFAULT_DEVICE)
-    if requested not in _VALID_REQUESTS:
-        raise ValueError(
-            f"{DEVICE_ENV}/--device is {requested!r}, but it must be one of {', '.join(_VALID_REQUESTS)}"
-        )
-
+    requested = requested_device(requested)
     if requested == "cpu":
         return ComputeDevice(kind="cpu")
 

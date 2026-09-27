@@ -42,6 +42,13 @@ def test_add_device_argument_offers_the_three_choices_and_defaults_to_none():
         parser.parse_args(["--device", "tpu"])
 
 
+def test_device_flag_ignores_case_and_surrounding_space():
+    parser = argparse.ArgumentParser()
+    add_device_argument(parser)
+    assert parser.parse_args(["--device", "GPU"]).device == "gpu"
+    assert parser.parse_args(["--device", " Cpu "]).device == "cpu"
+
+
 def test_default_device_constant_is_auto():
     # R3: one default, "auto", everywhere.
     assert DEFAULT_DEVICE == "auto"
@@ -398,24 +405,69 @@ def test_batch_worker_row_on_the_cpu_is_unchanged(roll_dir, tmp_path, monkeypatc
     assert workers and "free memory and CPU cores" in workers[0] and "GPU" not in workers[0]
 
 
-def test_contact_shows_the_gpu_fallback_reason_even_when_quiet(roll_dir, tmp_path, monkeypatch, capsys):
-    # As the run-sheet commands: --quiet hides progress, never warnings.
+def _recording_resolve(monkeypatch, device):
     import halide.cli._device_args as device_args
 
-    monkeypatch.setattr(
-        device_args, "resolve_device",
-        lambda requested: ComputeDevice(kind="cpu", fallback_reason="cudaErrorInsufficientDriver"),
-    )
-    assert main(["contact", str(roll_dir), str(tmp_path / "sheet.jpg"), "--workers", "1", "--quiet"]) == 0
-    assert "cudaErrorInsufficientDriver" in _strip(capsys.readouterr().out)
+    calls = []
+    monkeypatch.setattr(device_args, "resolve_device", lambda requested: calls.append(requested) or device)
+    return calls
 
 
-def test_contact_says_its_thumbnails_run_on_the_cpu(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves):
-    # Its frames are already developed: nothing for the GPU to do, and the Compute line says so
-    # rather than naming a card that isn't used.
+@pytest.mark.parametrize("env", [None, "auto", "cpu"])
+def test_contact_never_probes_the_gpu_unless_asked_to(roll_dir, tmp_path, monkeypatch, capsys, env):
+    # Its frames are already developed, so it never uses a GPU: resolving `auto` would only import
+    # CuPy, make a CUDA context (~0.6 s, ~300 MB of GPU memory) and possibly warn about a GPU
+    # the command was never going to use.
+    if env is None:
+        monkeypatch.delenv("HALIDE_DEVICE", raising=False)
+    else:
+        monkeypatch.setenv("HALIDE_DEVICE", env)
+    calls = _recording_resolve(monkeypatch, ComputeDevice(kind="cpu", fallback_reason="cudaErrorInsufficientDriver"))
     assert main(["contact", str(roll_dir), str(tmp_path / "sheet.jpg"), "--workers", "1"]) == 0
+    out = _strip(capsys.readouterr().out)
+    assert calls == []
+    assert "cudaErrorInsufficientDriver" not in out and "GPU not usable" not in out
+    compute = [line for line in out.splitlines() if line.startswith("Compute")]
+    assert compute and compute[0] == "Compute: CPU"
+
+
+def test_contact_device_auto_flag_does_not_probe_either(roll_dir, tmp_path, monkeypatch, capsys):
+    calls = _recording_resolve(monkeypatch, _FAKE_GPU)
+    assert main(["contact", str(roll_dir), str(tmp_path / "sheet.jpg"), "--workers", "1", "--device", "auto"]) == 0
+    assert calls == []
+
+
+@pytest.mark.parametrize("how", ["flag", "env"])
+def test_contact_explicit_gpu_still_fails_fast_without_one(roll_dir, tmp_path, monkeypatch, how):
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    argv = ["contact", str(roll_dir), str(tmp_path / "sheet.jpg"), "--workers", "1"]
+    if how == "flag":
+        argv += ["--device", "gpu"]
+    else:
+        monkeypatch.setenv("HALIDE_DEVICE", " GPU ")
+    with pytest.raises(SystemExit, match="halide gpu --install"):
+        main(argv)
+    assert not (tmp_path / "sheet.jpg").exists()
+
+
+def test_contact_explicit_gpu_says_its_thumbnails_run_on_the_cpu(roll_dir, tmp_path, monkeypatch, capsys):
+    calls = _recording_resolve(monkeypatch, _FAKE_GPU)
+    assert main(["contact", str(roll_dir), str(tmp_path / "sheet.jpg"), "--workers", "1", "--device", "gpu"]) == 0
+    assert calls == ["gpu"]
     compute = [line for line in _strip(capsys.readouterr().out).splitlines() if line.startswith("Compute")]
-    assert compute and compute[0].startswith("Compute: CPU")
+    assert compute and compute[0].startswith("Compute: CPU") and "need no GPU" in compute[0]
+
+
+def test_contact_bad_env_value_is_still_a_clean_error(roll_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("HALIDE_DEVICE", "tpu")
+    with pytest.raises(SystemExit, match="HALIDE_DEVICE"):
+        main(["contact", str(roll_dir), str(tmp_path / "sheet.jpg"), "--workers", "1"])
+
+
+def test_empty_env_value_is_not_an_error_on_the_cli(negative_tiff, tmp_path, monkeypatch):
+    monkeypatch.setenv("HALIDE_DEVICE", "")
+    monkeypatch.setitem(sys.modules, "cupy", None)  # auto -> CPU, as with no variable at all
+    assert main(["invert", str(negative_tiff), str(tmp_path / "out.tif"), *MANUAL]) == 0
 
 
 def test_calibrate_hands_the_device_to_the_picker(monkeypatch, gpu_resolves):

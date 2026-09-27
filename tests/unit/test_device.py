@@ -18,7 +18,14 @@ import types
 import pytest
 
 import halide.device as device_module
-from halide.device import DEFAULT_DEVICE, DEVICE_ENV, ComputeDevice, DeviceUnavailableError, resolve_device
+from halide.device import (
+    DEFAULT_DEVICE,
+    DEVICE_ENV,
+    ComputeDevice,
+    DeviceUnavailableError,
+    requested_device,
+    resolve_device,
+)
 
 
 def _fake_cupy(*, device_count=1, device_count_error=None, device_name="NVIDIA GeForce RTX 3070",
@@ -140,6 +147,37 @@ def test_bad_env_value_is_an_error(monkeypatch):
 def test_bad_requested_value_is_an_error(monkeypatch):
     with pytest.raises(ValueError):
         resolve_device("tpu")
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\t"])
+def test_empty_env_value_counts_as_unset(monkeypatch, value):
+    # `HALIDE_DEVICE= halide invert ...` (or an exported-but-empty variable) must not be an error.
+    monkeypatch.setenv(DEVICE_ENV, value)
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    assert requested_device(None) == DEFAULT_DEVICE
+    assert resolve_device(None) == ComputeDevice(kind="cpu")
+
+
+@pytest.mark.parametrize("value", ["CPU", " cpu ", "Cpu\n"])
+def test_env_value_ignores_case_and_surrounding_space(monkeypatch, value):
+    monkeypatch.setitem(sys.modules, "cupy", None)  # "cpu" must never touch CuPy
+    monkeypatch.setenv(DEVICE_ENV, value)
+    assert requested_device(None) == "cpu"
+    assert resolve_device(None).kind == "cpu"
+
+
+def test_requested_value_ignores_case_and_surrounding_space(monkeypatch):
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    assert requested_device(" GPU ") == "gpu"
+    assert resolve_device(" CPU").kind == "cpu"
+    with pytest.raises(DeviceUnavailableError):
+        resolve_device("Gpu")
+
+
+def test_requested_device_rejects_a_bad_value_naming_the_variable(monkeypatch):
+    monkeypatch.setenv(DEVICE_ENV, "tpu")
+    with pytest.raises(ValueError, match="HALIDE_DEVICE"):
+        requested_device(None)
 
 
 def test_importing_device_does_not_import_cupy():
