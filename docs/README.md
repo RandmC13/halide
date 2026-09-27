@@ -12,12 +12,11 @@ themselves; these hold the reasoning, evidence and designs behind them.
     with every UI decision the user made. Implemented.
   - `gpu-acceleration.md`: where a frame's time goes, and the CuPy-based `--device auto|cpu|gpu`
     design for running the pipeline on an NVIDIA GPU. Implemented on branch `gpu-acceleration`
-    (see `CLAUDE.md`'s "Decisions and why" for what was actually built) — **pending the user's
-    verification on real GPU hardware** (`pytest -m gpu`, the bench script below); this dev sandbox
-    has no usable GPU. `gpu-acceleration-probe.py` is the one-off measurement script that produced
-    the plan's §7 numbers; `gpu-acceleration-bench.py` times the real `invert`/`batch` on CPU vs.
-    GPU and measures a GPU worker's memory, for refitting the worker-count constants once real
-    numbers are in.
+    (see `CLAUDE.md`'s "Decisions and why" for what was actually built), verified on the user's
+    RTX 3070 (all 46 `pytest -m gpu` tests pass; the benchmark results are in the plan's §7).
+    `gpu-acceleration-probe.py` is the one-off measurement script that produced the plan's first
+    §7 numbers; `gpu-acceleration-bench.py` times the real `invert`/`batch` on CPU vs. GPU and
+    measures a GPU worker's memory — rerun it to refit the worker-count constants on new hardware.
 - **`specs/`**: designs agreed but not built yet.
   - `enlarger-skin.md`: the deferred skeuomorphic "enlarger controller" look for the GUI's
     controls.

@@ -399,8 +399,9 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     bit-identical. Scaling flattens past ~4 workers there (1: 66 s, 2: 35 s, 4: 22 s, 6: 20 s, 8:
     17 s) — probably disk writes (~2 GB of TIFFs per run) and memory bandwidth, not re-tuned from
     one sandbox; re-check on the user's own machine before lowering the physical-core cap.
-- **GPU acceleration (optional, CuPy) — built on branch `gpu-acceleration`
-  (`docs/plans/gpu-acceleration.md`), NOT YET VERIFIED ON REAL HARDWARE — see the last sub-bullet.**
+- **GPU acceleration (optional, CuPy) — `docs/plans/gpu-acceleration.md`; verified on the user's
+  RTX 3070 (2026-09-27): all 46 `pytest -m gpu` tests pass, and the GPU is ~20% faster end to end —
+  see the last sub-bullet.**
   The user asked for a "thorough investigation ... if it increases performance I'd like it to be on
   by default but able to be disabled." Answered with `--device auto|cpu|gpu` (`auto` = default,
   GPU whenever it's usable).
@@ -519,20 +520,22 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     Workers row says "auto-selected to fit free GPU memory" when that cap is what set the count,
     and an explicit `--workers N` above it gets a warning (`device_budget_warning`, beside the RAM
     one): each worker's pool share shrinks as N grows, so too many GPU workers mostly means frames
-    redone on the CPU. A GPU worker's *host* RAM isn't modelled separately yet (the RAM cap uses
-    the CPU constants); the bench samples it.
-    - **PROVISIONAL constants** (marked as such in `batch/orchestrator.py`, not yet measured on a
-      real card): `_CUDA_CONTEXT_BYTES = 384 MiB` (rounded up from the probe's ~300 MB context);
-      `_DEVICE_BAND_SCRATCH_BYTES = 6 x 64 MiB = 384 MiB` (six `DEVICE_BAND_BYTES` temporaries, per
-      §3.3's budget); `_DEVICE_CONTEXT_BYTES = 768 MiB` (the two above); `_DEVICE_FRAME_MULTIPLIER =
-      4` (the resident frame plus the print fit's whole-frame luminance/percentile scratch, doubled
-      for margin — the unbanded probe held 2.1 GiB of pool on a 181 MiB frame, and 768 MiB + 4 x
-      181 MiB ≈ 1.5 GiB is ~70% of that). On the user's RTX 3070 (~6.8 GiB free) this gives **4 GPU
-      workers** by default, against 8 CPU workers on that same machine — expected, since a GPU
-      worker's own time shifts toward decode/write, which §1's timing table already predicted would
-      make batch's GPU gain smaller than a single frame's. **The user's own run of
-      `docs/plans/gpu-acceleration-bench.py` is what refits all four constants and the worker-count
-      default — until then, treat them as a starting estimate, not a measurement.**
+    redone on the CPU. A GPU worker's *host* RAM is ~3x a CPU worker's (below), so for GPU pools
+    the RAM estimate adds `_GPU_HOST_OVERHEAD_BYTES`.
+    - **Constants fitted on the user's RTX 3070** (`docs/plans/gpu-acceleration-bench.py`, plan
+      §7), replacing provisional estimates (768 MiB + 4 x frame = 1492 MiB per worker):
+      one 181 MiB frame peaked at 821 MiB of CuPy pool with a given profile and 878 MiB with
+      `--auto-density` (4.54 / 4.86 x frame — resident frame, band temporaries and whole-frame
+      statistics together), plus ~168 MiB of CUDA context/library overhead (nvidia-smi 1046 MiB).
+      So `_CUDA_CONTEXT_BYTES = 256 MiB` and `_DEVICE_FRAME_MULTIPLIER = 5` (1161 MiB for a real
+      scan, 11% over measured). **Host memory** was the surprise: a GPU worker holds ~1.2 GiB of RAM
+      (largest 1212-1235 MiB) against ~0.4 GiB for a CPU worker on the same frames — CUDA's and
+      CuPy's host-side libraries, ~840 MiB — so `_GPU_HOST_OVERHEAD_BYTES = 1 GiB` is added to the
+      RAM estimate for GPU pools (and to `memory_budget_warning`), or a machine with a big card and
+      little RAM would be given more workers than its RAM holds. On the user's machine (7.6 GiB
+      RAM, 6.58 GiB VRAM free) RAM is now what limits GPU batch to **4 workers** — the count it ran
+      best at (1/2/4 workers: 53/34/25 s for 37 frames), with no CPU fallbacks; the card alone would
+      allow 5.
   - **Test temp files are deleted per test, not kept** (`pyproject.toml`:
     `tmp_path_retention_policy = "failed"`, count 1; `tests/gpu/test_gpu_parity.py` also deletes its
     files after a *failed* test). Found via real use: pytest's default keeps every test's `tmp_path`
@@ -551,28 +554,25 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     `monkeypatch` instance; tests that inject a `ComputeDevice` directly, or
     `tests/gpu/test_gpu_parity.py` (which resolves `"auto"` at **import** time, before any fixture
     runs, so it still targets a real GPU when one exists), are unaffected either way.
-  - **The user's probe** (§7 of the plan, `gpu-probe.txt`, untracked — RTX 3070, 8 GiB, driver
+  - **The user's probe** (§7 of the plan — RTX 3070, 8 GiB, driver
     615.71.09 = CUDA 13.4, 6.7 GiB free, warm run): CuPy import 0.24 s / CUDA context 0.19 s / first
     kernel 0.17 s (roughly 2x on a cold run); upload of a 181 MiB frame 66 ms, download 26 ms;
     per-stage CPU→GPU: ICC matrix 0.058 s → 0.009 s, `negative_to_positive` 2.03 s → 0.005 s
     (1.7e-7 rel), print-fit percentile 0.52 s → 0.013 s (6.3e-8 rel), paper curve 3.51 s → 0.018 s
     (2.9e-6 rel), auto-calibration argsort 0.96 s → 0.006 s (58% of sort orders agree, expected —
     see above). Baselines on that machine: `halide invert` 4.4 s; `halide batch` (37 frames)
-    35.1 s (0.95 s/frame). This is the only real-hardware number available so far, and it came from
-    a short standalone measurement script, not from running halide itself on a GPU.
-  - **NOT YET VERIFIED ON REAL HARDWARE: every GPU code path above.** This dev sandbox has CuPy
-    installed but no usable driver (`cudaErrorInsufficientDriver`), so every GPU test here ran
-    either against the strict fake device (bit-identical by construction — it can catch a plumbing
-    bug but can't validate real device arithmetic) or was confirmed only to *collect and skip
-    cleanly* (`tests/gpu/test_gpu_parity.py`, `@pytest.mark.gpu`). Before trusting the device
-    develop/print/export pipeline, the CPU fallback, `halide gpu --install` against a real driver,
-    the batch VRAM-aware worker count, or auto calibration on the device beyond "it plumbs
-    through", the user needs to run `pytest -m gpu` and `docs/plans/gpu-acceleration-bench.py` on
-    their RTX 3070 and feed the results back in. **If `test_real_scan_on_gpu_matches_cpu[auto]` or
-    `test_real_scan_auto_density_balance_on_gpu_matches_cpu` fails, compare the solved profiles
-    first**: CuPy's argsort orders tied values differently, which can move an auto-calibration
-    density-bin edge — a discrete effect that D2's tolerances weren't designed around — so a
-    failure there isn't necessarily a pipeline bug.
+    35.1 s (0.95 s/frame). These came from a short standalone measurement script, not from halide
+    itself — the per-stage speed-ups looked dramatic, but the end-to-end gain (next) is far smaller,
+    because what's left of a frame is decode, TIFF write and process start-up.
+  - **Verified on the user's RTX 3070 (2026-09-27).** `pytest -m gpu`: 46 passed — every device
+    path against the CPU path within D2 on synthetic images and the four real scans, including both
+    `--auto-density` parity checks (the tie-order caveat above didn't bite) and export. The
+    benchmark (`docs/plans/gpu-acceleration-bench.py`, full table in plan §7), each device at its
+    own default: one `invert` 3.4 -> 2.7 s (~21% faster), a 37-frame `batch` 33.3 -> 26.9 s
+    (0.90 -> 0.73 s/frame, ~19%), no CPU fallbacks. By the user's rule ("on by default if it
+    increases performance") `auto` stays the default everywhere (D3). Before this sandbox saw a real
+    card, every GPU path had only run against the strict fake device; `halide gpu --install` has
+    still only run against fakes (the user installed CuPy with pip themselves).
 - **`--auto-density-roll` selects neutral candidates per frame, then pools candidates — never pools
   raw pixels across frames first.** The per-channel median used to judge "how neutral is this
   pixel" (`calibration/auto.py::_saturation`) is only a valid proxy for the film's own systematic

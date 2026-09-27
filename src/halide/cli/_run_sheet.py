@@ -42,7 +42,7 @@ def choose_workers(
     sheet: RunSheet,
     *,
     default_count: Callable[[list[BatchJob]], int],
-    budget_warning: Callable[[list[BatchJob], int], str | None],
+    budget_warning: Callable[..., str | None],  # (jobs, workers, device=) -> warning or None
     device: ComputeDevice | None = None,
 ) -> int:
     """An explicit --workers N wins (with a warning if it looks too many for free memory, or on a
@@ -50,7 +50,10 @@ def choose_workers(
     on the sheet, naming GPU memory when that's what set the count."""
     if args.workers is not None:
         sheet.row("Workers", f"{args.workers} (--workers)")
-        for warning in (budget_warning(jobs, args.workers), device_budget_warning(jobs, args.workers, device)):
+        for warning in (
+            budget_warning(jobs, args.workers, device=device),
+            device_budget_warning(jobs, args.workers, device),
+        ):
             if warning:
                 sheet.warn("Workers", warning)
         return args.workers

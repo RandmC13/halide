@@ -2,27 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: **built on branch `gpu-acceleration`** (commits `164af8e..d2284c2`; Task 9's documentation
-commit follows), subagent-driven, against base `dff3cb2`. All 9 tasks are done and every test in
-`tests/unit/`, `tests/integration/` and the fake-device path of `tests/gpu/` passes. **Awaiting the
-user's verification on real GPU hardware** — this dev sandbox has CuPy installed but no usable
-NVIDIA driver, so no `@pytest.mark.gpu` test has ever run against a real card. Before trusting the
-GPU path beyond "it plumbs through", the user needs to, on their RTX 3070 machine:
-```bash
-.venv/bin/python -m pytest -m gpu -q
-.venv/bin/python docs/plans/gpu-acceleration-bench.py --scan IMG_0158.tif --roll Roll16-Testing \
-    --profile Roll16-KodakGold200 > gpu-bench.txt
-```
-If `test_real_scan_on_gpu_matches_cpu[auto]` or `test_real_scan_auto_density_balance_on_gpu_matches_cpu`
-fails, compare the solved profiles first: CuPy's argsort orders tied values differently from the
-CPU, which can move an auto-calibration density-bin edge — a discrete effect D2 wasn't built
-around — so that failure isn't necessarily a pipeline bug. Then
-feed `gpu-bench.txt` back so `DEFAULT_DEVICE`, the D3 default-per-command question, and the
-PROVISIONAL worker-memory constants in `batch/orchestrator.py` can be confirmed or refit (see
-`CLAUDE.md`'s GPU "Decisions and why" entry for what's built and what that entry itself flags as
-unverified). The user's decisions are in §6, their probe's numbers in §7, and every ruling made
-along the way (ambiguities the plan itself didn't resolve) in "Rulings made during implementation"
-below.
+Status: **built on branch `gpu-acceleration` and verified on the user's RTX 3070 (2026-09-27).**
+Subagent-driven, against base `dff3cb2`. On the user's machine all 46 `pytest -m gpu` tests pass —
+every GPU path against the CPU path within D2, on synthetic images and the four real scans,
+including both `--auto-density` checks and export. The benchmark (§7) showed the GPU ~20% faster
+for both a single `invert` and a 37-frame `batch`, so `auto` stays the default everywhere (D3); its
+memory measurements refit the GPU worker constants in `batch/orchestrator.py` and added a
+host-memory term for GPU workers (~1.2 GiB each against ~0.4 GiB for a CPU worker). The user's
+decisions are in §6, their machine's numbers in §7, and every ruling made along the way
+(ambiguities the plan itself didn't resolve) in "Rulings made during implementation" below.
 
 ### Rulings made during implementation
 
@@ -359,7 +347,7 @@ CachyOS, Python 3.14.7, 8 physical cores (16 threads), ~6.7 GiB RAM free. **RTX 
 so **tests here see CuPy installed but no driver**. `resolve_device("auto")` must give CPU there,
 with a reason.
 
-Probe, second (warm) run (`gpu-probe.txt`, repo root, untracked):
+Probe, second (warm) run (the probe's output file was deleted once recorded here):
 
 | | CPU s | GPU s | GPU vs CPU |
 |---|---:|---:|---|
@@ -380,6 +368,49 @@ compares profiles within D2, never by sort order.
 
 Baselines on that machine: `halide invert IMG_0158.tif --profile Roll16-KodakGold200` **4.4 s**.
 `halide batch Roll16-Testing … --quiet`, 37 frames: **35.1 s** (0.95 s/frame).
+
+**After the build (2026-09-27), on the same machine** (RAM available 7.6 GiB, 6.58 GiB VRAM free):
+
+`pytest -m gpu`: **46 passed** (154 s), including all four real scans, both `--auto-density`
+parity checks and export — no test needed the "compare the profiles first" caveat.
+
+`docs/plans/gpu-acceleration-bench.py --scan IMG_0158.tif --roll Roll16-Testing --profile
+Roll16-KodakGold200` (37 frames; host RAM is summed RSS across halide's processes, an upper bound
+because copy-on-write pages shared with the forkserver count once per process, and the largest
+single process):
+
+| command | device | workers | wall s | s/frame | CPU fallbacks | peak VRAM/proc MiB | host RAM MiB (total / largest) |
+|---|---|---:|---:|---:|---:|---|---|
+| invert | cpu | - | 3.4 | 3.41 | 0 | - | 369 / 369 |
+| batch | cpu | 1 | 104.6 | 2.83 | 0 | - | 579 / 392 |
+| batch | cpu | 2 | 53.6 | 1.45 | 0 | - | 926 / 403 |
+| batch | cpu | 4 | 36.3 | 0.98 | 0 | - | 1557 / 399 |
+| batch | cpu | 8 | 33.0 | 0.89 | 0 | - | 2818 / 394 |
+| batch | cpu | auto (8) | 33.3 | 0.90 | 0 | - | 2790 / 394 |
+| invert | gpu | - | 2.7 | 2.71 | 0 | 988 | 1209 / 1209 |
+| batch | gpu | 1 | 53.2 | 1.44 | 0 | 982 (+158 parent) | 1883 / 1234 |
+| batch | gpu | 2 | 34.0 | 0.92 | 0 | 1376, 796 (+158) | 3074 / 1213 |
+| batch | gpu | 4 | 25.0 | 0.68 | 0 | 1426, 1376, 796, 796 (+158) | 5403 / 1212 |
+| batch | gpu | auto (4) | 26.9 | 0.73 | 0 | same | 5481 / 1235 |
+
+One frame on the GPU, in one process (181 MiB decoded): CuPy pool peak **821 MiB** with a given
+profile (4.54 x frame), **878 MiB** with `--auto-density` (4.86 x frame); nvidia-smi 1046 MiB for
+the process, so CUDA context + library overhead ~168 MiB.
+
+What it decided:
+- **D3 stays `auto` everywhere.** The GPU is ~21% faster for one `invert` (3.4 -> 2.7 s) and ~19%
+  for the roll (0.90 -> 0.73 s/frame at each device's own default). Far less than the per-stage
+  probe suggested, because what's left is decode, TIFF write and process start-up, which a GPU
+  can't touch (§1 predicted this).
+- **GPU worker device memory refit** (`batch/orchestrator.py`): 256 MiB + 5 x frame (1161 MiB for
+  a real scan; measured 1046), replacing the provisional 768 MiB + 4 x frame (1492 MiB).
+- **New: GPU workers' host memory.** A GPU worker holds ~1.2 GiB of RAM against ~0.4 GiB for a CPU
+  worker (CUDA's and CuPy's host-side libraries, ~840 MiB). The RAM cap now adds 1 GiB per GPU
+  worker (`_GPU_HOST_OVERHEAD_BYTES`), so a machine with a big card and little RAM isn't given
+  more workers than its RAM holds. On the user's machine the RAM cap is now what gives 4 GPU
+  workers — the count the benchmark ran best at (1 -> 2 -> 4 workers: 53 -> 34 -> 25 s).
+- Not measured, left as is: 5+ GPU workers (the RAM cap rules them out here), and the CUDA
+  overhead figure's one weak spot (the bench subtracts the larger of the two pool peaks).
 
 What was asked (kept for the record):
 
