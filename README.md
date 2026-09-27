@@ -164,9 +164,10 @@ exposure) in its metadata, and `invert` prints it too.
 
 ## GPU acceleration (optional)
 
-If you have an NVIDIA card, halide can develop frames on it instead of the CPU — several times
-faster on a full-resolution scan. It needs an NVIDIA GPU; there's nothing to gain on other
-hardware, so halide doesn't mention this unless it finds one.
+If you have an NVIDIA card, halide can develop frames on it instead of the CPU. Early
+measurements of the individual steps on a full-resolution scan showed large speed-ups; how much
+faster a whole frame or roll gets hasn't been measured yet. It needs an NVIDIA GPU; there's
+nothing to gain on other hardware, so halide doesn't mention this unless it finds one.
 
 ```bash
 halide gpu             # what halide sees: your card, and whether GPU support is installed
@@ -175,8 +176,10 @@ halide gpu --install   # add it (downloads CuPy and NVIDIA's CUDA libraries, abo
 
 GPU support isn't installed by default because that download is large. Once it's there, halide
 uses it automatically (`--device auto`, the default) whenever it's usable, and falls back to the
-CPU on its own if it isn't. Force the CPU with `--device cpu` or `HALIDE_DEVICE=cpu` — output is
-the same either way, just slower. `halide gpu --install` also prints the command to remove it
+CPU on its own if it isn't. Force the CPU with `--device cpu` or `HALIDE_DEVICE=cpu`. GPU and CPU
+output aren't bit-for-bit identical — the two round the last digit of some calculations
+differently — but halide's GPU tests require them to match to within 1 part in 100,000, and
+8-bit exports to within one code value. Each output TIFF records which one made it. `halide gpu --install` also prints the command to remove it
 again later.
 
 ## How it works

@@ -13,7 +13,11 @@ GPU path beyond "it plumbs through", the user needs to, on their RTX 3070 machin
 .venv/bin/python docs/plans/gpu-acceleration-bench.py --scan IMG_0158.tif --roll Roll16-Testing \
     --profile Roll16-KodakGold200 > gpu-bench.txt
 ```
-and feed `gpu-bench.txt` back so `DEFAULT_DEVICE`, the D3 default-per-command question, and the
+If `test_real_scan_on_gpu_matches_cpu[auto]` or `test_real_scan_auto_density_balance_on_gpu_matches_cpu`
+fails, compare the solved profiles first: CuPy's argsort orders tied values differently from the
+CPU, which can move an auto-calibration density-bin edge — a discrete effect D2 wasn't built
+around — so that failure isn't necessarily a pipeline bug. Then
+feed `gpu-bench.txt` back so `DEFAULT_DEVICE`, the D3 default-per-command question, and the
 PROVISIONAL worker-memory constants in `batch/orchestrator.py` can be confirmed or refit (see
 `CLAUDE.md`'s GPU "Decisions and why" entry for what's built and what that entry itself flags as
 unverified). The user's decisions are in §6, their probe's numbers in §7, and every ruling made

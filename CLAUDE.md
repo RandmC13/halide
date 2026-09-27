@@ -486,18 +486,25 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     documented for the CPU-only **D1** decision above (colour-profile/sRGB matrix fusion): D2 is
     that same phenomenon one step further from bit-identity, not a new one.
   - **Kept CPU-only, deliberately:** profile solving and the `--auto-density-roll` pre-pass (both
-    tiny/already downsampled); and contact sheets (`halide contact`, `batch --contact-sheet`) —
-    their thumbnails come from frames that are *already developed*, so all that's left is decode
-    and a block average, and uploading a 181 MiB frame just for that would cost about what it saves.
-    `contact`'s Compute row now reads plain `CPU` (it used to name a card it never touched) plus
-    " · developed frames need no GPU" when a GPU was resolved anyway.
+    tiny/already downsampled); and the *thumbnail* step of contact sheets — all of `halide
+    contact`, and the last step of `batch --contact-sheet` (whose develop step runs on the GPU like
+    any batch; only its thumbnails of the already-developed frames are CPU): all that's left there
+    is decode and a block average, and uploading a 181 MiB frame just for that would cost about
+    what it saves. `halide contact` therefore never resolves `auto` (it would import CuPy and make
+    a CUDA context, ~0.6 s and ~300 MB of GPU memory, and could warn "GPU not usable" for a
+    command that never uses one): it resolves only an explicit `gpu` (flag or `HALIDE_DEVICE`), so
+    that still fails fast, and its Compute line reads plain `CPU` (plus " · developed frames need
+    no GPU" after an explicit `gpu`). `$HALIDE_DEVICE`/`--device` ignore case and surrounding
+    space, and an empty `$HALIDE_DEVICE` counts as unset (`halide.device.requested_device`).
   - **Auto calibration runs on the device** (`calibration/auto.py`'s `_density_local_saturation`,
     `_saturation`, `_neutral_candidate_mask`, `_shadow_and_highlight_from_candidates`, all made
     namespace-generic) because the probe showed it was worth it (below) — `solve_density_balance`
     itself stays CPU, since it only ever receives 3-element host arrays. Its one CuPy-specific
     wrinkle: `argsort` doesn't keep tied (equal-luminance) values in the same order a CPU sort does,
     so a density bin's edge pixel can differ between devices — the probe measured only 58% of sort
-    orders agreeing on a real scan, without moving the solved profile outside tolerance. Its parity
+    orders agreeing on a real scan. The probe compared the sort only; it never solved a profile, so
+    whether the solved profile stays within tolerance is exactly what the `tests/gpu` parity tests
+    will check on real hardware (see the last sub-bullet for what to look at if they fail). Its parity
     tests therefore compare the **solved `DensityProfile` within D2**, never the sort order or bin
     membership.
   - **Batch workers and CUDA/forkserver.** Workers never import cupy inside the forkserver
@@ -506,9 +513,14 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     and each worker resolves its own `ComputeDevice`/CUDA context and CuPy memory-pool limit
     (`cupy.get_default_memory_pool().set_limit(size=share)`) on its first GPU job, keeping both warm
     across frames after that. `default_worker_count` gains a third cap for a GPU device:
-    `memory_free // estimate_worker_device_bytes(jobs)`, alongside the existing CPU-core and RAM
-    caps — an unusable GPU inside one worker falls that worker back to the CPU with a warning on
-    every frame it develops, rather than crashing the batch.
+    `memory_free // estimate_worker_device_bytes(jobs)` (`device_worker_cap`), alongside the
+    existing CPU-core and RAM caps — an unusable GPU inside one worker falls that worker back to the
+    CPU with a warning on every frame it develops, rather than crashing the batch. The run sheet's
+    Workers row says "auto-selected to fit free GPU memory" when that cap is what set the count,
+    and an explicit `--workers N` above it gets a warning (`device_budget_warning`, beside the RAM
+    one): each worker's pool share shrinks as N grows, so too many GPU workers mostly means frames
+    redone on the CPU. A GPU worker's *host* RAM isn't modelled separately yet (the RAM cap uses
+    the CPU constants); the bench samples it.
     - **PROVISIONAL constants** (marked as such in `batch/orchestrator.py`, not yet measured on a
       real card): `_CUDA_CONTEXT_BYTES = 384 MiB` (rounded up from the probe's ~300 MB context);
       `_DEVICE_BAND_SCRATCH_BYTES = 6 x 64 MiB = 384 MiB` (six `DEVICE_BAND_BYTES` temporaries, per
@@ -548,7 +560,11 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     develop/print/export pipeline, the CPU fallback, `halide gpu --install` against a real driver,
     the batch VRAM-aware worker count, or auto calibration on the device beyond "it plumbs
     through", the user needs to run `pytest -m gpu` and `docs/plans/gpu-acceleration-bench.py` on
-    their RTX 3070 and feed the results back in.
+    their RTX 3070 and feed the results back in. **If `test_real_scan_on_gpu_matches_cpu[auto]` or
+    `test_real_scan_auto_density_balance_on_gpu_matches_cpu` fails, compare the solved profiles
+    first**: CuPy's argsort orders tied values differently, which can move an auto-calibration
+    density-bin edge — a discrete effect that D2's tolerances weren't designed around — so a
+    failure there isn't necessarily a pipeline bug.
 - **`--auto-density-roll` selects neutral candidates per frame, then pools candidates — never pools
   raw pixels across frames first.** The per-channel median used to judge "how neutral is this
   pixel" (`calibration/auto.py::_saturation`) is only a valid proxy for the film's own systematic
