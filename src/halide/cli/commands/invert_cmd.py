@@ -88,8 +88,20 @@ def _gpu_hint_stamp() -> Path:
 
 def _maybe_print_gpu_hint(device) -> None:
     """`invert` has no run sheet (see cli/_run_sheet.py::compute_row, which shows the same hint on
-    every batch/print/export run), so showing this every single-frame run would nag — a stamp file
-    makes it once per machine instead. HALIDE_NO_GPU_HINT=1 turns it off entirely."""
+    every batch/print/export run), so showing this every single-frame run would nag — the stamp
+    file below makes it once per machine instead. HALIDE_NO_GPU_HINT=1 turns it off entirely.
+
+    The stamp is only written once a hint has actually been shown, i.e. once `gpu_hint` found a
+    real NVIDIA card with no CuPy installed — so on a machine with no NVIDIA card (the common case)
+    nothing is ever written, and `gpu_hint`'s `detect_nvidia_driver()` ctypes probe re-runs on
+    *every* invert, indefinitely. This is deliberate, not an oversight: a card added to the machine
+    later must still get the hint once, which an unconditional "probed already" stamp would
+    silently prevent. It's only acceptable because the probe itself is cheap when there's nothing
+    to find — measured in this sandbox (no libcuda present) at ~0.11 ms median per call in a fresh
+    process (20 samples; see task-6b-report.md's "Fix round 1" section) — negligible next to a
+    single-frame develop. If a future platform/driver combination makes `detect_nvidia_driver`
+    meaningfully slower, this trade-off needs revisiting (e.g. stamping the "no card" result too,
+    with a re-probe interval), not silently working around it here."""
     if os.environ.get("HALIDE_NO_GPU_HINT"):
         return
     stamp = _gpu_hint_stamp()

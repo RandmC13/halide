@@ -506,6 +506,33 @@ def test_invert_no_hint_when_no_driver(negative_tiff, tmp_path, gpu_hint_home, m
     assert "add GPU support" not in out
 
 
+def test_invert_no_card_never_stamps_and_reprobes_every_run(negative_tiff, tmp_path, gpu_hint_home, monkeypatch):
+    """Review finding (fix round 1): the stamp is only written once a hint is actually shown, so a
+    machine with no NVIDIA card at all never writes it, and `detect_nvidia_driver` (the ctypes
+    probe) is called again on every single invert, indefinitely — deliberate, so a card added to
+    the machine later still gets the hint once. Measured negligible (~0.11 ms median per call in a
+    fresh process, this sandbox, no libcuda present) rather than papered over with an unconditional
+    stamp; see task-6b-report.md's "Fix round 1" section for the measurement."""
+    calls = []
+
+    def fake_detect():
+        calls.append(1)
+        return None
+
+    monkeypatch.setattr(device_module, "detect_nvidia_driver", fake_detect)
+    stamp = tmp_path / "data" / "halide" / "gpu-hint.shown"
+
+    output1 = tmp_path / "positive1.tiff"
+    assert main(["invert", str(negative_tiff), str(output1), *MANUAL]) == 0
+    assert calls == [1]
+    assert not stamp.exists()
+
+    output2 = tmp_path / "positive2.tiff"
+    assert main(["invert", str(negative_tiff), str(output2), *MANUAL]) == 0
+    assert calls == [1, 1]  # probed again — no stamp means no early exit
+    assert not stamp.exists()
+
+
 # ---------------------------------------------------------------------------
 # `--device gpu` without CuPy names the install command (already covered by
 # test_device.py/test_device_cli.py; re-checked here as part of this task's review focus)
