@@ -369,7 +369,7 @@ def welcome_screen() -> str:
             "    halide invert negative.tif flat.tif --output flat",
             "    halide print  flat_edited.tif print.tif",
             "",
-            "  Run `halide --help` for the full command list.",
+            "  Run `halide --help` for the full command list",
         ]
     )
 

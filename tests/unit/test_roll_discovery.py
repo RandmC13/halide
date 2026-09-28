@@ -163,7 +163,7 @@ def test_greyscale_is_refused_plainly(tmp_path):
 
 def test_other_channel_counts_are_refused_plainly(tmp_path):
     assert _fail(_negative(tmp_path / "five.tif", shape=(8, 8, 5))) == \
-        "five.tif has 5 channels; halide needs RGB."
+        "five.tif has 5 channels; halide needs RGB"
 
 
 def test_input_errors_are_scan_colour_errors_so_the_device_paths_pass_them_through():

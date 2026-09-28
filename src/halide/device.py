@@ -150,13 +150,13 @@ def _probe_gpu() -> ComputeDevice:
 
 def _install_hint(exc: Exception) -> str:
     if isinstance(exc, ImportError) and gpu_support_installed():
-        return f"GPU support is installed but couldn't be loaded ({exc}). Run 'halide gpu' to see what's wrong."
+        return f"GPU support is installed but couldn't be loaded ({exc}). Run 'halide gpu' to see what's wrong"
     if isinstance(exc, ImportError):
         return (
             "GPU support isn't installed. Run 'halide gpu --install' to add it, or use "
-            "--device cpu/auto."
+            "--device cpu/auto"
         )
-    return f"the GPU isn't usable ({exc}). Run 'halide gpu --install' to check/fix it, or use --device cpu/auto."
+    return f"the GPU isn't usable ({exc}). Run 'halide gpu --install' to check/fix it, or use --device cpu/auto"
 
 
 def to_device(a):

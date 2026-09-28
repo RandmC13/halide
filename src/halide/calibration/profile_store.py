@@ -49,15 +49,15 @@ def validate_profile_name(name: str) -> str:
     it's ever turned into a Path. Returns the name with surrounding whitespace stripped."""
     stripped = name.strip()
     if not stripped:
-        raise ProfileNameError("Profile names can't be empty.")
+        raise ProfileNameError("Profile names can't be empty")
     if "/" in stripped or "\\" in stripped or "\0" in stripped:
         raise ProfileNameError(
-            "Profile names can't contain / or \\ - they name a file in halide's profiles folder."
+            "Profile names can't contain / or \\ - they name a file in halide's profiles folder"
         )
     if stripped.startswith(".") or stripped.startswith("-"):
         raise ProfileNameError("Profile names can't start with '.' or '-'.")
     if len(stripped) > _MAX_NAME_LENGTH:
-        raise ProfileNameError(f"Profile names can be at most {_MAX_NAME_LENGTH} characters.")
+        raise ProfileNameError(f"Profile names can be at most {_MAX_NAME_LENGTH} characters")
     return stripped
 
 

@@ -60,7 +60,7 @@ def _status() -> int:
 
     driver = halide_device.detect_nvidia_driver()
     if driver is None:
-        print("No NVIDIA GPU found. halide will run on the CPU.")
+        print("No NVIDIA GPU found. halide will run on the CPU")
         return 0
 
     name = driver.device_name or "An NVIDIA GPU"
@@ -103,7 +103,7 @@ def _install(args: argparse.Namespace) -> int:
         return 1
 
     if importlib.util.find_spec("pip") is None:
-        print(f"halide can't install GPU support automatically here — there's no pip in {sys.prefix}.")
+        print(f"halide can't install GPU support automatically here — there's no pip in {sys.prefix}")
         print("Run whichever of these matches how halide itself was installed:")
         # Double quotes (the brackets need quoting in zsh): they work in POSIX shells, PowerShell
         # and cmd.exe alike — cmd.exe keeps single quotes as part of the argument.
