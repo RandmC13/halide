@@ -10,12 +10,15 @@ from halide.cli.commands import (
     check_cmd,
     contact_cmd,
     export_cmd,
+    gpu_cmd,
     invert_cmd,
     print_cmd,
     profile_cmd,
 )
 
-_SUBCOMMANDS = ("invert", "batch", "print", "export", "contact", "check", "profile", "calibrate")
+_SUBCOMMANDS = (
+    "invert", "batch", "print", "export", "contact", "check", "profile", "calibrate", "gpu",
+)
 
 
 def _is_top_level_help(argv: list[str]) -> bool:
@@ -82,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calibrate_cmd.add_arguments(calibrate_parser)
 
+    gpu_parser = subparsers.add_parser(
+        "gpu", help="Find an NVIDIA GPU and report/add optional GPU support"
+    )
+    gpu_cmd.add_arguments(gpu_parser)
+
     return parser
 
 
@@ -113,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
         return profile_cmd.run(args)
     if args.command == "calibrate":
         return calibrate_cmd.run(args)
+    if args.command == "gpu":
+        return gpu_cmd.run(args)
 
     parser.error(f"unknown command {args.command!r}")
     return 2

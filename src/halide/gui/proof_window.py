@@ -12,8 +12,10 @@ It opens at once with a *draft*: every frame's small filmstrip preview printed w
 fit. Meanwhile the real thing develops in the background - each frame at full resolution through
 the very worker `halide batch --contact-sheet` uses (batch/orchestrator.py::_worker, so the same
 per-frame print fit and the same result as a real run) - and replaces its draft as it finishes,
-with a progress bar. Closing the window stops the workers rather than waiting on them, and the
-temporary thumbnails are always deleted.
+with a progress bar. On a GPU the workers share one GPU service process, as in a batch (see
+batch/orchestrator.py::batch_compute), started and stopped with the pool. Closing the window stops
+the workers rather than waiting on them, then the service, and the temporary thumbnails (and any
+shared-memory frame a stopped worker held) are always deleted.
 
 The sheet is io/contact_sheet.py's own (the same renderer as `halide contact`), so a proof here
 looks exactly like the sheet the CLI would write.
@@ -46,8 +48,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from halide.batch.orchestrator import BatchJob, _pool_context, _worker, default_worker_count
+from halide.batch.orchestrator import (
+    BatchJob,
+    _pool_context,
+    _wait_for_exit,
+    _worker,
+    batch_compute,
+    default_worker_count,
+    service_worker_count,
+)
+from halide.cli import console
 from halide.core.types import DensityProfile, ToneCurveParams
+from halide.device import ComputeDevice
 from halide.gui.render import positive_display
 from halide.io.contact_sheet import SheetLayout, Tile, caption_from_provenance, load_thumbnail, render_sheet, write_sheet
 from halide.processing import Stage
@@ -63,10 +75,14 @@ class ProofRenderer(QThread):
 
     frameDone = Signal(int, object, object, object)
 
-    def __init__(self, paths: list[Path], gains: list[float], profile: DensityProfile, tone: ToneCurveParams, parent=None) -> None:
+    def __init__(
+        self, paths: list[Path], gains: list[float], profile: DensityProfile, tone: ToneCurveParams,
+        device: ComputeDevice | None = None, parent=None,
+    ) -> None:
         super().__init__(parent)
         self._paths, self._gains = list(paths), list(gains)
         self._profile, self._tone = profile, tone
+        self._device = device
 
     def run(self) -> None:
         if self.isInterruptionRequested():  # closed before it got going
@@ -78,14 +94,36 @@ class ProofRenderer(QThread):
         ]
         for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
             os.environ.setdefault(var, "1")
-        workers = default_worker_count(jobs)  # reads every frame's header
-        if self.isInterruptionRequested():
+        try:
+            # As run_batch: on a GPU, one shared service (or, if it can't be used, a CUDA context
+            # per worker). Stopped — and its leftover shared frames swept — only after the pool
+            # below has shut down. `cancel=self.isInterruptionRequested` bounds how long closing the
+            # window while the service is still starting has to wait on a slow/hung driver probe
+            # (gpu_service.running_service's own startup poll).
+            with batch_compute(jobs, self._device, cancel=self.isInterruptionRequested) as compute:
+                # Closed first: nothing more to say. A startup cancelled by closing the window comes
+                # back as a fallback reason too, and "each worker uses the GPU itself" would be wrong.
+                if self.isInterruptionRequested():
+                    return
+                if compute.fallback_reason:  # to the terminal, like calibrate's Compute line
+                    print(console.warning(f"GPU service not used ({compute.fallback_reason}) — each worker "
+                                          f"uses the GPU itself instead"))
+                if compute.service is not None:
+                    workers = service_worker_count(jobs, compute)
+                else:
+                    workers = default_worker_count(jobs, device=self._device)  # reads every frame's header
+                if self.isInterruptionRequested():
+                    return
+                self._develop(jobs, compute.worker_args(workers), workers)
+        finally:
             shutil.rmtree(folder, ignore_errors=True)
-            return
+
+    def _develop(self, jobs: list[BatchJob], device_args: tuple, workers: int) -> None:
         executor = ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context())
+        pending: dict = {}
         try:
             pending = {
-                executor.submit(_worker, job, Stage.FULL, self._profile, self._tone, PROOF_FRAME_WIDTH): i
+                executor.submit(_worker, job, Stage.FULL, self._profile, self._tone, PROOF_FRAME_WIDTH, *device_args): i
                 for i, job in enumerate(jobs)
             }
             while pending and not self.isInterruptionRequested():
@@ -95,6 +133,8 @@ class ProofRenderer(QThread):
                     try:
                         result = future.result()
                         error = result.error
+                        if result.warning:  # e.g. redone on the CPU: to the terminal, like calibrate's Compute line
+                            print(console.warning(f"{jobs[index].input_path.name}: {result.warning}"))
                     except Exception as exc:  # noqa: BLE001 - a crashed worker is one bad frame
                         error = str(exc)
                     if error is None and jobs[index].thumbnail_path.exists():
@@ -103,11 +143,18 @@ class ProofRenderer(QThread):
                     else:
                         self.frameDone.emit(index, None, None, error or "no thumbnail")
         finally:
-            if self.isInterruptionRequested():  # closed: stop, don't wait (see gui/loaders.py)
-                for process in list(getattr(executor, "_processes", {}).values()):
+            processes = list((getattr(executor, "_processes", None) or {}).values())
+            # Closed (or anything else cut the loop short): stop, don't wait (see gui/loaders.py).
+            stopping = bool(pending)
+            if stopping:
+                for process in processes:
                     process.terminate()
             executor.shutdown(wait=False, cancel_futures=True)
-            shutil.rmtree(folder, ignore_errors=True)
+            if stopping:
+                # Terminated workers die at once; waiting for them is what makes the shared-frame
+                # sweep that follows (batch_compute's exit) safe. Workers with every frame done hold
+                # no frame, so a finished run doesn't wait for them to exit.
+                _wait_for_exit(processes)
 
 
 class SheetView(QGraphicsView):
@@ -183,6 +230,7 @@ class ProofWindow(QDialog):
         film_stock: str | None,
         settings: str,
         save_dir: Path | None = None,
+        device: ComputeDevice | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowModality(Qt.WindowModality.NonModal)
@@ -248,7 +296,9 @@ class ProofWindow(QDialog):
         self._rerender = QTimer(self)
         self._rerender.setSingleShot(True)
         self._rerender.timeout.connect(self._render)
-        self._renderer = ProofRenderer([p for p, _, _ in frames], [g for _, _, g in frames], profile, tone, self)
+        self._renderer = ProofRenderer(
+            [p for p, _, _ in frames], [g for _, _, g in frames], profile, tone, device, self
+        )
         self._renderer.frameDone.connect(self._on_frame_done)
         self._renderer.start()
 

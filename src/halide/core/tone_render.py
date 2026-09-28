@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from halide.core._constants import MIN_TRANSMITTANCE
+from halide.core._xp import array_namespace
 from halide.core.types import ToneCurveParams
 from halide.io.lut import Cube1D, load_1d_cube
 
@@ -119,14 +120,16 @@ def negative_density_range(positive_linear: np.ndarray) -> tuple[float, float]:
     """(D_lo, D_hi): this frame's robust negative density range, measured on luminance so the fit
     responds to the image's overall tonal range rather than to any one channel. log10 of the
     inverted positive is exactly the negative's density (see tone_render)."""
+    xp = array_namespace(positive_linear)
     if positive_linear.ndim == 3 and positive_linear.shape[-1] == 3:
-        luminance = positive_linear @ np.asarray(ACESCG_LUMINANCE, dtype=positive_linear.dtype)
+        luminance = positive_linear @ xp.asarray(ACESCG_LUMINANCE, dtype=positive_linear.dtype)
     else:
-        luminance = np.array(positive_linear, copy=True)
-    # `luminance` is a private temporary — safe to mutate in place and let np.percentile reorder it.
-    np.maximum(luminance, MIN_TRANSMITTANCE, out=luminance)
-    np.log10(luminance, out=luminance)
-    d_lo, d_hi = np.percentile(
+        luminance = xp.array(positive_linear, copy=True)
+    # `luminance` is a private temporary — safe to mutate in place and let percentile reorder it.
+    xp.maximum(luminance, MIN_TRANSMITTANCE, out=luminance)
+    xp.log10(luminance, out=luminance)
+    # float() brings the two statistics back to the host (on a GPU: one synchronisation per frame).
+    d_lo, d_hi = xp.percentile(
         luminance, [_PRINT_SHADOW_PERCENTILE, _PRINT_HIGHLIGHT_PERCENTILE], overwrite_input=True
     )
     return float(d_lo), float(d_hi)
@@ -197,7 +200,11 @@ def estimate_linear_scale(
     tested) still above 1.0 after scaling — a deliberate trade-off, not an oversight: avoiding
     real highlight detail loss matters far more than a few dust-speck pixels.
     """
-    highlight = np.percentile(positive_linear, highlight_percentile)
+    # Kept as the percentile's own scalar type, not float(): on the CPU that is a numpy scalar of
+    # the image's dtype, so the division below runs in that dtype — float() would divide in float64
+    # instead, and the linear output then differs in the last bit on some frames (30 of 200 random
+    # float32 frames when checked). On a GPU it is a 0-d device array; float() it at the host.
+    highlight = array_namespace(positive_linear).percentile(positive_linear, highlight_percentile)
     if highlight <= 0:
         return 1.0
     return target_value / highlight
@@ -224,12 +231,13 @@ def apply_tone(positive_linear: np.ndarray, resolved: ResolvedTone, curve_path: 
     # `safe` is a fresh copy of positive_linear (never positive_linear itself), so every step below
     # reuses its buffer via `out=`/in-place ops instead of allocating a new full-size array at each
     # line — positive_linear itself is left untouched throughout.
-    safe = np.maximum(positive_linear, MIN_TRANSMITTANCE)
+    xp = array_namespace(positive_linear)
+    safe = xp.maximum(positive_linear, MIN_TRANSMITTANCE)
     # positive_linear == invert(negative) == 1/negative, so log10(positive_linear) is exactly the
     # negative's density (log10(1/negative)) — the domain this curve is defined over. `exposure`
     # positions that density range on the paper's response curve (the darkroom-printing analogue
     # of enlarger exposure time), matching the reference's `base_exposure` constant.
-    density = np.log10(safe, out=safe)
+    density = xp.log10(safe, out=safe)
     density += resolved.exposure
     # `contrast` (paper grade) compresses/expands density around the curve's own domain midpoint
     # before lookup — contrast=1.0 is the untouched reference curve.

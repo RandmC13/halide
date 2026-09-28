@@ -57,7 +57,15 @@ halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sR
 halide profile list|show|edit|rename|delete  # edit: film stock/process/scanner/notes
 halide calibrate [roll_dir | scans… | --profile NAME]  # Qt picker: neutral points on any frames of a
                                                 # roll, fitted together; --profile reopens a saved one
+halide gpu [--install]                         # optional NVIDIA GPU support: what halide sees, and
+                                                # add it (`pip install -e ".[cuda13]"` also works)
 ```
+`invert`/`batch`/`print`/`export`/`contact`/`calibrate` all take `--device auto|cpu|gpu`
+(also `$HALIDE_DEVICE`; default `auto` — GPU whenever one is usable) — see "Decisions and why",
+GPU acceleration. On a GPU, `batch`/`print`/`export` and the contact sheet window share one GPU
+service process between their workers; `HALIDE_GPU_SERVICE=0` (or `off`) makes each worker use the
+GPU itself instead (per-worker mode, the troubleshooting switch). Its tests that need a real card
+are marked `@pytest.mark.gpu` and skip without one; run them with `pytest -m gpu`.
 Tab completion (zsh, bash, fish) sets itself up on the first run from a terminal (see "Decisions
 and why").
 With no calibration source given in a terminal, `invert`/`batch` offer the saved profiles (newest
@@ -73,17 +81,23 @@ src/halide/
   core/        # PURE functions only: no file I/O, no print, no globals, no argparse.
                # density.py (white/density balance), invert.py, tone_render.py, pipeline.py
                # (run_pipeline = the single composed entry point), types.py (DensityProfile,
-               # ToneCurveParams — both frozen dataclasses).
+               # ToneCurveParams — both frozen dataclasses), _xp.py (array_namespace — numpy or
+               # CuPy, whichever the input array belongs to, so every function above runs on
+               # either; see "Decisions and why", GPU acceleration).
   io/          # tiff.py (read/write + dtype normalization), icc.py (validate + color-manage
                # the embedded ICC profile), raster.py (ACEScg -> sRGB delivery export),
-               # lut.py (.cube reader, used by tone_render.py at runtime AND by golden tests).
+               # lut.py (.cube reader, used by tone_render.py at runtime AND by golden tests),
+               # exiftool.py (one kept-open exiftool per process, Linux only, behind tiff.py's
+               # copy_exif_metadata — see "Decisions and why", worker pool).
   calibration/ # auto.py (statistical fallback calibration), profile_store.py (named,
                # reusable DensityProfile JSON files under ~/.config/halide/profiles/), anchors.py
                # (the picker's neutral-point model: scan-gain normalisation, agreement, gates).
   batch/       # orchestrator.py (ProcessPoolExecutor over processing.py, one bad frame doesn't
                # abort the batch), progress.py (terminal rendering only, no math).
-  cli/         # main.py + commands/*.py (argparse), _calibration_args.py (shared flag
-               # definitions/resolution used by both invert and batch).
+  cli/         # main.py + commands/*.py (argparse) including gpu_cmd.py (`halide gpu`/`--install`),
+               # _calibration_args.py (shared flag definitions/resolution used by both invert and
+               # batch), _device_args.py (the shared `--device auto|cpu|gpu` flag/resolution/Compute
+               # row, used by every command).
   gui/         # PySide6/Qt app. Pure, tested, no Qt: sampling.py (picking math), roll.py (the
                # session model), render.py (negative/positive display). Widgets: main_window.py
                # (the picker), filmstrip.py, step_wedge.py, point_list.py, drawers.py,
@@ -91,9 +105,18 @@ src/halide/
   processing.py # The glue layer: read -> validate ICC -> convert to working space -> calibrate
                # -> run_pipeline -> write. Both the single-file CLI command and the batch worker
                # call this same function rather than duplicating the chain.
-  banding.py   # map_in_bands: runs per-pixel core/ functions over ~4 MiB bands of rows into a
-               # buffer the caller owns — how every full-resolution path stays near 1 frame of
-               # memory. Bit-identical to the whole-array call (see "Decisions and why").
+  banding.py   # map_in_bands: runs per-pixel core/ functions over ~4 MiB bands of rows (64 MiB on
+               # the device — DEVICE_BAND_BYTES) into a buffer the caller owns — how every
+               # full-resolution path stays near 1 frame of memory. Bit-identical to the
+               # whole-array call (see "Decisions and why").
+  device.py    # ComputeDevice, resolve_device (auto/cpu/gpu, $HALIDE_DEVICE), to_device/to_host,
+               # detect_nvidia_driver (card detection without CuPy) — optional GPU acceleration,
+               # see "Decisions and why".
+  gpu_service.py # the one GPU process a GPU batch's CPU-only workers share: running_service,
+               # ServiceClient (develop/print_/export), ServiceUnavailable — see "Decisions and
+               # why", GPU service.
+  shared_frames.py # decoded frames in shared memory (/dev/shm) handed between a worker and the
+               # GPU service: new_frame, attach_frame, batch_prefix/sweep.
 ```
 
 The internal working color space is **ACEScg**, chosen (not just used) — the blog is explicit that
@@ -326,16 +349,57 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     `tests/unit/test_banding.py` pins each banded path to the whole-array pipeline at 1- and 7-row
     bands plus a tracemalloc guard (9.0x the frame before, 1.4x after, on the same test). Bands
     bigger than ~4 MiB measurably cost memory (1000 rows: 713 MiB) for no speed gain. Deliberately
-    *not* done, because each would change output: fusing the two ICC matrices into one float32
-    matrix (~2 s/frame faster, output moves ~1e-7), replacing colour-science, measuring the fit or
+    *not* done, because each would change output: replacing colour-science, measuring the fit or
     auto calibration on a downsampled frame, float16 buffers. Known, pre-existing and untouched:
     export PNGs / contact-sheet JPEGs aren't byte-reproducible between runs even on unchanged code —
     Pillow stamps its synthesized sRGB ICC profile with the creation time (pixels are identical).
+  - **D1 (2026-09-27): fusing the two ICC matrices (and the ACEScg->sRGB matrix) *was* done after
+    all, once the user explicitly accepted "looks identical" rather than bit-identical for this one
+    step** — GPU acceleration (`docs/plans/gpu-acceleration.md`) needs the same two matrix multiplies
+    to run on a GPU later, and colour-science's own per-pixel broadcast (`vecmul` = `np.matmul`
+    broadcast over every pixel) doesn't map onto a GPU matmul either, so this was going to have to
+    change regardless. `io/icc.py::working_space_matrices()` and `io/raster.py::srgb_matrix()`
+    extract colour-science's own float64 matrices (Bradford D50->ACEScg CAT + ACEScg's XYZ->RGB;
+    ACEScg->sRGB, also Bradford) exactly as `colour.XYZ_to_RGB`/`colour.RGB_to_RGB` build them
+    internally, then apply them as one `@` per band instead of colour's per-pixel `vecmul`. Why it
+    isn't bit-identical: confirmed directly (not assumed) that BLAS and numpy's broadcast `vecmul`
+    round the last float64 bit differently even for the identical matrices and identical inputs —
+    `vecmul(m_cat, xyz)` vs `xyz @ m_cat.T` differ by up to 1 float64 ULP on the same seed, before
+    the second matrix is even applied (both paths use FMA, just differently). This project's dev
+    sandbox measured bit-identical (`maxulp=0`) float32 output on all four real scans (190,351,044
+    values total) and a 60M-value synthetic stress test spanning 1e-5 to 10^0.5 — against an earlier
+    60M-value stress test in this same sandbox (different random sample) that found 1 of 60M values
+    off by 1 ULP when this tolerance was accepted. Both runs are the same hardware; the two results
+    disagree because they sampled different values, and which of them happen to land on the rare
+    last-bit divergence isn't established — this isn't evidence of CPU-dependence, just of sampling
+    variance in an ad-hoc stress test. Accepted tolerance, per unit test (`test_icc.py`/`test_raster.py`): 2
+    float32 ULPs on random data and on 512-row bands of each real scan. Measured cost (IMG_0158,
+    3276x4849, dev sandbox, warm process): `convert_to_working_space` alone 1.86 s -> 0.67 s
+    (~2.8x); `load_working_space_image` (read + convert, banded) 1.70 s -> 0.59 s. `to_srgb_8bit`'s
+    matrix step alone 0.93 s -> 0.29 s (~3.2x), but colour's own `cctf_encoding` call — applied
+    unchanged, so bit-identical — is the larger share of that function's cost (~2.4 s of the
+    function's ~2.4-3.1 s total), so the function's own total only drops ~3.1 s -> ~2.4 s; fusing
+    the matrix doesn't touch the cctf cost. End-to-end acceptance vs `dff3cb2` (pre-change), run
+    through the real CLI (`--rm 0.9 --bm 1.1 --rs 1 --bs 1` and `--auto-density`) on all four real
+    scans — 8/8 combinations passed every criterion, and every TIFF/PNG pair came out genuinely
+    bit-identical (not merely under the accepted bound):
+
+    | Scan | Calibration | invert max\|diff\| | values >= 1/65535 | export PNG | exposure match | contrast match |
+    |---|---|---|---|---|---|---|
+    | IMG_0151 | manual | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0151 | auto-density | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0156 | manual | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0156 | auto-density | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0156-nowb | manual | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0156-nowb | auto-density | 0.0 | 0 / 47,655,972 | pixel-identical | exact | exact |
+    | IMG_0158 | manual | 0.0 | 0 / 47,383,128 | pixel-identical | exact | exact |
+    | IMG_0158 | auto-density | 0.0 | 0 / 47,383,128 | pixel-identical | exact | exact |
   - **Worker pool after that pass**: `K = 3` (baseline 150 MiB) for inversion and `K = 2` (100 MiB)
     for export/contact, refit from real worker processes' peaks (worst: `--auto-density` 509 MiB RSS
-    on a 182 MiB scan) — see the constants' comment in `batch/orchestrator.py`. exiftool needs no
-    term: it streams (67 MiB peak on a 130 MiB output) and `process_scan` frees the frame before
-    running it. Workers come from a forkserver with `halide.processing` preloaded (they share numpy/
+    on a 182 MiB scan) — see the constants' comment in `batch/orchestrator.py`. exiftool has no
+    term but uses part of the margin: it streams (67 MiB peak on a 130 MiB output), `process_scan`
+    frees the frame before running it, and worst worker + exiftool is 576 MiB of the 695 MiB
+    estimate. Workers come from a forkserver with `halide.processing` preloaded (they share numpy/
     colour-science pages copy-on-write: 4 idle workers 294 -> 73 MiB proportional memory). The old
     fixed `min(cpu_count, 6)` cap is now one worker per *physical* core (`_cpu_cap`, the user's
     choice) — a hyperthread sibling adds little to a numpy-bound worker but costs a frame of memory.
@@ -345,6 +409,299 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     bit-identical. Scaling flattens past ~4 workers there (1: 66 s, 2: 35 s, 4: 22 s, 6: 20 s, 8:
     17 s) — probably disk writes (~2 GB of TIFFs per run) and memory bandwidth, not re-tuned from
     one sandbox; re-check on the user's own machine before lowering the physical-core cap.
+  - **exiftool is kept running per process on Linux** (`-stay_open`, `halide.io.exiftool`; plan
+    `docs/plans/gpu-batch-throughput.md` Part A). A fresh exiftool per output cost ~0.66 s, mostly
+    its own start-up and tag-table loading, not the file rewrite; kept open it is ~0.23 s per file
+    after the first (dev sandbox, exiftool 13.36), and outputs are byte-identical — 15/15 real
+    outputs (4 scans + 3 Roll 16 frames, ICC dropped and kept, a non-ASCII file name).
+    - **Linux only, deliberately**: a `-stay_open` exiftool never exits when its input closes (it
+      polls the pipe every 10 ms forever), so a worker the GUI terminates or the OOM killer takes
+      would leave it running for good. Only Linux guarantees it dies with its process (the
+      kernel's parent-death signal); elsewhere every copy stays the old one-shot call. Sessions
+      are keyed by PID (a forked child never uses its parent's) and closed at exit.
+    - **"Failed" is exiftool's own exit status** for that command, echoed after it
+      (`-echo3 {status=${status}}`, exiftool >= 12.10) — the same condition the one-shot's
+      non-zero exit was. Reading its summary instead ("N image files updated", no `Error:`) isn't
+      the same: an "unchanged" file exits 0, and a missing source's message has no `Error:`
+      prefix. That reading is only the fallback for an older exiftool. A failed file raises
+      `ExifToolError` (the batch reports it as that frame's failure).
+    - A session that dies or hangs (timeout, then killed; its `_exiftool_tmp` file removed) is
+      restarted once; if that fails too, the process goes one-shot for the rest of its life, so a
+      broken exiftool never hangs the batch. Arguments exiftool's argument file can't carry
+      verbatim (a line break, leading/trailing white space, a leading `#`) go one-shot.
+      `-charset filename=utf8` (needed on Windows) was verified byte-neutral on Linux.
+    - The parent-death signal is set in a `preexec_fn`, which Python warns is unsafe with threads
+      (a session starts lazily, mid-batch, possibly beside CUDA's threads). Accepted: the child
+      only calls `prctl` and `getppid` before exec, and there's no other way to set it.
+    - **On the user's machine it paid off only where one frame runs at a time** (GPU, 1 worker:
+      1.44 -> 1.14 s/frame); multi-worker batches didn't move (CPU 8 workers 0.89 -> 0.89, GPU 2
+      workers 0.92 -> 0.92). Those were limited by RAM (GPU) and by cores/memory bandwidth (CPU),
+      not by exiftool — see the GPU service entry.
+- **GPU acceleration (optional, CuPy) — `docs/plans/gpu-acceleration.md`; verified on the user's
+  RTX 3070 (2026-09-27): all 46 `pytest -m gpu` tests pass, and the GPU was ~20% faster end to end
+  — see the last sub-bullet. A GPU batch is now ~2x the CPU through one shared GPU service (next
+  entry); the per-worker design described below is its fallback.**
+  The user asked for a "thorough investigation ... if it increases performance I'd like it to be on
+  by default but able to be disabled." Answered with `--device auto|cpu|gpu` (`auto` = default,
+  GPU whenever it's usable).
+  - **Why CuPy, and why optional.** halide's core is plain numpy ufunc code (`np.maximum`,
+    `np.power(out=)`, `np.percentile`, fancy indexing) and CuPy implements the same API, including
+    `out=` and `percentile(overwrite_input=)` — PyTorch/JAX would mean rewriting every stage in a
+    different idiom plus a multi-GB dependency, Numba CUDA would mean hand-written kernels per
+    stage, and neither buys accuracy or speed CuPy doesn't. CuPy plus NVIDIA's CUDA runtime
+    libraries is ~1 GB, so `pip install -e .`/`.[dev]` never pull it in — it's the `cuda12`/`cuda13`
+    extras (`cupy-cuda12x[ctk]` / `cupy-cuda13x[ctk]`; `[ctk]` bundles cudart/NVRTC/cuBLAS as pip
+    wheels so no system CUDA Toolkit is needed, only the driver). `halide gpu` reports what halide
+    sees (card, driver's CUDA version, whether support is installed, whether it actually works,
+    what `--device auto` will use); `halide gpu --install` names the exact package and its ~1 GB
+    size, asks y/N, runs `pip install` in halide's own environment, then re-checks in a **fresh
+    subprocess** (the current process may have cached the failed import). No pip in that
+    environment → prints the matching pip/pipx/uv commands instead of guessing.
+  - **Finding the card without CuPy** (`device.py::detect_nvidia_driver()`): pure `ctypes`
+    (`libcuda.so.1` / `nvcuda.dll`), `cuDriverGetVersion`/`cuInit`/`cuDeviceGetName` — no subprocess,
+    no `nvidia-smi` parsing (its header format changes; the user's own machine reports "CUDA UMD
+    Version", not a plain version number). Any failure means "no card", never an exception. The hint
+    ("`<card>` found; add GPU support with: `halide gpu --install`") is shown only when a card is
+    found and support isn't installed — nobody without an NVIDIA card gets pitched a 1 GB download.
+    `invert` shows it once per machine via a stamp file (the same state directory tab-completion's
+    stamps live in) — **except** on a no-card machine, which never writes that stamp and so
+    re-probes on every single `invert`, forever, so a card added later still gets the hint (a
+    review initially flagged the report's claim that the probe "runs once per machine" as false for
+    exactly this common case; the ruling was to measure the cost before deciding whether to fix it).
+    Measured in this sandbox (no `libcuda.so.1` at all — the fastest possible failure path): a
+    fresh-process call is 0.11 ms median / 0.22 ms max, about 45x under a 5 ms budget the ruling set
+    — negligible next to a multi-second `invert`, so the re-probe-forever behavior was kept as
+    correct rather than "fixed" into a wrong stamp. (Not measured: the probe's cost on a machine
+    that *does* have a driver, where the ctypes calls do more work.)
+  - **`--device auto|cpu|gpu` + `HALIDE_DEVICE`** (`cli/_device_args.py`, `halide.device.
+    resolve_device`), the same flag on `invert`/`batch`/`print`/`export`/`contact`/`calibrate`.
+    `DEFAULT_DEVICE = "auto"` lives in `halide.device` itself, not copied into the CLI module (an
+    early version defined its own copy of the same string that `resolve_device` never actually
+    read, so changing it would silently have done nothing — fixed to one source of truth). The user
+    chose `auto` (GPU whenever usable) before any benchmark could run on real hardware, since that
+    benchmark needs a card this dev sandbox doesn't have — flag name `--device` was chosen over
+    `--gpu`/`--no-gpu` to leave room for a later device value (an AMD/ROCm build is out of scope for
+    now, but the namespace design doesn't preclude it). `auto` on a machine with no CuPy at all
+    falls back to CPU silently (the ordinary case, not a problem); with CuPy installed but a probe
+    failure (e.g. a driver mismatch) it falls back with a `fallback_reason` shown on the run sheet's
+    Compute row and the CLI's own warning line. An explicit `--device gpu` that isn't usable is a
+    hard error naming `halide gpu --install`, before any file I/O.
+  - **Namespace-generic `core/`** (`core/_xp.py::array_namespace(a)`): one implementation of every
+    core function, not a GPU-specific copy — it returns numpy for a numpy array, cupy for a cupy
+    array (checked only via `sys.modules.get("cupy")`, so `core/` itself never imports cupy), or a
+    namespace registered for tests. On numpy input this is `xp is numpy`, so **the CPU path calls
+    exactly the functions it always has and stays bit-identical** — verified against every existing
+    pin (`test_banding.py` etc.), 106 sha256'd before/after output records across the touched
+    functions, and real-scan `invert` (IMG_0156, IMG_0158, `--auto-density`, print and flat) diffed
+    pixel-identical against the pre-change code.
+  - **A strict fake device** (`tests/unit/_fake_device.py`) stands in for CuPy in every test outside
+    `tests/gpu/`. It refuses implicit conversion to numpy (`np.asarray`/`np.percentile` on it
+    raise) and refuses mixing with a plain numpy array or a Python tuple/list (matching CuPy's own
+    refusal — a profile tuple never uploaded with `xp.asarray` would otherwise silently work against
+    the CPU-backed fake but explode on real CuPy). It computes with numpy underneath, so its output
+    must be bit-identical to the CPU path — anything it catches is a plumbing bug (a missed `xp.`, a
+    dtype that changed hands), never device arithmetic. It's a wrapper that blocks `__array_ufunc__`/
+    `__array__`, not the originally-sketched `ndarray` subclass — numpy converts a subclass silently,
+    which would have defeated the whole point.
+  - **A frame is resident on the device for the whole develop/print/export pipeline**: one upload,
+    per-pixel stages banded at `DEVICE_BAND_BYTES` (64 MiB, vs. 4 MiB on the CPU — bigger transfers
+    suit VRAM bandwidth and PCIe better), one download at the end straight into the same host buffer
+    the scan was decoded into (host RAM stays ~1 frame, as on the CPU path). Any device exception —
+    OOM or otherwise — is caught, the CuPy pool freed, and the frame is redeveloped on the CPU from
+    that still-untouched host buffer; if the exception surfaced during the *download* itself (CUDA
+    runs asynchronously, so an earlier error can appear there, with the host buffer possibly
+    half-written), the scan is re-read from disk before the CPU retry. Every fallback prints a
+    warning naming what happened — "out of GPU memory" for an OOM/`MemoryError`, else "the GPU
+    failed (...)" — worded per the action that fell back ("developed this frame" vs. export's
+    "exported this file"; a review finding, since the shared message helper originally hardcoded
+    develop's wording onto export's own fallback too).
+  - **Provenance gains `"device": "cpu"`/`"gpu"`** in the TIFF's JSON (whichever path actually ran —
+    a fallback still records `"cpu"`), since the two paths are held to a tolerance, not bit-identity,
+    so a file should say which one made it.
+  - **GPU vs. CPU accuracy bar (D2): float32 pixels within 1e-5 relative (or 1e-7 absolute), fitted
+    exposure/contrast within 1e-5, 8-bit exports within 1 code value (and ≥ 99.9% of pixels
+    identical, reported, so a systematic offset can't hide inside "≤ 1").** Bit-identity isn't
+    achievable on a GPU even in principle — `pow`/`log10` round the last hardware bit differently,
+    and summation/BLAS order differs from the CPU's — which is the same FMA-ordering effect
+    documented for the CPU-only **D1** decision above (colour-profile/sRGB matrix fusion): D2 is
+    that same phenomenon one step further from bit-identity, not a new one.
+  - **Kept CPU-only, deliberately:** profile solving and the `--auto-density-roll` pre-pass (both
+    tiny/already downsampled); and the *thumbnail* step of contact sheets — all of `halide
+    contact`, and the last step of `batch --contact-sheet` (whose develop step runs on the GPU like
+    any batch; only its thumbnails of the already-developed frames are CPU): all that's left there
+    is decode and a block average, and uploading a 181 MiB frame just for that would cost about
+    what it saves. `halide contact` therefore never resolves `auto` (it would import CuPy and make
+    a CUDA context, ~0.6 s and ~300 MB of GPU memory, and could warn "GPU not usable" for a
+    command that never uses one): it resolves only an explicit `gpu` (flag or `HALIDE_DEVICE`), so
+    that still fails fast, and its Compute line reads plain `CPU` (plus " · developed frames need
+    no GPU" after an explicit `gpu`). `$HALIDE_DEVICE`/`--device` ignore case and surrounding
+    space, and an empty `$HALIDE_DEVICE` counts as unset (`halide.device.requested_device`).
+  - **Auto calibration runs on the device** (`calibration/auto.py`'s `_density_local_saturation`,
+    `_saturation`, `_neutral_candidate_mask`, `_shadow_and_highlight_from_candidates`, all made
+    namespace-generic) because the probe showed it was worth it (below) — `solve_density_balance`
+    itself stays CPU, since it only ever receives 3-element host arrays. Its one CuPy-specific
+    wrinkle: `argsort` doesn't keep tied (equal-luminance) values in the same order a CPU sort does,
+    so a density bin's edge pixel can differ between devices — the probe measured only 58% of sort
+    orders agreeing on a real scan. The probe compared the sort only; it never solved a profile, so
+    whether the solved profile stays within tolerance is exactly what the `tests/gpu` parity tests
+    will check on real hardware (see the last sub-bullet for what to look at if they fail). Its parity
+    tests therefore compare the **solved `DensityProfile` within D2**, never the sort order or bin
+    membership.
+  - **Batch workers and CUDA/forkserver — per-worker GPU mode, now the fallback** (the shared GPU
+    service, next entry, is the default; this is what runs when it can't be used). Workers never
+    import cupy inside the forkserver (`_FORKSERVER_PRELOAD` is unchanged — a forked CUDA context
+    is unusable in the child); only a `device_kind` string (`"cpu"`/`"gpu"`) and a VRAM pool-limit
+    number cross the process boundary, and each worker resolves its own `ComputeDevice`/CUDA
+    context and CuPy memory-pool limit (`cupy.get_default_memory_pool().set_limit(size=share)`) on
+    its first GPU job, keeping both warm across frames after that. `default_worker_count` gains a
+    third cap for a GPU device: `memory_free // estimate_worker_device_bytes(jobs)`
+    (`device_worker_cap`), alongside the existing CPU-core and RAM caps — an unusable GPU inside
+    one worker falls that worker back to the CPU with a warning on every frame it develops, rather
+    than crashing the batch. The run sheet's Workers row says "auto-selected to fit free GPU
+    memory" when that cap is what set the count, and an explicit `--workers N` above it gets a
+    warning (`device_budget_warning`, beside the RAM one): each worker's pool share shrinks as N
+    grows, so too many GPU workers mostly means frames redone on the CPU. A GPU worker's *host*
+    RAM is ~3x a CPU worker's (below), so for GPU pools the RAM estimate adds
+    `_GPU_HOST_OVERHEAD_BYTES`.
+    - **Constants fitted on the user's RTX 3070** (`docs/plans/gpu-acceleration-bench.py`, plan
+      §7), replacing provisional estimates (768 MiB + 4 x frame = 1492 MiB per worker):
+      one 181 MiB frame peaked at 821 MiB of CuPy pool with a given profile and 878 MiB with
+      `--auto-density` (4.54 / 4.86 x frame — resident frame, band temporaries and whole-frame
+      statistics together), plus ~168 MiB of CUDA context/library overhead (nvidia-smi 1046 MiB).
+      So `_CUDA_CONTEXT_BYTES = 256 MiB` and `_DEVICE_FRAME_MULTIPLIER = 5` (1161 MiB for a real
+      scan, 11% over measured). **Host memory** was the surprise: a GPU worker holds ~1.2 GiB of RAM
+      (largest 1212-1235 MiB) against ~0.4 GiB for a CPU worker on the same frames — CUDA's and
+      CuPy's host-side libraries, ~840 MiB — so `_GPU_HOST_OVERHEAD_BYTES = 1 GiB` is added to the
+      RAM estimate for GPU pools (and to `memory_budget_warning`), or a machine with a big card and
+      little RAM would be given more workers than its RAM holds. On the user's machine (7.6 GiB
+      RAM, 6.58 GiB VRAM free) RAM is what limits per-worker mode to **4 workers** (1/2/4 workers:
+      53/34/25 s for 37 frames), with no CPU fallbacks; the card alone would allow 5. That RAM
+      limit is what the shared service removed.
+  - **Test temp files are deleted per test, not kept** (`pyproject.toml`:
+    `tmp_path_retention_policy = "failed"`, count 1; `tests/gpu/test_gpu_parity.py` also deletes its
+    files after a *failed* test). Found via real use: pytest's default keeps every test's `tmp_path`
+    from the last 3 runs, in `/tmp` — RAM on the user's CachyOS — and the real-scan GPU tests write
+    ~130 MiB TIFFs each, so one `pytest -m gpu` run left 5.2 GB there and nearly ran the machine out
+    of memory. Simulated (6 tests x 2 x 130 MiB, one failing): peak 1561 -> 258 MiB, left after the
+    run 1561 -> 1 MiB. `"none"` looks like the obvious setting but only cleans up at session end, so
+    it wouldn't cap the peak.
+  - **`tests/conftest.py` forces `HALIDE_DEVICE=cpu` for the whole suite (autouse fixture).** With
+    `DEFAULT_DEVICE = "auto"` live on every command, any CLI test that didn't pass `--device` would
+    otherwise resolve `auto` against whatever machine actually runs the suite — harmless here (no
+    usable GPU) but on the user's own RTX 3070 (which runs this same suite) it would silently take
+    the GPU path, which is only held to D2, not bit-identity, so an exact-pixel/exact-provenance
+    test could fail for a reason unrelated to what it's actually testing. Tests about device
+    *selection itself* (`test_device.py`, `test_device_cli.py`) override this per-test via the same
+    `monkeypatch` instance; tests that inject a `ComputeDevice` directly, or
+    `tests/gpu/test_gpu_parity.py` (which resolves `"auto"` at **import** time, before any fixture
+    runs, so it still targets a real GPU when one exists), are unaffected either way.
+  - **The user's probe** (§7 of the plan — RTX 3070, 8 GiB, driver
+    615.71.09 = CUDA 13.4, 6.7 GiB free, warm run): CuPy import 0.24 s / CUDA context 0.19 s / first
+    kernel 0.17 s (roughly 2x on a cold run); upload of a 181 MiB frame 66 ms, download 26 ms;
+    per-stage CPU→GPU: ICC matrix 0.058 s → 0.009 s, `negative_to_positive` 2.03 s → 0.005 s
+    (1.7e-7 rel), print-fit percentile 0.52 s → 0.013 s (6.3e-8 rel), paper curve 3.51 s → 0.018 s
+    (2.9e-6 rel), auto-calibration argsort 0.96 s → 0.006 s (58% of sort orders agree, expected —
+    see above). Baselines on that machine: `halide invert` 4.4 s; `halide batch` (37 frames)
+    35.1 s (0.95 s/frame). These came from a short standalone measurement script, not from halide
+    itself — the per-stage speed-ups looked dramatic, but the end-to-end gain (next) is far smaller,
+    because what's left of a frame is decode, TIFF write and process start-up.
+  - **Verified on the user's RTX 3070 (2026-09-27).** `pytest -m gpu`: 46 passed — every device
+    path against the CPU path within D2 on synthetic images and the four real scans, including both
+    `--auto-density` parity checks (the tie-order caveat above didn't bite) and export. The
+    benchmark (`docs/plans/gpu-acceleration-bench.py`, full table in plan §7), each device at its
+    own default: one `invert` 3.4 -> 2.7 s (~21% faster), a 37-frame `batch` 33.3 -> 26.9 s
+    (0.90 -> 0.73 s/frame, ~19%), no CPU fallbacks. By the user's rule ("on by default if it
+    increases performance") `auto` stays the default everywhere (D3). Before this sandbox saw a real
+    card, every GPU path had only run against the strict fake device; `halide gpu --install` has
+    still only run against fakes (the user installed CuPy with pip themselves).
+- **A GPU batch uses one GPU service process shared by CPU-only workers** (`gpu_service.py`,
+  `shared_frames.py`; plan `docs/plans/gpu-batch-throughput.md` Part B, evidence
+  `docs/investigations/gpu-batch-throughput.md`). `batch`, `print`, `export` and the picker's
+  contact sheet window all use it on a GPU. Verified on the user's RTX 3070 (2026-09-28): 63/63
+  `pytest -m gpu`, including 16 service-vs-per-worker tests that require **bit-identical** output
+  (print, flat, `--auto-density`, print stage, export; synthetic and real scans), and a 37-frame
+  batch at 0.45 s/frame against 0.69 for per-worker mode in the same run (1.53x).
+  - **Why not more frames in VRAM at once.** The user's idea was to load many frames onto the card.
+    But GPU work is only ~0.14 s of a 1.44 s one-worker frame (upload 0.066 s, all the arithmetic
+    ~0.045 s, download 0.026 s); the rest is CPU file work (decode ~0.26 s, compress + write
+    ~0.26 s, exiftool ~0.65 s before Part A). One 16-megapixel frame already fills the card (47M
+    values vs 5,888 cores; each pass is memory-bandwidth bound, ~0.85 ms), so two frames at once
+    take twice as long, and one card can keep up with ~7 frames/s. In darkroom terms: a second
+    enlarger doesn't help when the queue is at the wash and the dryer.
+  - **Why not threads in one process.** tifffile decodes/encodes strip by strip (3,266 per scan)
+    holding Python's global lock: measured in memory, decode was 0.33 s/frame on 1 thread and
+    0.47-0.58 s on 2-8. The file work needs separate processes, so sharing one GPU means one GPU
+    process serving CPU-only worker processes, with frames in shared memory.
+  - **Why it was needed (B0, the user's machine, after Part A, per-worker mode).** 1/2/4 workers:
+    44.2/29.9/29.9 s for 37 frames (1.19/1.61/3.24 s per frame per worker). At 4 workers the
+    machine swapped out ~167 MB/s, 29% of CPU time went to the kernel, the CPU was still 34% idle
+    and the GPU busy ~30%: RAM-bound, because every GPU worker carried ~0.8 GiB of CUDA/CuPy host
+    libraries. The disk wasn't the limit (the NVMe writes 1.3 GB/s with `fsync`; a batch needs
+    ~0.45 GB/s). The plan's probe script and its go criterion (an 8-process ceiling of >= 2.8
+    frames/s) were never run; the go was decided on this RAM finding instead.
+  - **How a frame goes.** The worker reads the header, creates a segment (`new_frame`), decodes
+    straight into it (`read_tiff(out=)`), and sends only (name, shape, dtype) plus a picklable
+    request over `multiprocessing.connection` (Unix socket / named pipe, random authkey). The
+    service — started with **spawn**, so CUDA only ever exists in it — attaches, uploads, runs the
+    same `run_device_job`/`run_device_export` as the in-process GPU path, and downloads into the
+    same segment; the worker then compresses, writes and tags. One compute thread runs frames one at
+    a time; each connection has its own reader thread. Same device code on the same card is why
+    service output is bit-identical to per-worker output.
+  - **`/dev/shm` is RAM** (tmpfs; on the user's CachyOS, like `/tmp`). The frames are the workers'
+    working buffers, not extra copies, but they count against RAM and against `/dev/shm`'s own size
+    (64 MiB in a default Docker container). Details that each fixed a real failure:
+    - `os.posix_fallocate` right after creating a segment: tmpfs allocates lazily, so an oversized
+      segment "succeeds" and then kills the process with SIGBUS on first write (reproduced; not
+      catchable). Now it's `SharedMemoryUnavailable`, and that frame is developed on the CPU with
+      a warning.
+    - `np.frombuffer(shm.buf)`, not `np.ndarray(buffer=)`: the latter holds no buffer export, so
+      an array kept past close became a dangling pointer (reproduced segfault).
+    - Segments are named with a per-batch prefix (`batch_prefix`: the pool owner's pid plus a
+      random token). A forkserver pool shares the parent's resource tracker, so a worker killed
+      while holding a frame (OOM killer) leaves its segment until the *parent* exits; `sweep(prefix)`
+      unlinks those. It runs only after the pool and the service have both stopped (every worker
+      shares the prefix, so an earlier sweep would unlink live frames).
+    - The service attaches with `SharedMemory(track=False)` (Python >= 3.13), so its tracker doesn't
+      claim the worker's segment. Below 3.13 `attach_frame` refuses and `sweep` does nothing: an
+      earlier hand-unregister shim dropped the creator's registration from the shared tracker and
+      made it print KeyError tracebacks.
+  - **Failures.** An error on the service's device (out of memory, a driver error) comes back as a
+    reply carrying a `DeviceFailure`; the worker raises `DeviceJobFailed` and redoes the frame on
+    the CPU (`fall_back_to_cpu`, the same warning as the in-process path). A dead, unreachable or
+    stuck service raises `ServiceUnavailable`: at once for a dead one (the connection breaks), after
+    `REQUEST_TIMEOUT` (300 s) for a stuck one. The connection handshake is bounded by the same
+    timeout (a frozen service still completes a Unix-socket connect and then never answers; before
+    that fix, it hung). Startup is bounded (120 s) and cancellable — closing the contact sheet
+    window mid-startup is quiet, not reported as a fallback. The service is never restarted: a
+    client that lost it stays dead, and each later frame in that worker is developed on the CPU
+    with a warning; the batch completes. Once a request was sent, a failure counts as
+    `host_touched` — the service may have half-written the frame, or (stuck) may still write it —
+    so the CPU starts from the scan re-read into a fresh private buffer, and an export's CPU
+    fallback (`export_fallback`) converts into a fresh 8-bit buffer, never the shared output. A
+    stuck request's mapping stays alive in the service until it stops (RAM not counted anywhere;
+    only a stuck service gets there).
+  - **Worker count** (`service_worker_count`): min(physical cores, RAM cap, `/dev/shm` cap, jobs).
+    RAM cap = (available - the service's own memory, `_GPU_SERVICE_HOST_BYTES` 1 GiB + one frame)
+    / (a CPU worker's estimate + its shared frame). No VRAM cap: the card only ever holds the
+    service's one context and one frame. `/dev/shm` cap = 80% of its free space / one frame (an
+    export's 8-bit output too); an explicit `--workers` above either cap gets a warning, and a
+    worker that finds no room develops that frame on the CPU. Measured (B4): service ~1178 MiB RSS
+    / ~933 MiB PSS (estimate 1205 MiB), 982 MiB VRAM; largest worker ~525 MiB RSS (estimate ~876
+    MiB). **Not refit, deliberately**: if the service dies mid-batch, every worker develops on the
+    CPU while still holding its shared frame — about what the estimate covers — and 6 workers
+    (what it picks on 7.6 GiB) vs 8 measured 0.45 vs 0.44 s/frame, so the margin costs little.
+  - **Falls back to per-worker GPU mode** (previous entry), with the reason on the run sheet's
+    Compute row (the contact sheet window prints it), when: Python < 3.13; `/dev/shm` is missing
+    or can't hold one frame; the service doesn't start (including its startup timeout); or
+    `HALIDE_GPU_SERVICE=0`/`off`/`false`/`no` — the troubleshooting switch, also how the bench and
+    the parity tests reach per-worker mode. It never fails the batch.
+  - **Measured (B4, user's RTX 3070, 37 frames of Roll 16, 7.6 GiB RAM available, one run):**
+    service 4 / 8 / auto (6) workers 18.2 / 16.5 / 16.8 s = 0.49 / 0.44 / 0.45 s/frame; per-worker
+    4 / auto (4) 27.1 / 25.4 s = 0.73 / 0.69 s/frame; no CPU fallbacks. Swap stayed flat on the
+    service rows (4787 -> 4819 MiB) and rose on the per-worker rows (to 5313 MiB). For context:
+    per-worker GPU batch was 0.73 s/frame before this plan and CPU batch 0.90 s/frame. The plan's
+    hoped-for ~0.36 s/frame (2.8 frames/s) wasn't reached; 1.53x cleared the user's "~1.5x or
+    discuss" bar, so it was kept. Full table: the plan's Task B4.
 - **`--auto-density-roll` selects neutral candidates per frame, then pools candidates — never pools
   raw pixels across frames first.** The per-channel median used to judge "how neutral is this
   pixel" (`calibration/auto.py::_saturation`) is only a valid proxy for the film's own systematic
@@ -591,19 +948,24 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   - Verified by driving real interactive `zsh -i`, `bash -i` (with and without the bash-completion
     package) and `fish -i` in a pty. Not covered: tcsh, PowerShell/Windows, and the macOS system
     bash 3.2 (untested).
-- **Starting the CLI imports no numpy, tifffile, Pillow or colour-science** — they're imported
-  inside the functions that use them. Before, `halide --help`/`profile list` took ~0.75 s in the dev
-  sandbox (over 1 s on the user's machine): `import colour` (it drags in scipy and its plotting
-  module) was ~0.55 s of it, numpy/tifffile/Pillow ~0.15 s. Now ~0.1 s, the rest being Python and
-  the stdlib. How: colour only in `io/icc.py::convert_to_working_space`,
-  `io/raster.py::to_srgb_8bit`, `processing.py::_acescg_matrix`; tifffile only in the header
-  readers (`io/scan_metadata.py`, `batch/orchestrator.py`); the orchestrator's workers import
-  `halide.processing` themselves; CLI commands import `halide.processing`/`io.contact_sheet` in
-  `run()`-level functions; `Stage` moved to `core/types.py` and the sheet defaults to
-  `io/contact_sheet_defaults.py` (both re-exported from their old homes), because the parser needs
-  them. Workers still get everything preloaded: `colour` is listed in `_FORKSERVER_PRELOAD`
-  explicitly. `tests/unit/test_cli_startup.py` fails if building the parser imports any of them
-  again. Outputs unchanged bit-for-bit (verified on real scans: invert, export, batch, contact).
+- **Starting the CLI imports no numpy, tifffile, Pillow, colour-science or cupy** — they're
+  imported inside the functions that use them. Before, `halide --help`/`profile list` took ~0.75 s
+  in the dev sandbox (over 1 s on the user's machine): `import colour` (it drags in scipy and its
+  plotting module) was ~0.55 s of it, numpy/tifffile/Pillow ~0.15 s. Now ~0.1 s, the rest being
+  Python and the stdlib. How: colour only inside `io/icc.py::working_space_matrices`,
+  `io/raster.py::srgb_matrix`/`to_srgb_8bit`'s CPU branch, `processing.py::_acescg_matrix`;
+  tifffile only in the header readers (`io/scan_metadata.py`, `batch/orchestrator.py`); the
+  orchestrator's workers import `halide.processing` themselves; CLI commands import
+  `halide.processing`/`io.contact_sheet` in `run()`-level functions; `Stage` moved to
+  `core/types.py` and the sheet defaults to `io/contact_sheet_defaults.py` (both re-exported from
+  their old homes), because the parser needs them. `cupy` is never imported at all unless
+  `--device`/`$HALIDE_DEVICE` actually resolves to a GPU (`halide.device`, GPU acceleration above)
+  — even `halide gpu`'s own status check only uses `ctypes`/`importlib`, not cupy. Workers still get
+  everything preloaded except cupy: `colour` is listed in `_FORKSERVER_PRELOAD`, but cupy is
+  deliberately not (a forked CUDA context is unusable in the child; the GPU service is spawned and
+  resolves the device itself — or, in per-worker mode, each GPU worker does). `tests/unit/test_cli_startup.py` fails if building the parser imports any of
+  them again (`HEAVY` includes `"cupy"`). Outputs unchanged bit-for-bit (verified on real scans:
+  invert, export, batch, contact).
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 

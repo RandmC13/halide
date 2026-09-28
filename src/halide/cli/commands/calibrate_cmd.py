@@ -7,6 +7,7 @@ import os
 import sys
 
 from halide.cli import console
+from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -19,6 +20,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--profile",
         help="reopen a saved profile (name or path): its neutral points, roll details and roll",
     )
+    add_device_argument(parser)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -38,13 +40,22 @@ def run(args: argparse.Namespace) -> int:
             "one or forward X11"
         )
 
+    # Resolved before the window opens, so --device gpu fails fast without CuPy/a driver. The
+    # picker's contact-sheet window develops every frame on it (batch's own workers); the picker's
+    # own previews and picking stay on the CPU.
+    device = resolve_device_arg(args)
+
     from halide.gui.app import (
         main as run_gui,
     )  # deferred: don't require Qt/a display for the rest of the CLI
 
     print(console.framed([f"{console.Style.BOLD}halide{console.Style.RESET} · calibration picker"]))
+    print(f"Compute: {device_row(device)}")
+    fallback_warning = device_fallback_warning(device)
+    if fallback_warning:
+        print(console.warning(fallback_warning))
     try:
-        run_gui(inputs=args.inputs, profile=args.profile)
+        run_gui(inputs=args.inputs, profile=args.profile, device=device)
     except Exception as exc:  # noqa: BLE001 -- a GUI-toolkit failure, not a domain error
         raise SystemExit(
             f"couldn't launch the calibration picker window ({exc})"

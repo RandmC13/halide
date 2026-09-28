@@ -149,7 +149,7 @@ def test_batch_cli_prints_its_settings_as_one_run_sheet_before_developing(roll_d
     for line in sheet[1:-1]:  # a continuation line (blank label) belongs to the row above it
         label = line[2:17].strip() or label
         rows[label] = f"{rows[label]} {line[17:].strip()}" if label in rows else line[17:]
-    assert list(rows) == ["Roll", "Scans", "Calibration", "Output", "Workers"]
+    assert list(rows) == ["Roll", "Scans", "Calibration", "Output", "Compute", "Workers"]
     nbsp = "\u00a0"  # RunSheet.SEP's non-breaking space
     assert rows["Roll"].replace(" ", "") == f"in{nbsp}·4frames→{out_dir}"  # the long tmp path wraps
     assert rows["Calibration"] == f"auto{nbsp}· one profile for the whole roll, from 4 frames"

@@ -19,6 +19,8 @@ from halide.batch.orchestrator import (
 from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
+from halide.cli._device_args import add_device_argument, device_row, requested_device_arg, resolve_device_arg
+from halide.device import ComputeDevice
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
@@ -35,6 +37,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_contact_layout_arguments(parser)
     parser.add_argument("--workers", type=int, help="Number of parallel worker processes (default: auto-selected)")
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
+    add_device_argument(parser)
 
 
 def _collect(inputs: list[str], sheet: Path) -> list[Path]:
@@ -72,6 +75,19 @@ def run(args: argparse.Namespace) -> int:
         return 1
     if sheet_path.exists() and not console.confirm_overwrite(sheet_path):
         return 1
+
+    # The thumbnails are made on the CPU (run_thumbnail_batch: the frames are already developed,
+    # and what's left isn't worth uploading a frame for). So the device is resolved only when a GPU
+    # was explicitly asked for (--device gpu or HALIDE_DEVICE=gpu), which still fails fast without
+    # CuPy/a driver like every command (Ruling R7). `auto` is never resolved here: that would import
+    # CuPy and make a CUDA context (~0.6 s, ~300 MB of GPU memory), and could warn "GPU not usable"
+    # for a command that never uses one.
+    note = ""
+    if requested_device_arg(args) == "gpu":
+        resolve_device_arg(args)
+        note = f"{console.RunSheet.SEP}developed frames need no GPU"
+    if not args.quiet:
+        print(f"Compute: {device_row(ComputeDevice(kind='cpu'))}{note}")
 
     first = Path(args.inputs[0])
     default_title = first.name if first.is_dir() else first.parent.name or "contact sheet"

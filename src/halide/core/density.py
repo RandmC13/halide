@@ -17,6 +17,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from halide.core._constants import MIN_TRANSMITTANCE
+from halide.core._xp import array_namespace
 from halide.core.types import DensityProfile
 
 _REFERENCE_CHANNEL = 1  # green; density balance and white balance are solved relative to it
@@ -174,7 +175,8 @@ def describe_cast(deviation: Sequence[float]) -> tuple[float, str]:
 def apply_white_balance(img: np.ndarray, profile: DensityProfile) -> np.ndarray:
     """Per-channel linear multiply. Must run before apply_density_balance (order matters — the
     density-balance power function is not commutative with a subsequent multiply)."""
-    multiplier = np.asarray(profile.white_balance, dtype=img.dtype)
+    xp = array_namespace(img)
+    multiplier = xp.asarray(profile.white_balance, dtype=img.dtype)
     return img * multiplier
 
 
@@ -182,9 +184,10 @@ def apply_density_balance(img: np.ndarray, profile: DensityProfile) -> np.ndarra
     """Per-channel power function on linear transmittance: x ** density_scale. Equivalent to
     scaling each channel's density (log10(1/x) * density_scale) and converting back — the power
     form avoids a log/exp round trip. Green's exponent is always 1.0 (no-op) by construction."""
-    # `safe` is a fresh copy of img (np.maximum never returns its input in place), so writing the
+    # `safe` is a fresh copy of img (xp.maximum never returns its input in place), so writing the
     # power result back into it via `out=` is safe — img itself is never mutated — and avoids a
     # second full-size allocation for what used to be a separate return value.
-    safe = np.maximum(img, MIN_TRANSMITTANCE)
-    exponent = np.asarray(profile.density_scale, dtype=safe.dtype)
-    return np.power(safe, exponent, out=safe)
+    xp = array_namespace(img)
+    safe = xp.maximum(img, MIN_TRANSMITTANCE)
+    exponent = xp.asarray(profile.density_scale, dtype=safe.dtype)
+    return xp.power(safe, exponent, out=safe)

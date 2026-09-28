@@ -9,6 +9,11 @@ methodological gap, not just noise, and it is why per-frame results varied. This
 restricts candidate "neutral" pixels to the least-saturated fraction of the image *first*, then
 takes percentiles only within that filtered set — a materially different, better-justified
 algorithm, not just a tidied-up version of the old one.
+
+Everything up to the final shadow/highlight percentiles runs on whichever array library the image
+belongs to (numpy, or CuPy for a frame already on the GPU — see core/_xp.py): only those two
+3-vectors come back to the host, where `solve_density_balance` and `_check_density_separation` run.
+On numpy it is the same code it always was, bit for bit.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import warnings
 import numpy as np
 
 from halide.core._constants import MIN_TRANSMITTANCE
+from halide.core._xp import array_namespace
 from halide.core.density import solve_density_balance
 from halide.core.types import DensityProfile
 
@@ -68,14 +74,20 @@ def _density_local_saturation(pixels: np.ndarray, target_bins: int = DEFAULT_DEN
     full-resolution frame the old two-step form (a per-pixel reference array, then `_saturation`
     over all of it, plus an int64 `np.arange` just to split the sort order) held ~500 MiB of
     scratch. Same bins, same medians, same arithmetic per pixel — the result is bit-identical
-    (tests/unit/test_auto_calibration.py keeps the old form as an oracle).
+    (tests/unit/test_auto_calibration.py keeps the old form as an oracle). The bin-by-bin structure
+    matters as much on a GPU, where several workers share the card's memory.
+
+    On a GPU the luminance sort orders exact ties differently from numpy's (not a stable order on
+    either), which can move a bin boundary by a pixel or two: the result there is close to the
+    CPU's, not bit-identical (tests/gpu/test_gpu_parity.py).
     """
+    xp = array_namespace(pixels)
     n = len(pixels)
     n_bins = max(1, min(target_bins, n // MIN_PIXELS_PER_BIN))
     if n_bins == 1:
-        return _saturation(pixels, np.broadcast_to(np.median(pixels, axis=0), pixels.shape))
+        return _saturation(pixels, xp.broadcast_to(xp.median(pixels, axis=0), pixels.shape))
 
-    order = np.argsort(pixels.mean(axis=1))
+    order = xp.argsort(pixels.mean(axis=1))
     saturation = None
     # The same contiguous runs of `order` np.array_split(np.arange(n), n_bins) gives: the first
     # n % n_bins bins one element longer — as slices, without materializing the index array.
@@ -86,10 +98,10 @@ def _density_local_saturation(pixels: np.ndarray, target_bins: int = DEFAULT_DEN
         bin_indices = order[start:stop]
         bin_pixels = pixels[bin_indices]
         # Cast as the old per-pixel reference array (np.empty_like(pixels)) did on assignment.
-        median = np.median(bin_pixels, axis=0).astype(pixels.dtype, copy=False)
-        bin_saturation = _saturation(bin_pixels, np.broadcast_to(median, bin_pixels.shape))
+        median = xp.median(bin_pixels, axis=0).astype(pixels.dtype, copy=False)
+        bin_saturation = _saturation(bin_pixels, xp.broadcast_to(median, bin_pixels.shape))
         if saturation is None:
-            saturation = np.empty(n, dtype=bin_saturation.dtype)
+            saturation = xp.empty(n, dtype=bin_saturation.dtype)
         saturation[bin_indices] = bin_saturation
         start = stop
     return saturation
@@ -110,18 +122,25 @@ def _saturation(pixels: np.ndarray, reference: np.ndarray | None = None) -> np.n
     pixel's own density — not an artifact of the film's own dye imbalance being mistaken for "this
     pixel is colored." `reference=None` falls back to a single frame-wide median (broadcast to
     every pixel) for callers that don't need density-local behavior.
+
+    (max - min) / max where max > 0, else 0 (a black, negative or NaN pixel). Written without
+    `np.divide(..., where=)`, which CuPy's ufuncs don't take: the divisor is set to 1 where max isn't
+    positive and the result zeroed there afterwards. Where max > 0 it is the same one division, so
+    the result is bit-identical to the `where=` form (pinned in tests/unit/test_auto_calibration.py),
+    and dividing by 1 instead of by 0 or NaN raises no floating-point warnings.
     """
+    xp = array_namespace(pixels)
     if reference is None:
-        reference = np.median(pixels, axis=0)
+        reference = xp.median(pixels, axis=0)
     normalized = pixels / reference
     max_channel = normalized.max(axis=-1)
     min_channel = normalized.min(axis=-1)
-    return np.divide(
-        max_channel - min_channel,
-        max_channel,
-        out=np.zeros_like(max_channel),
-        where=max_channel > 0,
-    )
+    saturation = max_channel - min_channel
+    not_positive = ~(max_channel > 0)  # includes NaN, as `where=max > 0` did
+    max_channel[not_positive] = 1
+    saturation /= max_channel
+    saturation[not_positive] = 0
+    return saturation
 
 
 def _check_density_separation(shadow_rgb: np.ndarray, highlight_rgb: np.ndarray) -> None:
@@ -152,7 +171,7 @@ def _neutral_candidate_mask(image: np.ndarray, neutral_fraction: float) -> np.nd
     """
     flat = image.reshape(-1, 3)
     saturation = _density_local_saturation(flat)
-    threshold = np.percentile(saturation, neutral_fraction * 100)
+    threshold = array_namespace(saturation).percentile(saturation, neutral_fraction * 100)
     return (saturation <= threshold).reshape(image.shape[:2])
 
 
@@ -182,8 +201,12 @@ def _shadow_and_highlight_from_candidates(
             "not enough near-neutral pixels found to estimate density balance automatically "
             "(try a higher neutral_fraction, or use a manual/ColorChecker calibration instead)"
         )
-    shadow_rgb = np.percentile(candidates, shadow_percentile, axis=0)
-    highlight_rgb = np.percentile(candidates, highlight_percentile, axis=0)
+    xp = array_namespace(candidates)
+    shadow_rgb = xp.percentile(candidates, shadow_percentile, axis=0)
+    highlight_rgb = xp.percentile(candidates, highlight_percentile, axis=0)
+    if xp is not np:
+        # The one download: two 3-vectors, as host arrays of the dtype the device computed them in.
+        shadow_rgb, highlight_rgb = xp.asnumpy(shadow_rgb), xp.asnumpy(highlight_rgb)
     _check_density_separation(shadow_rgb, highlight_rgb)
     return shadow_rgb, highlight_rgb
 
@@ -230,7 +253,8 @@ def roll_auto_density_balance(
     correct on its own terms; only the final shadow/highlight measurement is roll-wide.
     """
     per_frame_candidates = [_neutral_candidates(image, neutral_fraction) for image in images]
-    combined_candidates = np.concatenate(per_frame_candidates, axis=0)
+    xp = array_namespace(per_frame_candidates[0]) if per_frame_candidates else np
+    combined_candidates = xp.concatenate(per_frame_candidates, axis=0)
     shadow_rgb, highlight_rgb = _shadow_and_highlight_from_candidates(
         combined_candidates, shadow_percentile, highlight_percentile
     )

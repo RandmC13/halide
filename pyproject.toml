@@ -21,6 +21,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# GPU acceleration is opt-in (see CLAUDE.md and docs/plans/gpu-acceleration.md): CuPy plus
+# NVIDIA's runtime libraries is ~1 GB, so a plain install never pulls it in. Pick the extra
+# matching your CUDA driver (`halide gpu` reports which); `[ctk]` bundles the matching CUDA
+# Toolkit runtime libraries so a system CUDA install isn't required.
+cuda12 = ["cupy-cuda12x[ctk]>=14"]
+cuda13 = ["cupy-cuda13x[ctk]>=14"]
 
 [project.scripts]
 halide = "halide.cli.main:run_cli"
@@ -38,3 +44,11 @@ halide = ["assets/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["gpu: needs CuPy and a CUDA device"]
+# pytest's default keeps every test's tmp_path from the last 3 runs under the system temp dir, which
+# is RAM (tmpfs) on many Linux desktops. The real-scan GPU tests write ~130 MiB TIFFs each: one
+# `pytest -m gpu` run left 5.2 GB in /tmp on the user's machine and nearly exhausted its memory.
+# "failed" deletes a passing test's directory as soon as that test ends ("none" only cleans up when
+# the whole session exits, so it wouldn't cap the peak); only the last run's failures are kept.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1
