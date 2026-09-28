@@ -165,22 +165,26 @@ exposure) in its metadata, and `invert` prints it too.
 ## GPU acceleration (optional)
 
 If you have an NVIDIA card, halide can develop frames on it instead of the CPU. Measured on one
-machine (RTX 3070, 8-core CPU, a 37-frame roll of full-resolution scans): one `invert` took 2.7 s
-instead of 3.4 s, and a whole `batch` 27 s instead of 33 s — about 20% faster. Most of what's
-left is reading and writing the TIFFs, which a GPU can't speed up. It needs an NVIDIA GPU; there's
-nothing to gain on other hardware, so halide doesn't mention this unless it finds one.
+machine (RTX 3070, 8-core CPU, 7.6 GiB of free RAM, a 37-frame roll of full-resolution scans):
+one `invert` took 2.7 s instead of 3.4 s, and a whole `batch` about 17 s instead of 33 s on the
+CPU. In a batch, one halide process runs the GPU for all the workers, which read and write the
+files; when each worker loaded NVIDIA's libraries itself, they filled the RAM and the same batch
+took 25-27 s. Most of what's left is reading and writing the TIFFs, which a GPU
+can't speed up. It needs an NVIDIA GPU; there's nothing to gain on other hardware, so halide
+doesn't mention this unless it finds one.
 
 ```bash
 halide gpu             # what halide sees: your card, and whether GPU support is installed
 halide gpu --install   # add it (downloads CuPy and NVIDIA's CUDA libraries, about 1 GB)
 ```
 
-GPU support isn't installed by default because that download is large. Once it's there, halide
-uses it automatically (`--device auto`, the default) whenever it's usable, and falls back to the
-CPU on its own if it isn't. Force the CPU with `--device cpu` or `HALIDE_DEVICE=cpu`. GPU and CPU
-output aren't bit-for-bit identical — the two round the last digit of some calculations
-differently — but halide's GPU tests require them to match to within 1 part in 100,000, and
-8-bit exports to within one code value. Each output TIFF records which one made it. `halide gpu
+GPU support isn't installed by default because that download is large. Once it's there, halide uses
+it automatically (`--device auto`, the default) whenever it's usable, and falls back to the CPU on
+its own if it isn't. Force the CPU with `--device cpu` or `HALIDE_DEVICE=cpu`;
+`HALIDE_GPU_SERVICE=0` makes each batch worker use the GPU itself again (for troubleshooting). GPU
+and CPU output aren't bit-for-bit identical — the two round the last digit of some calculations
+differently — but halide's GPU tests require them to match to within 1 part in 100,000, and 8-bit
+exports to within one code value. Each output TIFF records which one made it. `halide gpu
 --install` also prints the command to remove it again later.
 
 ## How it works
