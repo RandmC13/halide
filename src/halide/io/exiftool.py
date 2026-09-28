@@ -202,6 +202,11 @@ def _die_with_this_process() -> dict:
         if os.getppid() != parent:  # the parent died before the signal was armed
             os._exit(1)
 
+    # `preexec_fn` is documented as unsafe in a process with multiple threads (it can deadlock,
+    # since only the forking thread survives the fork into the child): acceptable here because the
+    # Popen call using it runs from a worker's main thread at session start-up, before that worker
+    # has spawned any other threads of its own, and the function itself only calls prctl (no
+    # allocation, locking, or anything else that could be mid-operation in a forked copy) before exec.
     return {"preexec_fn": preexec}
 
 

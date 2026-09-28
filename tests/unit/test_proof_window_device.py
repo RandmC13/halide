@@ -116,7 +116,7 @@ import psutil  # noqa: E402
 import halide.batch.orchestrator as orchestrator  # noqa: E402
 from tests.unit import _fake_device  # noqa: E402
 from tests.unit.test_device_pipeline import PROFILE, _write_scan  # noqa: E402
-from tests.unit.test_gpu_service import _slow_develop_in_child  # noqa: E402
+from tests.unit.test_gpu_service import _slow_develop_in_child, _slow_startup  # noqa: E402
 
 _GPU = ComputeDevice(kind="gpu", name="Fake", memory_free=6 * 2**30, memory_total=8 * 2**30)
 
@@ -131,12 +131,12 @@ def services(monkeypatch):
     started = []
     real = orchestrator._start_service
 
-    def recording(kind, initializer):
+    def recording(kind, initializer, cancel=None):
         from contextlib import contextmanager
 
         @contextmanager
         def run():
-            with real(kind, initializer) as address:
+            with real(kind, initializer, cancel) as address:
                 started.append(address)
                 yield address
 
@@ -210,3 +210,32 @@ def test_closing_the_window_mid_render_stops_the_workers_and_the_service(proof_w
     assert _gone(address.pid)
     assert _RecordingPool.seen and all(not p.is_alive() for p in _RecordingPool.seen)
     assert _shm() - before == set()  # the killed workers' frames were swept
+
+
+def test_closing_the_window_while_the_service_is_still_starting_does_not_hang(proof_window, monkeypatch, tmp_path,
+                                                                              services):
+    """Finding 4, final whole-branch review: closing the contact sheet window while the service is
+    still starting (a hung driver probe) used to wait on gpu_service's full startup timeout (120 s).
+    ProofRenderer.run passes cancel=self.isInterruptionRequested into batch_compute, so this must now
+    be bounded — closing must not wait for the 60 s startup hook below, let alone the 120 s ceiling."""
+    arrived = tmp_path / "arrived"
+    monkeypatch.setattr(orchestrator, "_SERVICE_KIND", "cpu")
+    monkeypatch.setattr(orchestrator, "_SERVICE_INITIALIZER", partial(_slow_startup, str(arrived)))
+    scans = [_write_scan(tmp_path / f"f{i}.tif", seed=i + 1) for i in range(2)]
+    renderer = proof_window.ProofRenderer(scans, [1.0] * 2, PROFILE, ToneCurveParams(), _GPU)
+    renderer.frameDone = MagicMock()
+    closed = threading.Event()
+    renderer.isInterruptionRequested = closed.is_set
+    thread = threading.Thread(target=renderer.run)
+    thread.start()
+    deadline = time.monotonic() + 60
+    while not arrived.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert arrived.exists()  # the service is now stuck inside its startup hook, never having answered
+    started = time.monotonic()
+    closed.set()  # closeEvent's requestInterruption, while the service is still starting
+    thread.join(30)
+    assert not thread.is_alive()
+    assert time.monotonic() - started < 15  # bounded, not the 60 s startup hook or the 120 s timeout
+    renderer.frameDone.emit.assert_not_called()
+    assert services == []  # the service never got as far as reporting ready

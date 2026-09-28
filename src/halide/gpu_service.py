@@ -52,6 +52,11 @@ REQUEST_TIMEOUT = 300.0
 # context — a few seconds cold) before running_service gives up on it.
 _STARTUP_TIMEOUT = 120.0
 
+# How often running_service checks its optional `cancel` callback while waiting for the service to
+# report ready. Short enough that a caller closing mid-startup (e.g. the picker's contact sheet
+# window) isn't stuck waiting out the full _STARTUP_TIMEOUT on a hung driver.
+_STARTUP_POLL_INTERVAL = 0.2
+
 # How long stopping the service waits for its own wake-up connection to the accept loop.
 _WAKE_TIMEOUT = 2.0
 
@@ -432,9 +437,38 @@ def _service_main(device_kind: str, where: tuple[str | tuple, str, bytes],
     serving.__exit__(None, None, None)
 
 
+def _wait_for_ready(status, cancel: Callable[[], bool] | None) -> ServiceAddress:
+    """Block until the service reports ready (or fails), polling in short slices so an optional
+    `cancel` callback is checked regularly instead of one blocking `poll(_STARTUP_TIMEOUT)` — a
+    caller that wants to give up early (the picker's contact sheet window, closed while a hung
+    driver is still being probed) would otherwise be stuck for the full _STARTUP_TIMEOUT. Raises
+    ServiceUnavailable on a timeout, a cancellation, or the service itself failing to start; the
+    caller's `finally` still runs `_stop` either way, which is what actually terminates a service
+    stuck inside a slow (or hung) `initializer`/device probe."""
+    deadline = time.monotonic() + _STARTUP_TIMEOUT
+    while True:
+        if cancel is not None and cancel():
+            raise ServiceUnavailable("the GPU service's startup was cancelled")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ServiceUnavailable(f"the GPU service didn't start within {_STARTUP_TIMEOUT:g} s")
+        try:
+            if status.poll(min(_STARTUP_POLL_INTERVAL, remaining)):
+                break
+        except (OSError, EOFError) as exc:
+            raise ServiceUnavailable(f"the GPU service exited while starting ({_describe(exc)})") from exc
+    try:
+        state, detail = status.recv()
+    except (OSError, EOFError) as exc:
+        raise ServiceUnavailable(f"the GPU service exited while starting ({_describe(exc)})") from exc
+    if state != "ready":
+        raise ServiceUnavailable(f"the GPU service couldn't start: {detail}")
+    return detail
+
+
 @contextmanager
-def running_service(device_kind: str, *, initializer: Callable[[], None] | None = None
-                    ) -> Iterator[ServiceAddress]:
+def running_service(device_kind: str, *, initializer: Callable[[], None] | None = None,
+                    cancel: Callable[[], bool] | None = None) -> Iterator[ServiceAddress]:
     """Start the service process (`device_kind` "gpu" normally; "cpu" runs the numpy path, for
     tests), yield its address, and stop it on the way out — even with requests in flight: those
     clients get ServiceUnavailable. Raises ServiceUnavailable if it can't start (CuPy unusable, a
@@ -442,7 +476,13 @@ def running_service(device_kind: str, *, initializer: Callable[[], None] | None 
 
     `initializer`: a picklable, module-level function the child runs before anything else — a test
     hook (tests/unit/_fake_device.py's `install_as_gpu` makes the child's "GPU" the strict fake).
-    Production code never passes one."""
+    Production code never passes one.
+
+    `cancel`: an optional no-argument callable polled while the service is starting
+    (_wait_for_ready) — True gives up on startup promptly (bounded by _STARTUP_POLL_INTERVAL)
+    instead of waiting out the full _STARTUP_TIMEOUT. `_stop` below still terminates the spawned
+    process either way. Used by the GUI (gui/proof_window.py) so closing the window while the
+    service is still starting doesn't hang the close on a slow or hung driver probe."""
     context = get_context("spawn")
     where = _new_address()
     parent_status, child_status = context.Pipe()
@@ -450,17 +490,8 @@ def running_service(device_kind: str, *, initializer: Callable[[], None] | None 
                               name="halide-gpu-service", daemon=True)
     process.start()
     child_status.close()
-    address = None
     try:
-        try:
-            if not parent_status.poll(_STARTUP_TIMEOUT):
-                raise ServiceUnavailable(f"the GPU service didn't start within {_STARTUP_TIMEOUT:g} s")
-            state, detail = parent_status.recv()
-        except (OSError, EOFError) as exc:
-            raise ServiceUnavailable(f"the GPU service exited while starting ({_describe(exc)})") from exc
-        if state != "ready":
-            raise ServiceUnavailable(f"the GPU service couldn't start: {detail}")
-        address = detail
+        address = _wait_for_ready(parent_status, cancel)
         yield address
     finally:
         _stop(process, parent_status, where)

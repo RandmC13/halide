@@ -722,16 +722,16 @@ def fake_gpu_service(monkeypatch):
     starts = []
     real = orchestrator._start_service
 
-    def counting(kind, initializer):
+    def counting(kind, initializer, cancel=None):
         starts.append(kind)
-        return real(kind, initializer)
+        return real(kind, initializer, cancel)
 
     monkeypatch.setattr(orchestrator, "_start_service", counting)
     return starts
 
 
 def _no_service(monkeypatch):
-    def refuse(kind, initializer):
+    def refuse(kind, initializer, cancel=None):
         raise AssertionError("a service was started")
 
     monkeypatch.setattr(orchestrator, "_start_service", refuse)
@@ -841,6 +841,27 @@ def test_when_the_service_dies_mid_batch_the_rest_develop_on_the_cpu(tmp_path, f
         assert _provenance(out / scan.name)["device"] == expected_device
         process_scan(scan, tmp_path / "cpu.tif", Stage.FULL, PROFILE, ToneCurveParams())
         np.testing.assert_array_equal(read_tiff_pixels(out / scan.name), read_tiff_pixels(tmp_path / "cpu.tif"))
+
+
+def test_the_service_is_off_below_python_3_13_with_the_reason(monkeypatch):
+    """Finding 1, final whole-branch review: SharedMemory(..., track=False) — what
+    shared_frames.attach_frame uses to attach to a service-mode worker's frame — is a Python 3.13
+    addition; this project's own floor is 3.11 (pyproject.toml). Patch the gate helper itself
+    (batch.orchestrator._service_python_supported), not sys.version_info, so this runs the same way
+    regardless of the interpreter actually running the suite."""
+    _no_service(monkeypatch)
+    monkeypatch.setattr(orchestrator, "_service_python_supported", lambda: False)
+    with batch_compute([], _GPU) as compute:
+        assert compute.mode == "per_worker" and compute.service is None
+        assert compute.fallback_reason == "the shared GPU service needs Python 3.13 or newer"
+        assert compute.worker_args(2) == ("gpu", (6 * 2**30) // 2 - _CUDA_CONTEXT_BYTES)  # as before the service
+
+
+def test_the_service_starts_on_a_supported_python_even_when_patched_true(monkeypatch, fake_gpu_service, clean_shm):
+    monkeypatch.setattr(orchestrator, "_service_python_supported", lambda: True)
+    with batch_compute([], _GPU) as compute:
+        assert compute.mode == "service"
+    assert fake_gpu_service == ["gpu"]
 
 
 def test_a_service_that_wont_start_means_per_worker_gpu_mode_with_the_reason(tmp_path, monkeypatch):
@@ -1064,6 +1085,30 @@ def test_the_service_stops_and_its_frames_are_swept_when_the_batch_ends(tmp_path
         leftover.close()
     assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
     assert f"{compute.shm_prefix}dead" not in _shm_entries()
+
+
+def test_sweep_runs_after_the_service_has_actually_stopped(monkeypatch, fake_gpu_service, clean_shm):
+    """Finding 2, final whole-branch review: batch_compute's sweep callback must unwind *after* the
+    service's own context manager has stopped it (ExitStack is LIFO: the callback registered first
+    unwinds last) — not before, which is what the code did despite its own comment claiming
+    otherwise. Verified directly here, not just by inspection: record whether the service process is
+    already gone at the moment sweep actually runs."""
+    import halide.shared_frames
+
+    service_pid = []
+    seen_service_gone_at_sweep = []
+    real_sweep = halide.shared_frames.sweep
+
+    def recording_sweep(prefix):
+        pid = service_pid[0]
+        gone = not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+        seen_service_gone_at_sweep.append(gone)
+        return real_sweep(prefix)
+
+    monkeypatch.setattr(halide.shared_frames, "sweep", recording_sweep)
+    with batch_compute([], _GPU) as compute:
+        service_pid.append(compute.service.address.pid)
+    assert seen_service_gone_at_sweep == [True]
 
 
 def test_decoded_pixel_bytes_reads_what_read_tiff_decodes(tmp_path):

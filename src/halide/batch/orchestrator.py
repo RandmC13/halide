@@ -121,6 +121,19 @@ _SERVICE_INITIALIZER = None
 SERVICE_ENV = "HALIDE_GPU_SERVICE"
 _SERVICE_OFF = ("0", "off", "false", "no")
 
+# Controller ruling (final whole-branch review): the shared service needs Python 3.13 or newer.
+# shared_frames.attach_frame's service-side attach uses `SharedMemory(..., track=False)`, which is
+# a Python 3.13 addition (gh-82300) — this project's own floor is 3.11 (pyproject.toml). Below
+# 3.13, attach_frame/sweep now fall back to a manual-unregister shim that works correctly (see
+# shared_frames._UNTRACKED_ATTACH_SUPPORTED), but the service is still gated off entirely here as a
+# deliberate, extra safety margin, not just to route around a crash. One helper, not
+# `sys.version_info` inline, so a test can patch it without patching the interpreter itself.
+_MIN_SERVICE_PYTHON = (3, 13)
+
+
+def _service_python_supported() -> bool:
+    return sys.version_info >= _MIN_SERVICE_PYTHON
+
 
 def gpu_service_enabled() -> bool:
     """False when $HALIDE_GPU_SERVICE turns the shared GPU service off (case and space ignored)."""
@@ -468,12 +481,14 @@ class BatchCompute:
         return _device_worker_args(self.device, workers)
 
 
-def _start_service(kind: str, initializer):
+def _start_service(kind: str, initializer, cancel: Callable[[], bool] | None = None):
     """gpu_service.running_service — one indirection, so the test suite can keep a real GPU
-    service from ever starting on a developer's machine (tests/conftest.py)."""
+    service from ever starting on a developer's machine (tests/conftest.py). `cancel` is forwarded
+    unchanged — see running_service's own docstring (bounds a caller's wait while the service is
+    still starting, e.g. the picker's contact sheet window being closed early)."""
     from halide.gpu_service import running_service
 
-    return running_service(kind, initializer=initializer)
+    return running_service(kind, initializer=initializer, cancel=cancel)
 
 
 def _size(n: int) -> str:
@@ -481,19 +496,29 @@ def _size(n: int) -> str:
 
 
 @contextlib.contextmanager
-def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: str = "develop"
-                  ) -> Iterator[BatchCompute]:
+def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: str = "develop",
+                  cancel: Callable[[], bool] | None = None) -> Iterator[BatchCompute]:
     """Decide how this batch reaches the device, and on a GPU start the shared service for as long
     as the block runs. Run the worker pool *inside* the block: on the way out the service is
     stopped and then this batch's leftover shared frames are swept — which is only safe once every
     worker is gone (shared_frames.sweep), so the pool must have shut down by then.
 
     A GPU batch falls back to per-worker GPU mode (fallback_reason says why, for the run sheet) when
-    /dev/shm can't hold even one frame (a small container), the service doesn't start, or
-    $HALIDE_GPU_SERVICE turns it off. It never fails the batch: that mode is what every GPU batch
-    did before the service existed."""
+    the interpreter is older than Python 3.13 (_service_python_supported), /dev/shm can't hold even
+    one frame (a small container), the service doesn't start, or $HALIDE_GPU_SERVICE turns it off.
+    It never fails the batch: that mode is what every GPU batch did before the service existed.
+
+    `cancel`: forwarded to gpu_service.running_service — an optional no-argument callable polled
+    while the service is still starting, so a caller that wants to give up early (the picker's
+    contact sheet window, closed mid-startup) isn't stuck waiting out the service's full startup
+    timeout on a hung driver probe. CLI callers don't have anything to cancel on, so they pass
+    nothing."""
     if device is None or device.kind != "gpu":
         yield BatchCompute(device=device, workload=workload)
+        return
+    if not _service_python_supported():
+        yield BatchCompute(device=device, workload=workload,
+                           fallback_reason="the shared GPU service needs Python 3.13 or newer")
         return
     if not gpu_service_enabled():
         value = os.environ.get(SERVICE_ENV, "").strip()
@@ -510,16 +535,19 @@ def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: 
     from halide.shared_frames import batch_prefix, sweep
 
     with contextlib.ExitStack() as stack:
+        prefix = batch_prefix()
+        # Registered before the service is entered, so — since an ExitStack unwinds last-registered
+        # first (LIFO) — this callback is the *last* thing to run on the way out: the service (entered
+        # next, so it unwinds first) has already stopped by the time sweep runs, which is the whole
+        # point (sweep must only ever run once nothing can still be writing into a frame).
+        stack.callback(sweep, prefix)
         try:
-            address = stack.enter_context(_start_service(_SERVICE_KIND, _SERVICE_INITIALIZER))
+            address = stack.enter_context(_start_service(_SERVICE_KIND, _SERVICE_INITIALIZER, cancel))
         except Exception as exc:  # noqa: BLE001 — ServiceUnavailable, or the process couldn't even spawn
             stack.close()
             # One line for the run sheet; the sheet adds its own punctuation after it.
             yield BatchCompute(device=device, workload=workload, fallback_reason=str(exc).rstrip("."))
             return
-        prefix = batch_prefix()
-        # Registered after the service, so it runs after the service has stopped (LIFO).
-        stack.callback(sweep, prefix)
         yield BatchCompute(device=device, workload=workload, service=GpuService(address, prefix), shm_cap=shm_cap)
 
 
