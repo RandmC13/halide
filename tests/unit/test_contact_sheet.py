@@ -67,6 +67,26 @@ def test_sheet_lays_frames_out_in_strips_with_a_short_last_strip(tmp_path):
     assert not is_contact_sheet(tmp_path / "export.png")
 
 
+def test_write_sheet_failure_leaves_existing_sheet_untouched(tmp_path, monkeypatch):
+    """A sheet can take tens of seconds to render for a full roll; a crash partway through the
+    save (disk full, kill -9) must not leave a truncated file under the real name (F04)."""
+    frame = np.full((60, 90, 3), 128, dtype=np.uint8)
+    sheet = render_sheet([Tile("IMG_1", frame)], "Roll", frame_width=90, columns=6)
+    path = tmp_path / "sheet.jpg"
+    write_sheet(path, sheet)
+    old_bytes = path.read_bytes()
+
+    def _broken_save(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(Image.Image, "save", _broken_save)
+    with pytest.raises(RuntimeError, match="disk full"):
+        write_sheet(path, sheet)
+
+    assert path.read_bytes() == old_bytes  # untouched
+    assert list(tmp_path.iterdir()) == [path]  # no leftover temp file
+
+
 def test_sheet_is_black_like_a_real_contact_print():
     frame = np.full((60, 90, 3), 128, dtype=np.uint8)
     tiles = [Tile("IMG_1", frame, "grade 0.90", number=7), Tile("IMG_2", frame)]

@@ -9,6 +9,7 @@ import contextlib
 import dataclasses
 import functools
 import json
+import subprocess
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -25,6 +26,8 @@ from halide.core.pipeline import negative_to_positive
 from halide.core.tone_render import ResolvedTone, apply_tone, resolve_tone
 from halide.core.types import DensityProfile, Stage, ToneCurveParams  # noqa: F401 -- Stage re-exported
 from halide.device import ComputeDevice
+from halide.io.atomic import atomic_output
+from halide.io.exiftool import ExifToolError
 from halide.io.icc import (
     LinearRGBProfile,
     UnsupportedICCProfileError,
@@ -48,6 +51,11 @@ from halide.io.tiff import (
     set_description,
     write_tiff,
 )
+
+# A failure exiftool reports for the file it was asked to tag (see io/tiff.py::copy_exif_metadata):
+# ExifToolError from its kept-open session, or CalledProcessError if the command had to fall back
+# to a one-shot call. Either way the pixel data is already good — see process_scan/print_scan.
+_EXIF_FAILURE = (ExifToolError, subprocess.CalledProcessError)
 
 IDENTITY_PROFILE = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0))
 
@@ -220,41 +228,56 @@ def process_scan(
 
     Returns the tone values actually used (None for Stage.DENSITY_ONLY, which has no tone stage).
     """
-    with contextlib.ExitStack() as shared:
-        # One full-frame host buffer for the whole run: decoded, developed (or downloaded into) and
-        # written in place — a shared-memory one when a GPU service develops it.
-        frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
-        image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
-        request = DevelopRequest(source_profile=source_profile, scan_gain=scan_gain, density_profile=density_profile,
-                                 stage=stage, tone_params=tone_params)
+    output_path = Path(output_path) if output_path is not None else None
+    # Written under a hidden temp name beside the real one and only moved into place once every
+    # step below (the TIFF write, then exiftool, then the provenance description) has run — a
+    # killed or failed write never leaves a truncated file under the real output name (F04).
+    atomic_ctx = atomic_output(output_path) if output_path is not None else contextlib.nullcontext(None)
+    exif_warning = None
+    with atomic_ctx as tmp_path:
+        with contextlib.ExitStack() as shared:
+            # One full-frame host buffer for the whole run: decoded, developed (or downloaded into)
+            # and written in place — a shared-memory one when a GPU service develops it.
+            frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
+            image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
+            request = DevelopRequest(source_profile=source_profile, scan_gain=scan_gain, density_profile=density_profile,
+                                     stage=stage, tone_params=tone_params)
 
-        if frame is not None:
-            reply, image, used_device = _run_on_service(input_path, frame, service, "develop", request, on_warning)
-            developed = None if reply is None else (reply.resolved, reply.profile)
-        else:
-            developed, image = _run_on_device(input_path, image, device, develop_request, request, on_warning)
-            used_device = "gpu" if developed is not None else "cpu"
-        if developed is None:
-            developed = develop_request(image, request)
-        resolved, profile = developed
+            if frame is not None:
+                reply, image, used_device = _run_on_service(input_path, frame, service, "develop", request, on_warning)
+                developed = None if reply is None else (reply.resolved, reply.profile)
+            else:
+                developed, image = _run_on_device(input_path, image, device, develop_request, request, on_warning)
+                used_device = "gpu" if developed is not None else "cpu"
+            if developed is None:
+                developed = develop_request(image, request)
+            resolved, profile = developed
 
-        record = provenance_json(resolved, profile, scan_gain, used_device) if resolved is not None else None
-        if output_path is not None:
-            write_tiff(output_path, image, icc_profile=output_profile_bytes())
-        if thumbnail_path is not None:
-            save_thumbnail(thumbnail_path, thumbnail_from_linear(image, thumbnail_long_edge),
-                           read_provenance(record))
-        # Free the frame before exiftool (a separate process, kept running between frames on Linux —
-        # halide.io.exiftool) rewrites the output, so its peak while writing never coincides with a
-        # developed frame — see the per-worker memory estimate in batch/orchestrator.py. A shared
-        # frame is unlinked on leaving this block.
-        del image, frame
-    if output_path is not None:
-        # Output is always ACEScg, a different profile than the source — exiftool must not clobber
-        # the ACEScg tag we just wrote with the source's own ICC bytes.
-        copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
-        if record is not None:
-            set_description(output_path, record)
+            record = provenance_json(resolved, profile, scan_gain, used_device) if resolved is not None else None
+            if tmp_path is not None:
+                write_tiff(tmp_path, image, icc_profile=output_profile_bytes())
+            if thumbnail_path is not None:
+                save_thumbnail(thumbnail_path, thumbnail_from_linear(image, thumbnail_long_edge),
+                               read_provenance(record))
+            # Free the frame before exiftool (a separate process, kept running between frames on Linux —
+            # halide.io.exiftool) rewrites the output, so its peak while writing never coincides with a
+            # developed frame — see the per-worker memory estimate in batch/orchestrator.py. A shared
+            # frame is unlinked on leaving this block.
+            del image, frame
+        if tmp_path is not None:
+            # Output is always ACEScg, a different profile than the source — exiftool must not clobber
+            # the ACEScg tag we just wrote with the source's own ICC bytes. Run on the temp path, like
+            # the TIFF write itself, so the atomic replace below only ever exposes a complete file.
+            try:
+                copy_exif_metadata(str(input_path), str(tmp_path), drop_icc=True)
+            except _EXIF_FAILURE as exc:
+                # The pixels are already fully developed and written — a missing camera-metadata
+                # copy is a warning, not a failed frame (2.3-4).
+                exif_warning = f"{input_path}: developed, but its camera metadata couldn't be copied ({exc})"
+            if record is not None:
+                set_description(tmp_path, record)
+    if exif_warning is not None:
+        _warn(on_warning, exif_warning)
     return resolved
 
 
@@ -611,38 +634,49 @@ def print_scan(
             f"{input_path} is already a halide print (it has the tone curve applied) — `halide print` "
             f"expects a flat positive from `halide invert --output flat`"
         )
-    with contextlib.ExitStack() as shared:
-        frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
-        image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
+    output_path = Path(output_path)
+    exif_warning = None
+    # Same atomic-write contract as process_scan (F04): everything below runs on a hidden temp
+    # path, moved over the real name only once it's all done.
+    with atomic_output(output_path) as tmp_path:
+        with contextlib.ExitStack() as shared:
+            frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
+            image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
 
-        warning = None
-        exposure = tone_params.exposure
-        scale = provenance.get("linear_scale") if provenance is not None else None
-        if not (isinstance(scale, (int, float)) and scale > 0):
-            scale = None
-            if exposure is not None:
-                warning = (
-                    f"{input_path} has no halide flat-output metadata (normal after editing elsewhere), so a "
-                    f"pinned exposure of {exposure:+.3f} can't be reproduced on it — fitting exposure instead"
-                )
-                exposure = None
-        print_params = ToneCurveParams(
-            mode="paper", exposure=exposure, contrast=tone_params.contrast, curve_path=tone_params.curve_path
-        )
+            warning = None
+            exposure = tone_params.exposure
+            scale = provenance.get("linear_scale") if provenance is not None else None
+            if not (isinstance(scale, (int, float)) and scale > 0):
+                scale = None
+                if exposure is not None:
+                    warning = (
+                        f"{input_path} has no halide flat-output metadata (normal after editing elsewhere), so a "
+                        f"pinned exposure of {exposure:+.3f} can't be reproduced on it — fitting exposure instead"
+                    )
+                    exposure = None
+            print_params = ToneCurveParams(
+                mode="paper", exposure=exposure, contrast=tone_params.contrast, curve_path=tone_params.curve_path
+            )
 
-        request = PrintRequest(source_profile=source_profile, scale=scale, print_params=print_params)
-        if frame is not None:
-            reply, image, used_device = _run_on_service(input_path, frame, service, "print_", request, on_warning)
-            resolved = None if reply is None else reply.resolved
-        else:
-            resolved, image = _run_on_device(input_path, image, device, print_request, request, on_warning)
-            used_device = "gpu" if resolved is not None else "cpu"
-        if resolved is None:
-            resolved = print_request(image, request)
-        write_tiff(output_path, image, icc_profile=output_profile_bytes())
-        del image, frame  # before exiftool runs — see process_scan
-    copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
-    set_description(output_path, provenance_json(resolved, None, device=used_device))
+            request = PrintRequest(source_profile=source_profile, scale=scale, print_params=print_params)
+            if frame is not None:
+                reply, image, used_device = _run_on_service(input_path, frame, service, "print_", request, on_warning)
+                resolved = None if reply is None else reply.resolved
+            else:
+                resolved, image = _run_on_device(input_path, image, device, print_request, request, on_warning)
+                used_device = "gpu" if resolved is not None else "cpu"
+            if resolved is None:
+                resolved = print_request(image, request)
+            write_tiff(tmp_path, image, icc_profile=output_profile_bytes())
+            del image, frame  # before exiftool runs — see process_scan
+        try:
+            copy_exif_metadata(str(input_path), str(tmp_path), drop_icc=True)
+        except _EXIF_FAILURE as exc:
+            # The print itself is already fully written — see process_scan's own exif handling.
+            exif_warning = f"{input_path}: printed, but its camera metadata couldn't be copied ({exc})"
+        set_description(tmp_path, provenance_json(resolved, None, device=used_device))
+    if exif_warning is not None:
+        _warn(on_warning, exif_warning)
     return resolved, warning
 
 
@@ -673,6 +707,7 @@ def export_delivery_image(
     shared-memory buffer into another. After any failure its output buffer is never used (see
     export_fallback): the CPU converts into a buffer of this process's own.
     """
+    output_path = Path(output_path)
     with contextlib.ExitStack() as shared:
         frames = _shared_frame(input_path, service, shm_prefix, shared, on_warning, extra_uint8=True)
         scan = read_tiff(input_path, out=None if frames is None else frames[0].array)
@@ -695,10 +730,13 @@ def export_delivery_image(
             srgb_8bit = _export_on_service(input_path, frames, service, on_warning)
         else:
             srgb_8bit = _export_srgb_on_device(input_path, scan.image, device, on_warning)
-        if srgb_8bit is not None:
-            write_srgb_8bit_image(output_path, srgb_8bit, quality=quality)
-        else:
-            write_delivery_image(output_path, scan.image, quality=quality)
+        # Written under a hidden temp name beside the real one, moved into place only once the
+        # PNG/JPEG is fully encoded (F04) — see process_scan's own atomic_output for why.
+        with atomic_output(output_path) as tmp_path:
+            if srgb_8bit is not None:
+                write_srgb_8bit_image(tmp_path, srgb_8bit, quality=quality)
+            else:
+                write_delivery_image(tmp_path, scan.image, quality=quality)
         del scan, frames, srgb_8bit
     return warning
 
