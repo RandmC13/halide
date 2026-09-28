@@ -348,17 +348,19 @@ def sweep_stale() -> int:
 
 def _remove(entry: str) -> bool:
     """Unlink the segment `entry` (a name in /dev/shm) on behalf of a process that's gone; whether
-    this call removed it."""
+    this call removed it. Best effort, never raises for one entry: a segment it can't open or
+    unlink — already gone, or another user's (0600, PermissionError) — is skipped, since a cleanup
+    must never fail the batch it runs in front of."""
     try:
         leftover = shared_memory.SharedMemory(name=entry, create=False, track=False)
-    except FileNotFoundError:
+    except (OSError, ValueError):
         return False
     # This handle never called .buf (no numpy export was ever taken against it), so a plain
     # close() is always safe here — unlike new_frame/attach_frame's own cleanup.
     try:
         leftover.unlink()
-    except FileNotFoundError:
-        leftover.close()  # removed by someone else between the open and here: theirs to track
+    except OSError:
+        leftover.close()  # removed by someone else meanwhile (theirs to track), or not ours to remove
         return False
     _unregister(f"/{entry}")
     leftover.close()

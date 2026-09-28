@@ -12,7 +12,7 @@ import sys
 import time
 
 from halide.batch.orchestrator import BatchResult
-from halide.cli.console import SPROCKET, VERB, VERB_PAST, Style, human_time
+from halide.cli.console import SPROCKET, VERB, VERB_PAST, Style, dim, human_time
 
 _FRAME = "███"  # three cells wide by one tall ≈ a 3:2 35mm frame at a terminal's ~1:2 glyph aspect
 _HOLLOW = "░░░"
@@ -90,6 +90,7 @@ class GridProgressRenderer:
         self._start_time: float | None = None
         self._last_frame_lines = 0
         self._tick = 0
+        self._note: str | None = None  # one line under the status line (note())
 
         columns, rows = terminal_size or shutil.get_terminal_size(fallback=(80, 24))
         self._columns = columns
@@ -198,6 +199,10 @@ class GridProgressRenderer:
     def _frame(self) -> str:
         lines = [f"{self._INDENT}{line}" if line else "" for line in self._sheet_lines()]
         lines += ["", f"{self._INDENT}[ {self._fit_status(self._status_text())} ]"]
+        if self._note:
+            room = self._columns - 1 - len(self._INDENT)  # trimmed, never wrapped: see _fit_status
+            note = self._note if len(self._note) <= room else self._note[: max(0, room - 1)] + "…"
+            lines.append(f"{self._INDENT}{dim(note)}")
         return "\n".join(lines) + "\n"
 
     def _draw(self, frame: str) -> None:
@@ -234,6 +239,13 @@ class GridProgressRenderer:
         self._redraw()
 
 
+    def note(self, message: str) -> None:
+        """Show `message` on its own line under the status line from now on — part of the frame, so
+        the in-place redraws keep counting their lines right (a plain print() in between would
+        strand a stale row)."""
+        self._note = message
+        self._redraw()
+
     def cancel(self, indices: list[int]) -> None:
         """Mark jobs that never got a result (not started, or in flight when Ctrl+C landed) as
         cancelled and redraw one final time — called instead of report() for those indices."""
@@ -260,3 +272,18 @@ class GridProgressRenderer:
                 f"\n{Style.GREEN}{Style.BOLD}Contact sheet complete{Style.RESET} — "
                 f"{self.total}/{self.total} frames {verb_past} in {human_time(elapsed)}."
             )
+
+
+def cancel_notice(renderer: GridProgressRenderer | None):
+    """The `on_cancel` callback for the batch runners (orchestrator._run_pool): shows why a
+    cancelled batch is still running — the frames in progress finishing — in a terminal only, on
+    the progress sheet if there is one, else (--quiet) as one plain line."""
+    def show(message: str) -> None:
+        if not sys.stdout.isatty():
+            return
+        if renderer is not None:
+            renderer.note(message)
+        else:
+            print(dim(message), flush=True)
+
+    return show

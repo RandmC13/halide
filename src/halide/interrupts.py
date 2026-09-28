@@ -50,7 +50,8 @@ def _handlers(signals: tuple, handler) -> Iterator[None]:
         yield
     finally:
         for signum, old in previous.items():
-            signal.signal(signum, old)
+            if old is not None:  # None: the handler was installed from C, and can't be put back
+                signal.signal(signum, old)
 
 
 def children_ignore_terminal_signals():

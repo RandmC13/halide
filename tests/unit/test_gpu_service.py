@@ -662,3 +662,42 @@ def test_gpu_service_keeps_cupy_out_of_the_parent():
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["developed-identically", "False"]
     assert result.stderr == ""
+
+
+class _InterruptedConnection:
+    """A connection whose poll raises `exc`, standing in for Ctrl-C or a dead service mid-request."""
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    def send(self, message):
+        pass
+
+    def poll(self, timeout):
+        raise self._exc
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt(), EOFError()], ids=["interrupted", "service died"])
+def test_an_interrupt_inside_the_failure_handling_still_leaves_the_client_dead(monkeypatch, exc):
+    """Review round 1: the client is marked dead before anything else in the failure handling can
+    be interrupted — here a second Ctrl-C lands while the reason is being described."""
+    def interrupted(_exc):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(gpu_service, "_describe", interrupted)
+    client = ServiceClient(gpu_service.ServiceAddress(address="unused", family="AF_UNIX", authkey=b"x", pid=0,
+                                                      kind="cpu"))
+    client._conn = _InterruptedConnection(exc)
+    with pytest.raises(KeyboardInterrupt):
+        client.develop(SimpleFrame(), None)
+    assert client._dead is not None
+    with pytest.raises(ServiceUnavailable):  # never back to the out-of-step connection
+        client.develop(SimpleFrame(), None)
+
+
+class SimpleFrame:
+    def descriptor(self):
+        return ("unused", (1, 1, 3), "<f4")

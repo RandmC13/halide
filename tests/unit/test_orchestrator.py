@@ -1127,13 +1127,12 @@ def test_decoded_pixel_bytes_reads_what_read_tiff_decodes(tmp_path):
 
 # --- Exit paths (F12, review 2.4-2 and 2.4-9): stale frames, SIGHUP/SIGTERM, early Ctrl-C --------
 
-import re  # noqa: E402
-import signal  # noqa: E402
 import subprocess  # noqa: E402
 import textwrap  # noqa: E402
 import time  # noqa: E402
 
 from multiprocessing import shared_memory  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 
 def _dead_pid() -> int:
@@ -1255,3 +1254,19 @@ def test_a_signalled_gpu_batch_cancels_in_order_and_leaves_nothing_behind(tmp_pa
     assert not any("partial" in name for name in outputs)  # frames in progress finished, whole
     counted = int(re.search(r"Cancelled — (\d+)/6", out + err).group(1))
     assert len(outputs) == counted  # and every frame written is counted
+
+
+def test_after_a_cancel_the_wait_for_frames_in_progress_is_announced_once():
+    """Ruling R9: while the frames in progress finish after Ctrl-C, the caller is told why the batch
+    hasn't stopped yet — and only when there is something to wait for."""
+    job = BatchJob(input_path=Path("a.tif"), output_path=Path("b.tif"))
+    future: Future = Future()
+    future.set_result(BatchResult(job=job, error=None))
+    notices, recorded = [], []
+    orchestrator._finish_in_flight({future: job}, recorded.append, [], notices.append)
+    assert notices == [orchestrator.FINISHING_NOTICE]
+    assert orchestrator.FINISHING_NOTICE == "Finishing the frames in progress — Ctrl-C again to stop now"
+    assert [r.job for r in recorded] == [job]
+    notices.clear()
+    orchestrator._finish_in_flight({}, recorded.append, [], notices.append)
+    assert notices == []

@@ -445,3 +445,28 @@ def test_sweep_stale_removes_a_dead_processs_segment_and_leaves_live_ones():
             assert _segment_exists(live.name) and _segment_exists(ours.name)
     finally:
         dead.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux" or sys.version_info < (3, 13), reason="/dev/shm sweep, Python 3.13+")
+def test_sweep_stale_skips_a_segment_it_may_not_open_and_carries_on(monkeypatch):
+    """Review round 1: another user's leftover (0600) makes opening it raise PermissionError. A
+    best-effort cleanup must never fail the batch it runs in front of: skip it, remove the rest."""
+    import halide.shared_frames as shared_frames_module
+
+    dead = _dead_pid()
+    theirs = f"halide-{dead}-0000aaaa-{time.time_ns()}"
+    ours = shared_memory.SharedMemory(create=True, size=48, name=f"halide-{dead}-0000bbbb-{time.time_ns()}", track=False)
+    real = shared_frames_module.shared_memory.SharedMemory
+
+    def opener(*args, name=None, **kwargs):
+        if name == theirs:
+            raise PermissionError(13, "Permission denied", f"/{theirs}")
+        return real(*args, name=name, **kwargs)
+
+    monkeypatch.setattr(shared_frames_module.os, "listdir", lambda _dir: [theirs, ours.name])
+    monkeypatch.setattr(shared_frames_module.shared_memory, "SharedMemory", opener)
+    try:
+        assert sweep_stale() == 1
+        assert not _segment_exists(ours.name)
+    finally:
+        ours.close()

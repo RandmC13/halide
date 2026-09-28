@@ -22,7 +22,7 @@ from halide.batch.orchestrator import (
     memory_budget_warning,
     run_print_batch,
 )
-from halide.batch.progress import GridProgressRenderer
+from halide.batch.progress import GridProgressRenderer, cancel_notice
 from halide.calibration.profile_store import load_tone_override, resolve_profile_path
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
@@ -176,6 +176,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
 
         results = run_print_batch(
             jobs, tone_params, max_workers=workers, on_result=on_result, on_start=on_start, device=device,
+            on_cancel=cancel_notice(renderer),
             compute=compute,
         )
 
