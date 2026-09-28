@@ -79,3 +79,88 @@ def write_contact_sheet(
     )
     write_sheet(sheet_path, sheet)
     print(console.success(f"Contact sheet → {sheet_path} ({sheet.width}×{sheet.height} px)"))
+
+
+def discover_processed_files(folder: Path, sheet_path: Path) -> list[Path]:
+    """Every already-processed frame in `folder` (halide's own TIFF output, or PNG/JPEG from
+    `halide export`), excluding the sheet being written itself and any earlier contact sheet in
+    that folder — shared by `halide contact`'s own directory case and `halide batch
+    --skip-existing --contact-sheet`'s whole-roll rebuild."""
+    from halide.batch.orchestrator import TIFF_SUFFIXES
+    from halide.io.contact_sheet import is_contact_sheet
+
+    source_suffixes = TIFF_SUFFIXES + (".png", ".jpg", ".jpeg")
+    files = sorted(f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in source_suffixes)
+    return [
+        f for f in files
+        if f.resolve() != sheet_path.resolve() and not (f.suffix.lower() not in TIFF_SUFFIXES and is_contact_sheet(f))
+    ]
+
+
+def write_sheet_from_folder(
+    files: list[Path],
+    sheet_path: str | Path,
+    args: argparse.Namespace,
+    default_title: str,
+    *,
+    quiet: bool = False,
+) -> int:
+    """Build a contact sheet by thumbnailing already-processed files fresh from disk — what
+    `halide contact <processed_dir> <sheet>` does, and what `halide batch --skip-existing
+    --contact-sheet` falls back to for the whole roll when some frames were never touched by this
+    run's own worker pool (so never got a thumbnail from it). One shared implementation so the two
+    callers can't drift. Returns 0 on success, 1 if any file failed to thumbnail, 130 if cancelled."""
+    import shutil
+    import tempfile
+
+    from halide.batch.orchestrator import (
+        BatchJob,
+        default_export_worker_count,
+        export_memory_budget_warning,
+        run_thumbnail_batch,
+    )
+    from halide.batch.progress import GridProgressRenderer
+
+    if not files:
+        print(f"No processed frames (TIFF/PNG/JPEG) found for {sheet_path}")
+        return 1
+
+    tmp = Path(tempfile.mkdtemp(prefix="halide-contact-"))
+    try:
+        jobs = [
+            BatchJob(input_path=f, output_path=None, thumbnail_path=tmp / f"{i:04d}.png")
+            for i, f in enumerate(files)
+        ]
+        workers = getattr(args, "workers", None)
+        if workers is not None:
+            warning = export_memory_budget_warning(jobs, workers)
+            if warning and not quiet:
+                print(console.warning(warning))
+        else:
+            workers = default_export_worker_count(jobs)
+
+        renderer = None if quiet else GridProgressRenderer(total=len(jobs), verb="proof")
+        job_index = {job: i for i, job in enumerate(jobs)}
+        if renderer:
+            renderer.start()
+        results = run_thumbnail_batch(
+            jobs, thumbnail_long_edge=args.frame_width, max_workers=workers,
+            on_start=(lambda job: renderer.mark_processing(job_index[job])) if renderer else None,
+            on_result=(lambda r: renderer.report(job_index[r.job], r)) if renderer else None,
+        )
+        cancelled = len(results) < len(jobs)
+        if renderer:
+            if cancelled:
+                done = {job_index[r.job] for r in results}
+                renderer.cancel([i for i in range(len(jobs)) if i not in done])
+            renderer.finish(cancelled=cancelled)
+        if cancelled:
+            return 130
+        failures = [r for r in results if r.error]
+        if renderer is None:
+            for r in failures:
+                print(console.error(f"{r.job.input_path.name}: {r.error}"))
+        write_contact_sheet(args, jobs, results, sheet_path, default_title)
+        return 1 if failures else 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

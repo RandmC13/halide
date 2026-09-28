@@ -17,9 +17,9 @@ from halide.calibration.scan_consistency import assess_roll, most_common_setting
 from halide.cli._device_args import add_device_argument, resolve_device_arg
 from halide.cli._output_policy import (
     add_output_policy_arguments,
-    check_not_input,
     is_interactive,
     policy_from_args,
+    resolve_bulk_jobs,
     resolve_existing,
 )
 from halide.cli._calibration_args import (
@@ -223,26 +223,31 @@ def run(args: argparse.Namespace) -> int:
     # A preview run's jobs (output_dir is None) keep nothing but a temp thumbnail, so there's
     # nothing there to protect; only real per-frame outputs and the contact sheet itself go
     # through the overwrite policy — combined into one decision, one prompt for the whole roll.
-    frame_pairs = [(job.input_path, job.output_path) for job in jobs] if output_dir is not None else []
-    check_not_input(frame_pairs)
-    all_pairs = list(frame_pairs)
-    if sheet_path is not None:
-        all_pairs.append((sheet_path, sheet_path))  # no single "input" for a sheet — only its own existence matters
-    kept_outputs = {
-        out for _, out in resolve_existing(all_pairs, policy_from_args(args), interactive=is_interactive())
-    }
-
-    skipped_frames = 0
     if output_dir is not None:
-        kept_jobs = [job for job in jobs if job.output_path in kept_outputs]
-        skipped_frames = len(jobs) - len(kept_jobs)
-        jobs = kept_jobs
-    build_sheet = sheet_path is None or sheet_path in kept_outputs
+        extra = [(sheet_path, sheet_path)] if sheet_path is not None else None
+        jobs, skipped_frames, kept_outputs = resolve_bulk_jobs(
+            jobs, args, interactive=is_interactive(), extra_pairs=extra
+        )
+        build_sheet = sheet_path is None or sheet_path in kept_outputs
+    else:
+        skipped_frames = 0
+        # output_dir is None only reaches here with a contact sheet requested (checked above) — no
+        # single "input" for a sheet, so only its own existence matters.
+        build_sheet = bool(
+            resolve_existing([(sheet_path, sheet_path)], policy_from_args(args), interactive=is_interactive())
+        )
 
     if output_dir is not None and not jobs:
-        print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
-        return 0
-    if output_dir is None and sheet_path is not None and not build_sheet:
+        if sheet_path is None or not build_sheet:
+            print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
+            return 0
+        # Nothing left to develop, but the sheet still needs building — from the whole,
+        # already-complete folder, the same way `halide contact <output_dir> <sheet>` would.
+        from halide.cli._contact_sheet import discover_processed_files, write_sheet_from_folder
+
+        files = discover_processed_files(output_dir, sheet_path)
+        return write_sheet_from_folder(files, sheet_path, args, input_dir.name, quiet=args.quiet)
+    if output_dir is None and not build_sheet:
         print(console.success(f"Nothing to do — {sheet_path} already exists (--skip-existing)."))
         return 0
 
@@ -250,7 +255,9 @@ def run(args: argparse.Namespace) -> int:
     try:
         if thumbnails is not None:
             jobs = [replace(job, thumbnail_path=thumbnails / f"{i:04d}.png") for i, job in enumerate(jobs)]
-        return _run(args, stage, input_dir, jobs, skipped_frames=skipped_frames, build_sheet=build_sheet)
+        return _run(
+            args, stage, input_dir, jobs, output_dir=output_dir, skipped_frames=skipped_frames, build_sheet=build_sheet
+        )
     finally:
         if thumbnails is not None:
             shutil.rmtree(thumbnails, ignore_errors=True)
@@ -348,7 +355,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
 
 
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], *,
-         skipped_frames: int = 0, build_sheet: bool = True) -> int:
+         output_dir: Path | None = None, skipped_frames: int = 0, build_sheet: bool = True) -> int:
     if stage is not Stage.INVERT_ONLY:
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
     manual_given =args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
@@ -415,7 +422,22 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
 
     if cancelled:
         return 130
+
+    sheet_failed = False
     if args.contact_sheet and build_sheet:
-        settings = _settings_summary(args, stage, tone_params, scan_reference, args.match_scan_exposure)
-        write_contact_sheet(args, jobs, results, args.contact_sheet, input_dir.name, settings)
-    return 1 if failures else 0
+        if skipped_frames and output_dir is not None:
+            # Frames --skip-existing left alone never got a thumbnail from this run's own worker
+            # pool, so the sheet has to cover the whole roll the way `halide contact <output_dir>
+            # <sheet>` does: thumbnail every processed file on disk, not just this run's `jobs`.
+            from halide.cli._contact_sheet import discover_processed_files, write_sheet_from_folder
+
+            sheet_path = Path(args.contact_sheet)
+            files = discover_processed_files(output_dir, sheet_path)
+            sheet_code = write_sheet_from_folder(files, sheet_path, args, input_dir.name, quiet=args.quiet)
+            if sheet_code == 130:
+                return 130
+            sheet_failed = sheet_code != 0
+        else:
+            settings = _settings_summary(args, stage, tone_params, scan_reference, args.match_scan_exposure)
+            write_contact_sheet(args, jobs, results, args.contact_sheet, input_dir.name, settings)
+    return 1 if (failures or sheet_failed) else 0

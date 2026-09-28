@@ -174,8 +174,13 @@ def test_invert_output_equal_to_input_refused_non_interactive(negative_tiff):
     # never depend on --overwrite/interactivity, since this is "use a scan as its own output",
     # never "overwrite an existing file".
     before = negative_tiff.read_bytes()
-    with pytest.raises(SystemExit, match="is the scan itself"):
+    with pytest.raises(SystemExit) as exc:
         main(["invert", str(negative_tiff), str(negative_tiff), "--invert-only", "--overwrite"])
+    message = str(exc.value.code)
+    assert "is the scan itself" in message
+    # invert has no --suffix flag, unlike batch/bulk print/export — the hint must not offer it.
+    assert "--suffix" not in message
+    assert message.endswith("Choose a different output path.")
     assert negative_tiff.read_bytes() == before
 
 

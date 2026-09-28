@@ -61,19 +61,21 @@ def _same_file(a: Path, b: Path) -> bool:
         return a.resolve() == b.resolve()
 
 
-def check_not_input(pairs: list[tuple[Path, Path]]) -> None:
+def check_not_input(pairs: list[tuple[Path, Path]], *, suggest_suffix: bool = True) -> None:
     """Refuse, in every mode and regardless of --overwrite, a run whose output path is the same
     file as its own input scan — this is never "overwriting an existing file", it's using a scan
-    as both the input and the output of the same run, which would destroy it."""
+    as both the input and the output of the same run, which would destroy it.
+
+    `suggest_suffix` names --suffix in the fix-it hint — only for callers that actually have that
+    flag (batch, bulk print/export); single-file commands without one (invert, single print/export)
+    pass `suggest_suffix=False`, ending the hint at "Choose a different output path." instead."""
     clashes = [out for src, out in pairs if _same_file(src, out)]
     if not clashes:
         return
     first = clashes[0]
     more = f" (and {len(clashes) - 1} more)" if len(clashes) > 1 else ""
-    raise SystemExit(
-        f"{first} is the scan itself{more} - halide never writes over a scan. "
-        "Choose a different output folder, or add --suffix."
-    )
+    fix = "Choose a different output folder, or add --suffix." if suggest_suffix else "Choose a different output path."
+    raise SystemExit(f"{first} is the scan itself{more} - halide never writes over a scan. {fix}")
 
 
 def resolve_existing(
@@ -113,3 +115,29 @@ def resolve_existing(
             return list(pairs)
         raise SystemExit(f"Nothing was written. {decline_hint}")
     raise SystemExit(refusal)
+
+
+def resolve_bulk_jobs(
+    jobs: list,
+    args,
+    *,
+    interactive: bool,
+    extra_pairs: list[tuple[Path, Path]] | None = None,
+) -> tuple[list, int, set[Path]]:
+    """The shared `pairs -> check_not_input -> resolve_existing -> filter jobs` sequence every
+    bulk command (batch, bulk print, bulk export) needs — each `job` must have `.input_path`/
+    `.output_path` attributes (e.g. `BatchJob`). `extra_pairs` folds other outputs that should
+    share the *same* single prompt/refusal (batch's `--contact-sheet` path) into the existence
+    check, without being subject to job filtering themselves — the caller checks membership in the
+    returned `kept_outputs` set for those.
+
+    Returns (jobs whose output should still be written, how many jobs were dropped because their
+    output already existed under --skip-existing, every output path that survived — job outputs
+    and `extra_pairs` outputs alike)."""
+    pairs = [(job.input_path, job.output_path) for job in jobs]
+    check_not_input(pairs)
+    all_pairs = pairs + list(extra_pairs or [])
+    kept_outputs = {out for _, out in resolve_existing(all_pairs, policy_from_args(args), interactive=interactive)}
+    kept_jobs = [job for job in jobs if job.output_path in kept_outputs]
+    skipped = len(jobs) - len(kept_jobs)
+    return kept_jobs, skipped, kept_outputs
