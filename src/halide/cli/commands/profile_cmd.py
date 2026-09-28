@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
 
 from halide.calibration.profile_store import (
     EDITABLE_FIELDS,
+    ProfileNameError,
+    damaged_profile_message,
     default_profiles_dir,
     delete_profile,
     list_profiles,
@@ -17,9 +20,12 @@ from halide.calibration.profile_store import (
     load_scan_reference,
     rename_profile,
     resolve_profile_path,
+    suggest_profile_name,
     update_profile,
+    validate_profile_name,
 )
 from halide.cli import console
+from halide.cli._output_policy import is_interactive
 
 # (field attr name, CLI flag dest, human label) — drives both the `edit` subparser's flags and
 # the interactive prompt loop, so the two stay in sync automatically.
@@ -45,6 +51,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
     delete_parser = subparsers.add_parser("delete", help="Delete a saved profile")
     delete_parser.add_argument("name")
+    delete_parser.add_argument(
+        "--yes", action="store_true", help="Delete without asking for confirmation (needed outside a terminal)"
+    )
 
     edit_parser = subparsers.add_parser(
         "edit",
@@ -68,7 +77,10 @@ def _run_list(args: argparse.Namespace) -> int:
         return 0
 
     lines = [f"Saved profiles in {default_profiles_dir()}:"]
-    for name, profile in profiles:
+    for name, profile, problem in profiles:
+        if problem is not None:
+            lines.append(f"  {console.dim(f'{name}   (unreadable: {problem})')}")
+            continue
         detail_bits = [b for b in (profile.film_stock, profile.process, profile.scanner) if b]
         detail = f" ({', '.join(detail_bits)})" if detail_bits else ""
         source_color = console.SOURCE_COLOR.get(profile.source, console.Style.DIM)
@@ -83,8 +95,13 @@ def _run_show(args: argparse.Namespace) -> int:
     try:
         path = resolve_profile_path(args.name)
     except FileNotFoundError as exc:
-        raise SystemExit(str(exc))
-    profile = load_profile(path)
+        suggestion = suggest_profile_name(args.name)
+        hint = f" — did you mean '{suggestion}'?" if suggestion else ""
+        raise SystemExit(f"{exc}{hint}")
+    try:
+        profile = load_profile(path)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(damaged_profile_message(path.stem, exc))
     print(f"Path:           {path}")
     print(f"Name:           {profile.name}")
     print(f"White balance:  {profile.white_balance}")
@@ -125,21 +142,70 @@ def _show_roll(path: Path) -> None:
         print(f"Points:         {len(records)} on {len(frames)} frame(s){note}")
 
 
+def _reject_path_like(value: str, command: str) -> None:
+    """`profile rename`/`delete`/`edit` take a bare saved-profile name, never a file path - unlike
+    `profile show` and `--profile`, which accept both (2.5-12). Caught here with a message that
+    says so, rather than a confusing "no saved profile named '/long/path/to/it.json'" from the
+    name-only lookup these three subcommands use."""
+    if "/" in value or "\\" in value or value.lower().endswith(".json"):
+        raise SystemExit(f"`profile {command}` takes a profile name - file paths work with `profile show` and `--profile`")
+
+
 def _run_rename(args: argparse.Namespace) -> int:
+    _reject_path_like(args.old_name, "rename")
+    _reject_path_like(args.new_name, "rename")
     try:
         new_path = rename_profile(args.old_name, args.new_name)
-    except (FileNotFoundError, FileExistsError) as exc:
+    except FileNotFoundError as exc:
+        suggestion = suggest_profile_name(args.old_name)
+        hint = f" — did you mean '{suggestion}'?" if suggestion else ""
+        raise SystemExit(f"{exc}{hint}")
+    except (FileExistsError, ProfileNameError) as exc:
         raise SystemExit(str(exc))
     print(console.success(f"Renamed {args.old_name!r} to {args.new_name!r} ({new_path})"))
     return 0
 
 
-def _run_delete(args: argparse.Namespace) -> int:
+def _delete_confirmation_detail(path: Path) -> str:
+    """Points count and calibration date for the delete confirmation prompt - falls back to a
+    plain notice for a damaged profile rather than blocking deletion of a file that can't even be
+    read (arguably the most common reason to want to delete one)."""
     try:
-        delete_profile(args.name)
-    except FileNotFoundError as exc:
+        profile = load_profile(path)
+    except (ValueError, json.JSONDecodeError, OSError):
+        return "damaged - can't read its details"
+    records, _ = load_anchors(path)
+    bits = []
+    if records:
+        frames = {r["frame"] for r in records}
+        bits.append(f"{len(records)} point(s) on {len(frames)} frame(s)")
+    bits.append(f"created {profile.created_at or 'unknown date'}")
+    return ", ".join(bits)
+
+
+def _run_delete(args: argparse.Namespace) -> int:
+    _reject_path_like(args.name, "delete")
+    try:
+        name = validate_profile_name(args.name)
+    except ProfileNameError as exc:
         raise SystemExit(str(exc))
-    print(console.success(f"Deleted profile {args.name!r}"))
+    directory = default_profiles_dir()
+    path = directory / f"{name}.json"
+    if not path.exists():
+        suggestion = suggest_profile_name(name)
+        hint = f" — did you mean '{suggestion}'?" if suggestion else ""
+        raise SystemExit(f"no saved profile named {name!r} in {directory}{hint}")
+
+    if not args.yes:
+        if is_interactive():
+            question = f"Delete profile '{name}' ({_delete_confirmation_detail(path)})? This can't be undone."
+            if not console.confirm(question):
+                raise SystemExit("Nothing deleted.")
+        else:
+            raise SystemExit(f"refusing to delete {name!r} without confirmation - pass --yes (no terminal to ask in)")
+
+    delete_profile(name)
+    print(console.success(f"Deleted profile {name!r}"))
     return 0
 
 
@@ -159,11 +225,17 @@ def _interactive_edit_fields(profile) -> dict[str, str | None]:
 
 
 def _run_edit(args: argparse.Namespace) -> int:
+    _reject_path_like(args.name, "edit")
     directory = default_profiles_dir()
     path = directory / f"{args.name}.json"
     if not path.exists():
-        raise SystemExit(f"no saved profile named {args.name!r} in {directory}")
-    profile = load_profile(path)
+        suggestion = suggest_profile_name(args.name)
+        hint = f" — did you mean '{suggestion}'?" if suggestion else ""
+        raise SystemExit(f"no saved profile named {args.name!r} in {directory}{hint}")
+    try:
+        profile = load_profile(path)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(damaged_profile_message(args.name, exc))
 
     flag_fields = {field: getattr(args, field) for field in EDITABLE_FIELDS if getattr(args, field) is not None}
     if flag_fields:

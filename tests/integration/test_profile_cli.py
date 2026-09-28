@@ -91,7 +91,7 @@ def test_profile_list_show_rename_delete(negative_tiff, tmp_path, isolated_profi
     assert not (isolated_profiles_dir / "ektar100.json").exists()
     assert (isolated_profiles_dir / "ektar100-renamed.json").exists()
 
-    assert main(["profile", "delete", "ektar100-renamed"]) == 0
+    assert main(["profile", "delete", "ektar100-renamed", "--yes"]) == 0
     assert not (isolated_profiles_dir / "ektar100-renamed.json").exists()
 
 
@@ -313,3 +313,158 @@ def test_show_doesnt_invent_a_full_path_for_an_older_relative_roll(tmp_path, cap
     assert "Roll:           pre-processed\n" in out
     assert str(tmp_path / "pre-processed") not in out
     assert "recorded relative to the folder halide calibrate ran in" in out
+
+
+# --- Task 3: profile store safety (F03, F24) ----------------------------------------------------
+
+
+def _save(negative_tiff, output, name, *, rm=2.0, bm=1.0, extra=()):
+    return main(
+        [
+            "invert", str(negative_tiff), str(output),
+            "--rm", str(rm), "--bm", str(bm), "--save-profile-as", name, *extra,
+        ]
+    )
+
+
+def test_save_profile_as_rejects_invalid_name_at_parse_time(negative_tiff, tmp_path, isolated_profiles_dir, capsys):
+    output = tmp_path / "out.tiff"
+    with pytest.raises(SystemExit):
+        _save(negative_tiff, output, "bad/name")
+    assert "can't contain / or \\" in capsys.readouterr().err
+    assert not output.exists()  # rejected before anything was developed
+    assert not isolated_profiles_dir.exists()
+
+
+def test_save_profile_as_existing_non_interactive_needs_overwrite(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "out1.tiff", "roll16", rm=2.0) == 0
+    out2 = tmp_path / "out2.tiff"
+    with pytest.raises(SystemExit, match=r"already exists.*--overwrite"):
+        _save(negative_tiff, out2, "roll16", rm=3.0)
+    assert not out2.exists()  # checked before any frame was developed
+    assert load_profile(isolated_profiles_dir / "roll16.json").white_balance[0] == pytest.approx(2.0)
+
+
+def test_save_profile_as_existing_with_overwrite_flag_replaces_it(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "out1.tiff", "roll16", rm=2.0) == 0
+    assert _save(negative_tiff, tmp_path / "out2.tiff", "roll16", rm=3.0, extra=("--overwrite",)) == 0
+    assert load_profile(isolated_profiles_dir / "roll16.json").white_balance[0] == pytest.approx(3.0)
+
+
+def test_save_profile_as_existing_interactive_confirms(negative_tiff, tmp_path, isolated_profiles_dir, monkeypatch):
+    assert _save(negative_tiff, tmp_path / "out1.tiff", "roll16", rm=2.0) == 0
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    assert _save(negative_tiff, tmp_path / "out2.tiff", "roll16", rm=3.0) == 0
+    assert load_profile(isolated_profiles_dir / "roll16.json").white_balance[0] == pytest.approx(3.0)
+
+
+def test_profile_rename_onto_existing_refused(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "a.tiff", "a") == 0
+    assert _save(negative_tiff, tmp_path / "b.tiff", "b") == 0
+    with pytest.raises(SystemExit, match="already exists"):
+        main(["profile", "rename", "a", "b"])
+    assert (isolated_profiles_dir / "a.json").exists()
+    assert (isolated_profiles_dir / "b.json").exists()
+
+
+def test_rename_with_a_path_explains_names_only(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "out.tiff", "roll16") == 0
+    path = str(isolated_profiles_dir / "roll16.json")
+    with pytest.raises(SystemExit, match="`profile rename` takes a profile name"):
+        main(["profile", "rename", path, "newname"])
+    with pytest.raises(SystemExit, match="`profile delete` takes a profile name"):
+        main(["profile", "delete", path])
+    with pytest.raises(SystemExit, match="`profile edit` takes a profile name"):
+        main(["profile", "edit", path, "--notes", "x"])
+
+
+def test_profile_show_typo_suggests(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "out.tiff", "Portra400") == 0
+    with pytest.raises(SystemExit, match="did you mean 'Portra400'"):
+        main(["profile", "show", "Portra40"])
+
+
+def test_profile_rename_typo_suggests(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "out.tiff", "Portra400") == 0
+    with pytest.raises(SystemExit, match="did you mean 'Portra400'"):
+        main(["profile", "rename", "Portra40", "newname"])
+
+
+def test_profile_edit_typo_suggests(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "out.tiff", "Portra400") == 0
+    with pytest.raises(SystemExit, match="did you mean 'Portra400'"):
+        main(["profile", "edit", "Portra40", "--notes", "x"])
+
+
+def test_profile_delete_typo_suggests(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "out.tiff", "Portra400") == 0
+    with pytest.raises(SystemExit, match="did you mean 'Portra400'"):
+        main(["profile", "delete", "Portra40"])
+
+
+def test_profile_delete_non_interactive_requires_yes(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "out.tiff", "roll16") == 0
+    with pytest.raises(SystemExit, match="--yes"):
+        main(["profile", "delete", "roll16"])
+    assert (isolated_profiles_dir / "roll16.json").exists()
+
+
+def test_profile_delete_interactive_confirms(tmp_path, isolated_profiles_dir, monkeypatch):
+    from halide.calibration.profile_store import save_named_profile
+    from halide.core.types import DensityProfile
+
+    anchors = [
+        {"frame": "a.tif", "x": 1, "y": 1, "rgb": [0.1, 0.1, 0.1], "scan": None},
+        {"frame": "b.tif", "x": 2, "y": 2, "rgb": [0.2, 0.2, 0.2], "scan": None},
+    ]
+    save_named_profile(
+        DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0)), "roll16", anchors=anchors
+    )
+    saved = load_profile(isolated_profiles_dir / "roll16.json")
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    captured = {}
+
+    def fake_input(prompt=""):
+        captured["prompt"] = prompt
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    assert main(["profile", "delete", "roll16"]) == 0
+    assert not (isolated_profiles_dir / "roll16.json").exists()
+    assert "roll16" in captured["prompt"]
+    assert "2 point(s)" in captured["prompt"]
+    assert saved.created_at in captured["prompt"]
+
+
+def test_profile_delete_interactive_declining_keeps_the_profile(negative_tiff, tmp_path, isolated_profiles_dir, monkeypatch):
+    assert _save(negative_tiff, tmp_path / "out.tiff", "roll16") == 0
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    with pytest.raises(SystemExit, match="Nothing deleted"):
+        main(["profile", "delete", "roll16"])
+    assert (isolated_profiles_dir / "roll16.json").exists()
+
+
+def test_damaged_profile_json_gives_plain_message(isolated_profiles_dir):
+    isolated_profiles_dir.mkdir(parents=True)
+    (isolated_profiles_dir / "corruptme.json").write_text('{"white_balance": [1.0, 1.0, 1.0], "density_sca')
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["profile", "show", "corruptme"])
+    message = str(excinfo.value)
+    assert "is damaged" in message
+    assert "halide calibrate --profile corruptme" in message
+    assert "halide profile delete corruptme" in message
+
+
+def test_profile_delete_with_slash_is_rejected_before_touching_anything(negative_tiff, tmp_path, isolated_profiles_dir):
+    assert _save(negative_tiff, tmp_path / "out.tiff", "roll16") == 0
+    with pytest.raises(SystemExit):
+        main(["profile", "delete", "../roll16"])
+    assert (isolated_profiles_dir / "roll16.json").exists()
