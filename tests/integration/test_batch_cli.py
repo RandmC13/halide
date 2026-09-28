@@ -4,6 +4,7 @@ the rest of the batch."""
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from halide.batch.orchestrator import discover_jobs, run_batch
 from halide.cli.main import main
@@ -174,7 +175,9 @@ def test_batch_into_its_own_folder_is_refused_before_any_work(roll_dir):
     before = {f.name: hashlib.md5(f.read_bytes()).hexdigest() for f in roll_dir.iterdir()}
     with pytest.raises(SystemExit) as exc:
         main(["batch", str(roll_dir), str(roll_dir), "--quiet"])
-    assert "is the scan itself" in str(exc.value.code)
+    message = str(exc.value.code)
+    assert "is the scan itself" in message
+    assert "--suffix" in message  # batch has --suffix, unlike invert
     after = {f.name: hashlib.md5(f.read_bytes()).hexdigest() for f in roll_dir.iterdir()}
     assert after == before
 
@@ -202,3 +205,44 @@ def test_batch_rerun_non_interactive_refuses_then_skip_existing_develops_only_ne
     assert {p: p.read_bytes() for p in outputs} == before
     assert (out_dir / "frame_04.tiff").exists()
     assert len(list(out_dir.glob("*.tiff"))) == 5
+
+
+def test_batch_skip_existing_contact_sheet_covers_whole_roll_when_nothing_to_develop(roll_dir, tmp_path):
+    # Controller ruling: --skip-existing must never silently drop the requested contact sheet, and
+    # must build it even when no frame needed developing.
+    out_dir = tmp_path / "out"
+    assert main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"]) == 0
+    assert len(list(out_dir.glob("*.tiff"))) == 4
+
+    reference = tmp_path / "reference.jpg"
+    assert main(["contact", str(out_dir), str(reference), "--frame-width", "60", "--quiet", "--workers", "1"]) == 0
+
+    sheet = tmp_path / "resumed.jpg"
+    assert main(
+        ["batch", str(roll_dir), str(out_dir), "--contact-sheet", str(sheet), "--auto-density-roll",
+         "--quiet", "--workers", "1", "--frame-width", "60", "--skip-existing"]
+    ) == 0
+    assert sheet.exists()
+    with Image.open(reference) as a, Image.open(sheet) as b:
+        assert a.size == b.size  # same 4-frame layout as a direct `halide contact` over the folder
+
+
+def test_batch_skip_existing_contact_sheet_covers_new_and_old_frames(roll_dir, tmp_path):
+    out_dir = tmp_path / "out"
+    assert main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"]) == 0
+    assert len(list(out_dir.glob("*.tiff"))) == 4
+
+    # Add a new, not-yet-developed frame.
+    _write_negative(roll_dir / "frame_04.tiff", seed=99)
+
+    sheet = tmp_path / "resumed.jpg"
+    assert main(
+        ["batch", str(roll_dir), str(out_dir), "--contact-sheet", str(sheet), "--auto-density-roll",
+         "--quiet", "--workers", "1", "--frame-width", "60", "--skip-existing"]
+    ) == 0
+    assert len(list(out_dir.glob("*.tiff"))) == 5
+
+    reference = tmp_path / "reference.jpg"
+    assert main(["contact", str(out_dir), str(reference), "--frame-width", "60", "--quiet", "--workers", "1"]) == 0
+    with Image.open(reference) as a, Image.open(sheet) as b:
+        assert a.size == b.size  # covers all 5 frames, not just the newly-developed one

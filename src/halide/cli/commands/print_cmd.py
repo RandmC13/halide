@@ -31,6 +31,7 @@ from halide.cli._output_policy import (
     check_not_input,
     is_interactive,
     policy_from_args,
+    resolve_bulk_jobs,
     resolve_existing,
 )
 from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, start_compute
@@ -87,7 +88,7 @@ def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCur
         raise SystemExit(f"input file not found: {input_path}")
 
     output_path = Path(args.output)
-    check_not_input([(input_path, output_path)])
+    check_not_input([(input_path, output_path)], suggest_suffix=False)
     resolved = resolve_existing(
         [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
     )
@@ -138,11 +139,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
         return 1
     jobs = [BatchJob(input_path=f, output_path=output_dir / f"{f.stem}{args.suffix}.tif") for f in files]
 
-    pairs = [(job.input_path, job.output_path) for job in jobs]
-    check_not_input(pairs)
-    kept_outputs = {out for _, out in resolve_existing(pairs, policy_from_args(args), interactive=is_interactive())}
-    skipped = len(jobs) - sum(1 for job in jobs if job.output_path in kept_outputs)
-    jobs = [job for job in jobs if job.output_path in kept_outputs]
+    jobs, skipped, _ = resolve_bulk_jobs(jobs, args, interactive=is_interactive())
     if not jobs:
         print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
         return 0

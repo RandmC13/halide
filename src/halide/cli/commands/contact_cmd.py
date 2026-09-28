@@ -5,20 +5,10 @@ settings and compare them side by side."""
 from __future__ import annotations
 
 import argparse
-import shutil
-import tempfile
 from pathlib import Path
 
-from halide.batch.orchestrator import (
-    TIFF_SUFFIXES,
-    BatchJob,
-    default_export_worker_count,
-    export_memory_budget_warning,
-    run_thumbnail_batch,
-)
-from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
-from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
+from halide.cli._contact_sheet import add_contact_layout_arguments, discover_processed_files, write_sheet_from_folder
 from halide.cli._device_args import add_device_argument, device_row, requested_device_arg, resolve_device_arg
 from halide.cli._output_policy import (
     add_output_policy_arguments,
@@ -30,8 +20,6 @@ from halide.device import ComputeDevice
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
-
-_SOURCE_SUFFIXES = TIFF_SUFFIXES + (".png", ".jpg", ".jpeg")
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -49,17 +37,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _collect(inputs: list[str], sheet: Path) -> list[Path]:
     from halide.io.contact_sheet import is_contact_sheet
+    from halide.batch.orchestrator import TIFF_SUFFIXES
 
     files: list[Path] = []
     for item in map(Path, inputs):
         if item.is_dir():
-            files.extend(sorted(f for f in item.iterdir() if f.is_file() and f.suffix.lower() in _SOURCE_SUFFIXES))
+            files.extend(discover_processed_files(item, sheet))
         elif item.exists():
             files.append(item)
         else:
             raise SystemExit(f"not found: {item}")
     # A sheet written into the folder it proofs — this one, or an earlier one — must not end up on
-    # the next sheet of that folder as if it were a frame.
+    # the next sheet of that folder as if it were a frame. discover_processed_files() already
+    # applies this to files found via a directory; this also covers individual file arguments.
     return [
         f for f in files
         if f.resolve() != sheet.resolve() and not (f.suffix.lower() not in TIFF_SUFFIXES and is_contact_sheet(f))
@@ -102,42 +92,4 @@ def run(args: argparse.Namespace) -> int:
 
     first = Path(args.inputs[0])
     default_title = first.name if first.is_dir() else first.parent.name or "contact sheet"
-    tmp = Path(tempfile.mkdtemp(prefix="halide-contact-"))
-    try:
-        jobs = [
-            BatchJob(input_path=f, output_path=None, thumbnail_path=tmp / f"{i:04d}.png")
-            for i, f in enumerate(files)
-        ]
-        if args.workers is not None:
-            workers = args.workers
-            warning = export_memory_budget_warning(jobs, workers)
-            if warning and not args.quiet:
-                print(console.warning(warning))
-        else:
-            workers = default_export_worker_count(jobs)
-
-        renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="proof")
-        job_index = {job: i for i, job in enumerate(jobs)}
-        if renderer:
-            renderer.start()
-        results = run_thumbnail_batch(
-            jobs, thumbnail_long_edge=args.frame_width, max_workers=workers,
-            on_start=(lambda job: renderer.mark_processing(job_index[job])) if renderer else None,
-            on_result=(lambda r: renderer.report(job_index[r.job], r)) if renderer else None,
-        )
-        cancelled = len(results) < len(jobs)
-        if renderer:
-            if cancelled:
-                done = {job_index[r.job] for r in results}
-                renderer.cancel([i for i in range(len(jobs)) if i not in done])
-            renderer.finish(cancelled=cancelled)
-        if cancelled:
-            return 130
-        failures = [r for r in results if r.error]
-        if renderer is None:
-            for r in failures:
-                print(console.error(f"{r.job.input_path.name}: {r.error}"))
-        write_contact_sheet(args, jobs, results, sheet_path, default_title)
-        return 1 if failures else 0
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    return write_sheet_from_folder(files, sheet_path, args, default_title, quiet=args.quiet)

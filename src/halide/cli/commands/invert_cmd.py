@@ -134,7 +134,7 @@ def run(args: argparse.Namespace) -> int:
     if not input_path.exists():
         raise SystemExit(f"input file not found: {input_path}")
     output_path = Path(args.output)
-    check_not_input([(input_path, output_path)])
+    check_not_input([(input_path, output_path)], suggest_suffix=False)
     resolved = resolve_existing(
         [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
     )
