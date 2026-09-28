@@ -10,6 +10,7 @@ import dataclasses
 import datetime
 import functools
 import json
+import re
 import subprocess
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
@@ -204,9 +205,9 @@ def _check_scan_layout(path: str | Path) -> None:
     if channels == 3:
         return
     if channels == 4:
-        raise ScanInputError(f"{path.name} has an alpha (transparency) channel; export without it.")
+        raise ScanInputError(f"{path.name} has an alpha (transparency) channel; export without it")
     if channels == 1:
-        raise ScanInputError(f"{path.name} is greyscale; halide needs an RGB scan of a colour negative.")
+        raise ScanInputError(f"{path.name} is greyscale; halide needs an RGB scan of a colour negative")
     raise ScanInputError(f"{path.name} has {channels} channels; halide needs RGB.")
 
 
@@ -223,7 +224,7 @@ def _reject_positive(path: str | Path) -> None:
         return
     made = datetime.date.fromtimestamp(path.stat().st_mtime).isoformat()
     raise ScanInputError(f"{path.name} is already a halide positive (made on {made}). To re-print it use "
-                         f"`halide print`; to develop again, point halide at the original scan.")
+                         f"`halide print`; to develop again, point halide at the original scan")
 
 
 def _read_scan(
@@ -289,14 +290,14 @@ def _report_nonfinite(name: str, count: int, total_pixels: int, on_warning: Call
     if fraction > _MAX_NONFINITE_FRACTION:
         raise ScanColorError(
             f"{name}: {fraction * 100:.1f}% of its pixels aren't valid numbers - this export looks "
-            f"broken; re-export it from the raw converter."
+            f"broken; re-export it from the raw converter"
         )
     if count == 1:
         subject = "1 pixel wasn't a valid number (NaN/inf) and was treated as clear film"
     else:
         subject = f"{count} pixels weren't valid numbers (NaN/inf) and were treated as clear film"
     _warn(on_warning, f"{name}: {subject}. If this is more than a handful, check the raw "
-                      f"converter's export.")
+                      f"converter's export")
 
 
 def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes: int | None = None,
@@ -640,11 +641,32 @@ class DeviceFailure:
         if self.out_of_memory:
             return f"{input_path}: out of GPU memory — {action} on the CPU instead"
         if self.type_name == "ServiceUnavailable":
-            # A batch's shared GPU service is gone (gpu_service.ServiceUnavailable): its own message
-            # already says so in words ("the GPU service stopped responding (...)").
-            return f"{input_path}: {self.message} — {action} on the CPU instead"
+            # A batch's shared GPU service is gone (gpu_service.ServiceUnavailable). Worded so the
+            # CLI can say it once for the whole run instead of once per frame (service_stopped).
+            return f"{input_path}: the GPU service stopped ({_service_reason(self.message)}) — {action} on the CPU instead"
         detail = f"{self.type_name}: {self.message}" if self.message else self.type_name
         return f"{input_path}: the GPU failed ({detail}) — {action} on the CPU instead"
+
+
+def _service_reason(message: str) -> str:
+    """The reason a GPU service stopped, in words: gpu_service's own message minus its "the GPU
+    service" lead-in ("stopped responding (EOFError)" -> "no reply: EOFError")."""
+    text = message.removeprefix("the GPU service ")
+    for lead, replacement in (("stopped responding (", "no reply: "), ("can't be reached (", "couldn't connect: ")):
+        if text.startswith(lead) and text.endswith(")"):
+            return replacement + text[len(lead):-1]
+    return text
+
+
+_SERVICE_STOPPED = re.compile(r"the GPU service stopped \((.*?)\) — ")
+
+
+def service_stopped(warning: str) -> str | None:
+    """The reason, if `warning` (a frame's fallback warning) says the GPU service stopped — so a
+    batch reports that once ("The GPU service stopped (...); developing the remaining frames on
+    the CPU.") instead of on every frame after it."""
+    found = _SERVICE_STOPPED.search(warning)
+    return found.group(1) if found else None
 
 
 class DeviceJobFailed(Exception):
@@ -888,7 +910,7 @@ def export_delivery_image(
         scan = read_tiff(input_path, out=None if frames is None else frames[0].array)
         warning = None
         if scan.icc_profile is None:
-            warning = f"{input_path} has no embedded ICC profile; assuming it is ACEScg."
+            warning = f"{input_path} has no embedded ICC profile; assuming it is ACEScg"
         else:
             try:
                 profile = parse_linear_rgb_profile(scan.icc_profile)
@@ -896,10 +918,10 @@ def export_delivery_image(
                     warning = (
                         f"{input_path}'s embedded profile does not look like ACEScg — `halide export` "
                         f"expects the output of `halide invert`/`halide batch`. Proceeding anyway, but "
-                        f"colors may be wrong."
+                        f"colors may be wrong"
                     )
             except UnsupportedICCProfileError as exc:
-                warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway."
+                warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway"
 
         if frames is not None:
             srgb_8bit = _export_on_service(input_path, frames, service, on_warning)

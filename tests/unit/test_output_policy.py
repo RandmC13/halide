@@ -33,7 +33,7 @@ def test_check_not_input_suggest_suffix_false_ends_with_output_path_hint(tmp_pat
     message = str(exc.value.code)
     assert "is the scan itself" in message
     assert "--suffix" not in message
-    assert message.endswith("Choose a different output path.")
+    assert message.endswith("Choose a different output path")
 
 
 def test_output_equal_to_input_via_symlink_is_refused(tmp_path):

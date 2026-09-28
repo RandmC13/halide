@@ -74,7 +74,7 @@ def check_not_input(pairs: list[tuple[Path, Path]], *, suggest_suffix: bool = Tr
         return
     first = clashes[0]
     more = f" (and {len(clashes) - 1} more)" if len(clashes) > 1 else ""
-    fix = "Choose a different output folder, or add --suffix." if suggest_suffix else "Choose a different output path."
+    fix = "Choose a different output folder, or add --suffix" if suggest_suffix else "Choose a different output path"
     raise SystemExit(f"{first} is the scan itself{more} - halide never writes over a scan. {fix}")
 
 
@@ -98,7 +98,7 @@ def resolve_existing(
         question = f"{path} already exists - overwrite it?"
         refusal = (
             f"{path} already exists. Add --overwrite to replace it, "
-            "or --skip-existing to leave it as is."
+            "or --skip-existing to leave it as is"
         )
         decline_hint = "(--skip-existing leaves it as is.)"
     else:
@@ -106,7 +106,7 @@ def resolve_existing(
         question = f"{n} of {total} outputs already exist in {where} - overwrite them?"
         refusal = (
             f"{n} of {total} outputs already exist in {where}. Add --overwrite to replace them, "
-            "or --skip-existing to develop only the new frames."
+            "or --skip-existing to develop only the new frames"
         )
         decline_hint = "(--skip-existing develops only the new frames.)"
 
@@ -152,7 +152,7 @@ def check_input_file(path: Path) -> None:
         raise SystemExit(f"input file not found: {path}")
     if path.is_dir():
         raise SystemExit(f"{path} is a folder, not a scan file. Name one TIFF, or use the folder form "
-                         f"of the command (batch, or print/export with an output folder).")
+                         f"of the command (batch, or print/export with an output folder)")
 
 
 def check_input_folder(path: Path) -> None:
@@ -160,15 +160,15 @@ def check_input_folder(path: Path) -> None:
     if not path.exists():
         raise SystemExit(f"input directory not found: {path}")
     if not path.is_dir():
-        raise SystemExit(f"{path} is a file, not a folder of scans.")
+        raise SystemExit(f"{path} is a file, not a folder of scans")
 
 
 def _check_writable_folder(folder: Path) -> None:
     if not folder.is_dir():
-        raise SystemExit(f"{folder} isn't a folder. Choose a different output location.")
+        raise SystemExit(f"{folder} isn't a folder. Choose a different output location")
     if not os.access(folder, os.W_OK | os.X_OK):
         raise SystemExit(f"halide can't write to {folder} (permission denied). "
-                         f"Choose a different output folder, or fix its permissions.")
+                         f"Choose a different output folder, or fix its permissions")
 
 
 def prepare_output_folder(folder: Path) -> None:
@@ -190,5 +190,5 @@ def check_output_parent(output_path: Path) -> None:
     parent = output_path.parent
     if not parent.exists():
         raise SystemExit(f"the output folder {parent} doesn't exist. Create it, or choose a different "
-                         f"output path.")
+                         f"output path")
     _check_writable_folder(parent)

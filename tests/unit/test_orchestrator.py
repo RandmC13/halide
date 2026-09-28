@@ -1169,7 +1169,7 @@ _CLI = textwrap.dedent(
         import halide.device as device
         from halide.batch import orchestrator
 
-        def fake(requested=None):
+        def fake(requested=None, isolated=False):
             wanted = device.requested_device(requested)
             return device.ComputeDevice(kind="cpu") if wanted == "cpu" else device.ComputeDevice(kind="gpu", name="Fake")
 
@@ -1252,7 +1252,7 @@ def test_a_signalled_gpu_batch_cancels_in_order_and_leaves_nothing_behind(tmp_pa
     assert not any(name.startswith(ours) for name in _shm_entries())
     outputs = sorted(p.name for p in (tmp_path / "out").iterdir())
     assert not any("partial" in name for name in outputs)  # frames in progress finished, whole
-    counted = int(re.search(r"Cancelled — (\d+)/6", out + err).group(1))
+    counted = int(re.search(r"Cancelled - (\d+) of 6", out + err).group(1))
     assert len(outputs) == counted  # and every frame written is counted
 
 

@@ -64,10 +64,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "for each field interactively; otherwise pass one or more flags to set fields directly.",
     )
     edit_parser.add_argument("name")
-    edit_parser.add_argument("--film-stock", dest="film_stock", help="Set the film stock (pass '' to clear)")
-    edit_parser.add_argument("--process", help="Set the process (pass '' to clear)")
-    edit_parser.add_argument("--scanner", help="Set the scanner (pass '' to clear)")
-    edit_parser.add_argument("--notes", help="Set the notes (pass '' to clear)")
+    edit_parser.add_argument("--film-stock", dest="film_stock", help="Set the film stock (pass - to clear)")
+    edit_parser.add_argument("--process", help="Set the process (pass - to clear)")
+    edit_parser.add_argument("--scanner", help="Set the scanner (pass - to clear)")
+    edit_parser.add_argument("--notes", help="Set the notes (pass - to clear)")
 
 
 def _run_list(args: argparse.Namespace) -> int:
@@ -83,7 +83,7 @@ def _run_list(args: argparse.Namespace) -> int:
             continue
         detail_bits = [b for b in (profile.film_stock, profile.process, profile.scanner) if b]
         detail = f" ({', '.join(detail_bits)})" if detail_bits else ""
-        source_color = console.SOURCE_COLOR.get(profile.source, console.Style.DIM)
+        source_color = console.source_color(profile.source)
         source = f"{source_color}{profile.source}{console.Style.RESET}"
         lines.append(f"  {console.Style.BOLD}{name}{console.Style.RESET}{detail} — source: {source}, "
                      f"created: {profile.created_at or 'unknown'}")
@@ -113,7 +113,7 @@ def _run_show(args: argparse.Namespace) -> int:
     print(f"Created:        {profile.created_at or 'unknown'}")
     print(f"Notes:          {profile.notes or '(not set)'}")
     scan = load_scan_reference(path)
-    print(f"Scanned at:     {scan.describe() if scan else '(not recorded — pass --scan-reference FRAME with --match-scan-exposure)'}")
+    print(f"Digitized at:   {scan.describe() if scan else '(not recorded — pass --scan-reference FRAME with --match-scan-exposure)'}")
     _show_roll(path)
     return 0
 
@@ -139,7 +139,7 @@ def _show_roll(path: Path) -> None:
         frames = {Path(r["frame"]) for r in records}
         missing = sum(not f.is_file() for f in frames)
         note = f" ({missing} missing)" if missing else ""
-        print(f"Points:         {len(records)} on {len(frames)} frame(s){note}")
+        print(f"Points:         {len(records)} on {console.plural(len(frames), 'frame')}{note}")
 
 
 def _reject_path_like(value: str, command: str) -> None:
@@ -178,7 +178,7 @@ def _delete_confirmation_detail(path: Path) -> str:
     bits = []
     if records:
         frames = {r["frame"] for r in records}
-        bits.append(f"{len(records)} point(s) on {len(frames)} frame(s)")
+        bits.append(f"{console.plural(len(records), 'point')} on {console.plural(len(frames), 'frame')}")
     bits.append(f"created {profile.created_at or 'unknown date'}")
     return ", ".join(bits)
 
@@ -198,9 +198,9 @@ def _run_delete(args: argparse.Namespace) -> int:
 
     if not args.yes:
         if is_interactive():
-            question = f"Delete profile '{name}' ({_delete_confirmation_detail(path)})? This can't be undone."
+            question = f"Delete profile '{name}' ({_delete_confirmation_detail(path)})? This can't be undone"
             if not console.confirm(question):
-                raise SystemExit("Nothing deleted.")
+                raise SystemExit("Nothing deleted")
         else:
             raise SystemExit(f"refusing to delete {name!r} without confirmation - pass --yes (no terminal to ask in)")
 
@@ -212,7 +212,7 @@ def _run_delete(args: argparse.Namespace) -> int:
 def _interactive_edit_fields(profile) -> dict[str, str | None]:
     print(
         f"Editing profile {profile.name!r} — press Enter to leave a field as-is, or type a "
-        "single '-' to clear it."
+        "single '-' to clear it"
     )
     fields: dict[str, str | None] = {}
     for attr, label in _EDIT_FIELD_LABELS.items():
@@ -239,11 +239,12 @@ def _run_edit(args: argparse.Namespace) -> int:
 
     flag_fields = {field: getattr(args, field) for field in EDITABLE_FIELDS if getattr(args, field) is not None}
     if flag_fields:
-        fields: dict[str, str | None] = {k: (v or None) for k, v in flag_fields.items()}
+        # One convention to clear a field: `-`, as in the prompt (the flag also takes '', undocumented).
+        fields: dict[str, str | None] = {k: (None if v in ("", "-") else v) for k, v in flag_fields.items()}
     elif sys.stdin.isatty():
         fields = _interactive_edit_fields(profile)
         if not fields:
-            print(console.dim("No changes made."))
+            print(console.dim("No changes made"))
             return 0
     else:
         raise SystemExit(

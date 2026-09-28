@@ -12,7 +12,20 @@ import sys
 import time
 
 from halide.batch.orchestrator import BatchResult
-from halide.cli.console import SPROCKET, VERB, VERB_PAST, Style, dim, human_time
+from halide.cli import console
+from halide.cli.console import (
+    ICON_FAIL,
+    ICON_OK,
+    SPROCKET,
+    VERB,
+    VERB_PAST,
+    Style,
+    dim,
+    human_time,
+    interactive_output,
+    plural,
+    use_color,
+)
 
 _FRAME = "███"  # three cells wide by one tall ≈ a 3:2 35mm frame at a terminal's ~1:2 glyph aspect
 _HOLLOW = "░░░"
@@ -32,14 +45,88 @@ _STATE_COLOR = {
     "pending": _PENDING_COLOR,
     "finishing": _FINISHING_COLOR,
     "done": _DONE_COLOR,
-    "error": Style.RED,
-    "cancelled": Style.DIM,
+    "error": "RED",
+    "cancelled": "DIM",
 }
+
+# Without colour (NO_COLOR, TERM=dumb) the states have to tell apart by shape instead: the sheet
+# would otherwise be one uniform block.
+_PLAIN_GLYPH = {
+    "pending": "···",
+    "processing": "▒▒▒",
+    "finishing": "▓▓▓",
+    "done": _FRAME,
+    "error": "✗✗✗",
+    "cancelled": _HOLLOW,
+}
+
+
+def _state_color(state: str) -> str:
+    """The colour code for a frame state — "" when colour is off (see console.use_color())."""
+    if not use_color():
+        return ""
+    code = _STATE_COLOR[state]
+    return getattr(Style, code) if code in ("RED", "DIM") else code
+
 
 _TERMINAL_STATES = ("done", "error", "cancelled")
 
 
-class GridProgressRenderer:
+class _Renderer:
+    """What every progress display shares: the tallies and the end line. `completed` counts frames
+    that came back, failed ones included; `succeeded` is only those that developed."""
+
+    def __init__(self, total: int, verb: str = "invert"):
+        self.total = total
+        self.verb = verb
+        self.completed = 0
+        self.failures: list[tuple[str, str]] = []  # (filename, error message)
+        self._start_time: float | None = None
+        self._note: str | None = None  # one line under the status line (note())
+
+    @property
+    def succeeded(self) -> int:
+        return self.completed - len(self.failures)
+
+    def _record_failure(self, result: BatchResult) -> None:
+        self.failures.append((result.job.input_path.name, result.error))
+
+    def _announce(self) -> None:
+        print(f"{Style.BOLD}{VERB.get(self.verb, 'Processing')} {plural(self.total, 'frame')}{Style.RESET}", flush=True)
+
+    def start(self) -> None:
+        self._start_time = time.monotonic()
+        self._announce()
+
+    def mark_processing(self, index: int) -> None:
+        pass
+
+    def note(self, message: str) -> None:
+        print(dim(message), flush=True)
+
+    def cancel(self, indices: list[int]) -> None:
+        pass
+
+    def _finish_lines(self, cancelled: bool, noun: str | None, list_failures: bool = True) -> None:
+        elapsed = time.monotonic() - self._start_time if self._start_time is not None else 0.0
+        if cancelled:
+            print(console.cancelled(console.cancelled_message(self.verb, self.succeeded, self.total, noun)))
+        else:
+            message = console.finish_message(self.verb, self.succeeded, self.total, len(self.failures), elapsed, noun)
+            if self.failures:
+                print(f"{Style.YELLOW}{Style.BOLD}{message}{Style.RESET}")
+            else:
+                print(f"{Style.GREEN}{Style.BOLD}{ICON_OK} {message}{Style.RESET}")
+        if list_failures:
+            for name, err in self.failures:
+                print(f"  {Style.YELLOW}{ICON_FAIL}{Style.RESET} {name}: {err}")
+        sys.stdout.flush()
+
+    def finish(self, cancelled: bool = False, noun: str | None = None) -> None:
+        self._finish_lines(cancelled, noun)
+
+
+class GridProgressRenderer(_Renderer):
     """The whole batch drawn at once as a contact sheet: the roll cut into strips of (up to) six
     frames, each strip edged above and below by a row of sprocket holes, redrawn in place as jobs
     start and complete. Frames stay in true job order, left-to-right then top-to-bottom, exactly as a
@@ -82,12 +169,8 @@ class GridProgressRenderer:
     _INDENT = "    "
 
     def __init__(self, total: int, verb: str = "invert", terminal_size: tuple[int, int] | None = None):
-        self.total = total
-        self.verb = verb
-        self.completed = 0
-        self.failures: list[tuple[str, str]] = []  # (filename, error message)
+        super().__init__(total, verb)
         self._states = ["pending"] * total
-        self._start_time: float | None = None
         self._last_frame_lines = 0
         self._tick = 0
         self._note: str | None = None  # one line under the status line (note())
@@ -125,10 +208,12 @@ class GridProgressRenderer:
 
     def _cell_glyph(self, job_index: int) -> str:
         state = self._states[job_index]
+        if not use_color():
+            return _PLAIN_GLYPH[state]
         if state == "processing":
             return f"{_PROCESSING_COLORS[self._tick % 2]}{_FRAME}{Style.RESET}"
         glyph = _HOLLOW if state == "cancelled" else _FRAME
-        return f"{_STATE_COLOR[state]}{glyph}{Style.RESET}"
+        return f"{_state_color(state)}{glyph}{Style.RESET}"
 
     def _content_row(self, strip: range) -> str:
         return "│" + "│".join(f" {self._cell_glyph(j)} " for j in strip) + "│"
@@ -176,7 +261,7 @@ class GridProgressRenderer:
 
     def _status_text(self) -> str:
         verb_past = VERB_PAST.get(self.verb, "Processed")
-        text = f"{verb_past} {self.completed}/{self.total}"
+        text = f"{verb_past} {self.succeeded}/{self.total}"
         if self.failures:
             text += f" — {len(self.failures)} failed"
         if self.completed >= 2 and self._start_time is not None:
@@ -213,9 +298,7 @@ class GridProgressRenderer:
         sys.stdout.flush()
 
     def start(self) -> None:
-        self._start_time = time.monotonic()
-        verb = VERB.get(self.verb, "Processing")
-        print(f"{Style.BOLD}{verb} {self.total} frame(s)...{Style.RESET}")
+        super().start()
         self._redraw()  # draw the initial all-pending sheet immediately, not on the first report()
 
     def _redraw(self) -> None:
@@ -229,7 +312,7 @@ class GridProgressRenderer:
     def report(self, index: int, result: BatchResult) -> None:
         if result.error:
             self._states[index] = "error"
-            self.failures.append((result.job.input_path.name, result.error))
+            self._record_failure(result)
         else:
             self._states[index] = "finishing"
             self._redraw()
@@ -237,7 +320,6 @@ class GridProgressRenderer:
             self._states[index] = "done"
         self.completed += 1
         self._redraw()
-
 
     def note(self, message: str) -> None:
         """Show `message` on its own line under the status line from now on — part of the frame, so
@@ -248,30 +330,69 @@ class GridProgressRenderer:
 
     def cancel(self, indices: list[int]) -> None:
         """Mark jobs that never got a result (not started, or in flight when Ctrl+C landed) as
-        cancelled and redraw one final time — called instead of report() for those indices."""
+        cancelled and redraw one final time — called instead of report() for those indices. The
+        "finishing the frames in progress" note is over by now, so the last frame drops it."""
         for i in indices:
             self._states[i] = "cancelled"
+        self._note = None
         self._redraw()
 
-    def finish(self, cancelled: bool = False) -> None:
-        verb_past = VERB_PAST.get(self.verb, "Processed").lower()
-        elapsed = time.monotonic() - self._start_time if self._start_time is not None else 0.0
-        if cancelled:
-            not_started = self.total - self.completed
-            print(
-                f"\n{Style.YELLOW}{Style.BOLD}Cancelled{Style.RESET} — {self.completed}/{self.total} "
-                f"frames {verb_past}, {not_started} not started, {len(self.failures)} failed."
-            )
-        elif self.failures:
-            print(f"\n{Style.YELLOW}{Style.BOLD}Completed with {len(self.failures)} failure(s){Style.RESET} "
-                  f"— {self.completed}/{self.total} frames {verb_past} in {human_time(elapsed)}:")
-            for name, error in self.failures:
-                print(f"  {Style.YELLOW}✗{Style.RESET} {name}: {error}")
-        else:
-            print(
-                f"\n{Style.GREEN}{Style.BOLD}Contact sheet complete{Style.RESET} — "
-                f"{self.total}/{self.total} frames {verb_past} in {human_time(elapsed)}."
-            )
+    def finish(self, cancelled: bool = False, noun: str | None = None) -> None:
+        print()
+        self._finish_lines(cancelled, noun)
+
+
+class PlainProgressRenderer(_Renderer):
+    """The same run for a log: no cursor movement, no colour, one line per finished frame —
+
+        ✓ IMG_0138.tif  grade 0.88 exp +0.39  4.1s
+        ✗ IMG_0139.tif: the scan is gamma-encoded ...
+
+    then the end line. Used whenever stdout isn't a terminal that can redraw (a pipe, a file,
+    TERM=dumb). Lines are flushed as they are written, so a tail -f follows the run."""
+
+    def report(self, index: int, result: BatchResult) -> None:  # noqa: ARG002 -- same interface as the grid
+        self.completed += 1
+        name = result.job.input_path.name
+        if result.error:
+            self._record_failure(result)
+            print(f"{ICON_FAIL} {name}: {result.error}", flush=True)
+            return
+        parts = [f"{ICON_OK} {name}"]
+        if result.detail:
+            parts.append(result.detail)
+        if result.seconds is not None:
+            parts.append(human_time(result.seconds))
+        print("  ".join(parts), flush=True)
+
+    def finish(self, cancelled: bool = False, noun: str | None = None) -> None:
+        self._finish_lines(cancelled, noun, list_failures=False)
+
+
+class QuietProgressRenderer(_Renderer):
+    """--quiet: no progress at all, only the end line (and the failures, which are errors)."""
+
+    def _announce(self) -> None:
+        pass
+
+    def report(self, index: int, result: BatchResult) -> None:  # noqa: ARG002
+        self.completed += 1
+        if result.error:
+            self._record_failure(result)
+
+    def finish(self, cancelled: bool = False, noun: str | None = None) -> None:
+        self._finish_lines(cancelled, noun)
+
+
+def make_renderer(total: int, verb: str, quiet: bool = False) -> _Renderer:
+    """The progress display for a run: the contact-sheet grid in a terminal, plain lines when
+    stdout is a file or pipe (or TERM=dumb), only the end line under --quiet. Every kind has the
+    same interface, so a command never asks which one it got."""
+    if quiet:
+        return QuietProgressRenderer(total, verb)
+    if interactive_output():
+        return GridProgressRenderer(total, verb)
+    return PlainProgressRenderer(total, verb)
 
 
 def cancel_notice(renderer: GridProgressRenderer | None):

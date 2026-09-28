@@ -153,12 +153,12 @@ def test_an_unreadable_file_says_damaged(tmp_path):
 
 def test_rgba_is_refused_plainly(tmp_path):
     assert _fail(_negative(tmp_path / "rgba.tif", shape=(8, 8, 4))) == \
-        "rgba.tif has an alpha (transparency) channel; export without it."
+        "rgba.tif has an alpha (transparency) channel; export without it"
 
 
 def test_greyscale_is_refused_plainly(tmp_path):
     assert _fail(_negative(tmp_path / "grey.tif", shape=(8, 8))) == \
-        "grey.tif is greyscale; halide needs an RGB scan of a colour negative."
+        "grey.tif is greyscale; halide needs an RGB scan of a colour negative"
 
 
 def test_other_channel_counts_are_refused_plainly(tmp_path):
@@ -211,7 +211,7 @@ def test_reinverting_a_halide_output_is_refused(tmp_path):
         process_scan(positive, tmp_path / "again.tif", Stage.FULL, PROFILE, ToneCurveParams())
     message = str(excinfo.value)
     assert message.startswith("pos.tif is already a halide positive (made on ")
-    assert "To re-print it use `halide print`; to develop again, point halide at the original scan." in message
+    assert "To re-print it use `halide print`; to develop again, point halide at the original scan" in message
     assert not (tmp_path / "again.tif").exists()
 
 

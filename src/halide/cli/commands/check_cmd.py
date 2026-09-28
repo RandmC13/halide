@@ -50,15 +50,15 @@ def run(args: argparse.Namespace) -> int:
     report = assess_roll({f.name: meta for f, meta in zip(files, read_roll_scan_metadata(files).values())})
 
     print(console.full_width_rule())
-    print(f"Checked {len(files)} scan(s)")
+    print(f"Checked {console.plural(len(files), 'frame')}")
     if skipped:
         print(console.dim(f"Skipped {skipped.describe()}"))
 
     print(f"\n{console.Style.BOLD}Camera exposure when digitizing{console.Style.RESET}")
     for setting, names in sorted(report.exposure_groups.items(), key=lambda kv: -len(kv[1])):
-        print(f"  {setting:>18s}  {len(names):3d} frame(s)  {_names(names)}")
+        print(f"  {setting:>18s}  {len(names):3d} frames  {_names(names)}")
     if report.missing_exif:
-        print(f"  {'(no EXIF)':>18s}  {len(report.missing_exif):3d} frame(s)  {_names(report.missing_exif)}")
+        print(f"  {'(no EXIF)':>18s}  {len(report.missing_exif):3d} frames  {_names(report.missing_exif)}")
         n = len(report.missing_exif)
         print(console.warning(f"not verifiable (no camera EXIF in {n} frame{'' if n == 1 else 's'})"))
     if report.exposure_inconsistent:
@@ -73,7 +73,7 @@ def run(args: argparse.Namespace) -> int:
     if not report.white_balance_groups:
         print("  (no darktable history found — can't check)")
     for wb, names in sorted(report.white_balance_groups.items(), key=lambda kv: -len(kv[1])):
-        print(f"  R {wb[0]:.3f} G {wb[1]:.3f} B {wb[2]:.3f}  {len(names):3d} frame(s)  {_names(names)}")
+        print(f"  R {wb[0]:.3f} G {wb[1]:.3f} B {wb[2]:.3f}  {len(names):3d} frames  {_names(names)}")
     if report.white_balance_inconsistent:
         print(console.warning(
             "white balance differs between frames — not correctable after export (it's applied in "

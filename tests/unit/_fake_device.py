@@ -254,4 +254,4 @@ def install_as_gpu() -> None:
     register_namespace(FakeDeviceArray, fake_xp)
     halide.device.to_device = to_device
     halide.device.to_host = to_host
-    halide.device.resolve_device = lambda requested=None: halide.device.ComputeDevice(kind="gpu", name="Fake GPU")
+    halide.device.resolve_device = lambda requested=None, isolated=False: halide.device.ComputeDevice(kind="gpu", name="Fake GPU")

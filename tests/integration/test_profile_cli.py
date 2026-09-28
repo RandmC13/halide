@@ -290,7 +290,7 @@ def test_show_names_the_roll_and_flags_it_when_moved(tmp_path, capsys, isolated_
     assert main(["profile", "show", "r16"]) == 0
     out = capsys.readouterr().out
     assert f"Roll:           {roll}" in out and "not found" not in out
-    assert "Points:         2 on 2 frame(s) (1 missing)" in out
+    assert "Points:         2 on 2 frames (1 missing)" in out
 
     roll.rename(tmp_path / "Roll16-moved")
     assert main(["profile", "show", "r16"]) == 0
@@ -437,7 +437,7 @@ def test_profile_delete_interactive_confirms(tmp_path, isolated_profiles_dir, mo
     assert main(["profile", "delete", "roll16"]) == 0
     assert not (isolated_profiles_dir / "roll16.json").exists()
     assert "roll16" in captured["prompt"]
-    assert "2 point(s)" in captured["prompt"]
+    assert "2 points" in captured["prompt"]
     assert saved.created_at in captured["prompt"]
 
 

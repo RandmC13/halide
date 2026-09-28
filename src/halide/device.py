@@ -64,7 +64,7 @@ def requested_device(requested: str | None = None) -> str:
     return normalised
 
 
-def resolve_device(requested: str | None = None) -> ComputeDevice:
+def resolve_device(requested: str | None = None, *, isolated: bool = False) -> ComputeDevice:
     """Decide which device to run on. `requested` is `"auto" | "cpu" | "gpu"`; if None, falls back
     to the `HALIDE_DEVICE` environment variable, then to `"auto"` (see requested_device).
 
@@ -73,20 +73,61 @@ def resolve_device(requested: str | None = None) -> ComputeDevice:
     they differ only in what happens when that probe fails: `"auto"` quietly falls back to CPU
     (recording why only if CuPy was installed at all — the normal case, no CuPy, gets no reason to
     show), `"gpu"` raises so the user's explicit request isn't silently downgraded.
+
+    `isolated=True` does the probe in a short-lived child process instead of here, for a caller
+    that never computes on the card itself (a batch's parent: its workers or the GPU service do) —
+    so no CUDA context, and none of CuPy's host memory, ever exists in that process (2.4-7). The
+    result is the same ComputeDevice; only the process that learned it differs.
     """
     requested = requested_device(requested)
     if requested == "cpu":
         return ComputeDevice(kind="cpu")
 
     try:
-        return _probe_gpu()
+        return _probe_gpu_in_subprocess() if isolated else _probe_gpu()
     except Exception as exc:  # broad on purpose — see _probe_gpu's docstring
         if requested == "gpu":
             raise DeviceUnavailableError(_install_hint(exc)) from exc
         # "auto": a GPU is a bonus, not a requirement. Only say why it's missing when CuPy is
-        # actually installed — a plain ImportError just means the normal, GPU-less case.
-        reason = None if isinstance(exc, ImportError) else str(exc)
+        # actually installed — no CuPy at all is the normal, GPU-less case with nothing to report.
+        # A CuPy that is installed but fails to import is a real problem, shown with its own error.
+        if isinstance(exc, ImportError) and not gpu_support_installed():
+            reason = None
+        else:
+            reason = str(exc) or type(exc).__name__
         return ComputeDevice(kind="cpu", fallback_reason=reason)
+
+
+_PROBE_SCRIPT = (
+    "import json\n"
+    "try:\n"
+    "    from halide.device import _probe_gpu\n"
+    "    d = _probe_gpu()\n"
+    "    out = {'name': d.name, 'memory_free': d.memory_free, 'memory_total': d.memory_total}\n"
+    "except Exception as exc:\n"
+    "    out = {'error': str(exc) or type(exc).__name__, 'import_error': isinstance(exc, ImportError)}\n"
+    "print(json.dumps(out))\n"
+)
+_PROBE_TIMEOUT = 60.0
+
+
+def _probe_gpu_in_subprocess() -> ComputeDevice:
+    """_probe_gpu's answer, learned in a child process (see resolve_device's `isolated`). Raises
+    what the in-process probe would have raised: ImportError when CuPy can't be imported, else
+    RuntimeError with the child's message."""
+    import json
+    import subprocess
+
+    try:
+        done = subprocess.run([sys.executable, "-c", _PROBE_SCRIPT], capture_output=True, text=True,
+                              timeout=_PROBE_TIMEOUT)
+        report = json.loads(done.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError) as exc:
+        raise RuntimeError(f"the GPU check didn't finish ({type(exc).__name__})") from exc
+    if "error" in report:
+        raise (ImportError if report.get("import_error") else RuntimeError)(report["error"])
+    return ComputeDevice(kind="gpu", name=report["name"], memory_free=report["memory_free"],
+                         memory_total=report["memory_total"])
 
 
 def _probe_gpu() -> ComputeDevice:
@@ -108,6 +149,8 @@ def _probe_gpu() -> ComputeDevice:
 
 
 def _install_hint(exc: Exception) -> str:
+    if isinstance(exc, ImportError) and gpu_support_installed():
+        return f"GPU support is installed but couldn't be loaded ({exc}). Run 'halide gpu' to see what's wrong."
     if isinstance(exc, ImportError):
         return (
             "GPU support isn't installed. Run 'halide gpu --install' to add it, or use "

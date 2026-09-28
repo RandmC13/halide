@@ -241,3 +241,40 @@ def test_to_host_calls_get_and_supports_out(monkeypatch):
     result = to_host(on_device, out=out)
     assert result is out
     assert np.array_equal(out, a)
+
+
+def _fake_probe_child(monkeypatch, stdout):
+    """Stand in for the child process of an isolated probe; the in-process probe must never run."""
+    monkeypatch.setattr(device_module, "_probe_gpu", lambda: pytest.fail("the parent probed the GPU itself"))
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout=stdout))
+
+
+def test_an_isolated_probe_learns_the_card_without_touching_cupy_here(monkeypatch):
+    monkeypatch.delitem(sys.modules, "cupy", raising=False)
+    _fake_probe_child(monkeypatch, '{"name": "RTX", "memory_free": 5, "memory_total": 8}\n')
+    device = device_module.resolve_device("auto", isolated=True)
+    assert (device.kind, device.name, device.memory_free, device.memory_total) == ("gpu", "RTX", 5, 8)
+    assert "cupy" not in sys.modules  # no CuPy, so no CUDA context, in this process
+
+
+def test_an_isolated_probe_reports_failures_like_the_in_process_one(monkeypatch):
+    _fake_probe_child(monkeypatch, '{"error": "cudaErrorInsufficientDriver", "import_error": false}\n')
+    auto = device_module.resolve_device("auto", isolated=True)
+    assert auto.kind == "cpu" and auto.fallback_reason == "cudaErrorInsufficientDriver"
+    with pytest.raises(DeviceUnavailableError, match="cudaErrorInsufficientDriver"):
+        device_module.resolve_device("gpu", isolated=True)
+
+
+def test_a_cupy_that_is_installed_but_cannot_be_imported_gives_its_error_not_none(monkeypatch):
+    monkeypatch.setattr(device_module, "gpu_support_installed", lambda: True)
+    monkeypatch.setitem(sys.modules, "cupy", None)  # `import cupy` raises ImportError
+    reason = device_module.resolve_device("auto").fallback_reason
+    assert reason and reason != "None" and "cupy" in reason
+    with pytest.raises(DeviceUnavailableError, match="installed but couldn't be loaded"):
+        device_module.resolve_device("gpu")
+
+
+def test_no_cupy_at_all_is_still_silent(monkeypatch):
+    monkeypatch.setattr(device_module, "gpu_support_installed", lambda: False)
+    monkeypatch.setitem(sys.modules, "cupy", None)
+    assert device_module.resolve_device("auto").fallback_reason is None

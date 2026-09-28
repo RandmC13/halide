@@ -345,7 +345,7 @@ def maybe_save_profile(
         else:
             raise SystemExit(
                 f"a profile named {save_as!r} already exists. Add --overwrite to replace it, or "
-                "choose a different --save-profile-as name."
+                "choose a different --save-profile-as name"
             )
     if announce:
         print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))

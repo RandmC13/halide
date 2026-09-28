@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from halide.cli.console import plural
 from halide.core.types import DensityProfile, Stage, ToneCurveParams
 from halide.device import ComputeDevice
 from halide.interrupts import cancel_on_hangup_and_term, children_ignore_terminal_signals, ignore_terminal_signals
@@ -156,6 +157,8 @@ class BatchResult:
     job: BatchJob
     error: str | None  # None on success
     warning: str | None = None  # non-fatal, e.g. export's "doesn't look like ACEScg" notice
+    detail: str | None = None  # the printing decision, e.g. "grade 0.88 exp +0.39" (plain progress lines)
+    seconds: float | None = None  # how long the frame took in its worker
 
 
 def discover_jobs(input_dir: str | Path, output_dir: str | Path, suffix: str = "") -> list[BatchJob]:
@@ -245,8 +248,8 @@ def device_budget_warning(jobs: list[BatchJob], requested_workers: int, device: 
     per_worker = estimate_worker_device_bytes(jobs)
     return (
         f"--workers {requested_workers} may not fit in free GPU memory (~{per_worker / 1024**3:.1f} GB "
-        f"estimated per worker vs. ~{device.memory_free / 1024**3:.1f} GB free suggests {safe_workers} "
-        f"worker(s)) — frames that don't fit are developed on the CPU instead, more slowly."
+        f"estimated per worker vs. ~{device.memory_free / 1024**3:.1f} GB free suggests {plural(safe_workers, 'worker')}) "
+        f"— frames that don't fit are developed on the CPU instead, more slowly"
     )
 
 
@@ -342,8 +345,8 @@ def memory_budget_warning(
         return None
     return (
         f"--workers {requested_workers} may exceed available memory (~{per_worker / 1024**3:.1f} "
-        f"GB estimated per worker vs. ~{available / 1024**3:.1f} GB available suggests {safe_workers} "
-        f"worker(s) is safer) — continuing with {requested_workers} since it was explicitly requested."
+        f"GB estimated per worker vs. ~{available / 1024**3:.1f} GB available suggests {plural(safe_workers, 'worker')} "
+        f"would be safer) — continuing with {requested_workers} since it was explicitly requested"
     )
 
 
@@ -608,14 +611,14 @@ def service_budget_warnings(jobs: list[BatchJob], requested_workers: int, comput
             warnings.append(
                 f"--workers {requested_workers} may exceed available memory (~{per_worker / 1024**3:.1f} GB "
                 f"estimated per worker, plus the GPU service, vs. ~{available / 1024**3:.1f} GB available "
-                f"suggests {safe} worker(s) is safer) — continuing with {requested_workers} since it was "
-                f"explicitly requested."
+                f"suggests {plural(safe, 'worker')} would be safer) — continuing with {requested_workers} since it was "
+                f"explicitly requested"
             )
     if compute.shm_cap is not None and requested_workers > compute.shm_cap:
         warnings.append(
             f"--workers {requested_workers} won't all fit in shared memory ({_SHM_DIR} holds "
-            f"{compute.shm_cap} worker(s)' frames) — frames that don't fit are developed on the CPU "
-            f"instead, more slowly."
+            f"{plural(compute.shm_cap, 'worker')}' frames) — frames that don't fit are developed on the CPU "
+            f"instead, more slowly"
         )
     return warnings
 
@@ -702,6 +705,15 @@ def _start_on_device(job: BatchJob, device_kind: str, memory_limit: int | None, 
     return device, warnings
 
 
+def _tone_detail(resolved) -> str | None:
+    """A frame's printing decision in a few words, for the plain progress line."""
+    if resolved is None:
+        return None
+    if resolved.mode == "linear":
+        return f"flat x{resolved.linear_scale:.4g}"
+    return f"grade {resolved.contrast:.2f} exp {resolved.exposure:+.2f}"
+
+
 def _worker(
     job: BatchJob,
     stage: Stage,
@@ -715,15 +727,17 @@ def _worker(
     from halide.processing import process_scan
 
     warnings = None
+    started = time.monotonic()
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "developed this frame")
         client, shm_prefix = _worker_service(service)
-        process_scan(
+        resolved = process_scan(
             job.input_path, job.output_path, stage, density_profile, tone_params, scan_gain=job.scan_gain,
             thumbnail_path=job.thumbnail_path, thumbnail_long_edge=thumbnail_long_edge,
             device=device, on_warning=warnings, service=client, shm_prefix=shm_prefix,
         )
-        return BatchResult(job=job, error=None, warning=warnings.text())
+        return BatchResult(job=job, error=None, warning=warnings.text(), detail=_tone_detail(resolved),
+                           seconds=time.monotonic() - started)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
@@ -735,12 +749,13 @@ def _export_worker(
     from halide.processing import export_delivery_image
 
     warnings = None
+    started = time.monotonic()
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "exported this file")
         client, shm_prefix = _worker_service(service)
         warnings(export_delivery_image(job.input_path, job.output_path, quality=quality,
                                        device=device, on_warning=warnings, service=client, shm_prefix=shm_prefix))
-        return BatchResult(job=job, error=None, warning=warnings.text())
+        return BatchResult(job=job, error=None, warning=warnings.text(), seconds=time.monotonic() - started)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
@@ -752,13 +767,15 @@ def _print_worker(
     from halide.processing import print_scan
 
     warnings = None
+    started = time.monotonic()
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "developed this frame")
         client, shm_prefix = _worker_service(service)
-        _, warning = print_scan(job.input_path, job.output_path, tone_params, device=device, on_warning=warnings,
+        resolved, warning = print_scan(job.input_path, job.output_path, tone_params, device=device, on_warning=warnings,
                                 service=client, shm_prefix=shm_prefix)
         warnings(warning)
-        return BatchResult(job=job, error=None, warning=warnings.text())
+        return BatchResult(job=job, error=None, warning=warnings.text(), detail=_tone_detail(resolved),
+                           seconds=time.monotonic() - started)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 

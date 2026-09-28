@@ -216,7 +216,7 @@ def test_status_cupy_installed_and_working(monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "cupy", _fake_installed_cupy())
     monkeypatch.setattr(
         device_module, "resolve_device",
-        lambda requested: ComputeDevice(kind="gpu", name="NVIDIA GeForce RTX 3070", memory_free=1, memory_total=2),
+        lambda requested, isolated=False: ComputeDevice(kind="gpu", name="NVIDIA GeForce RTX 3070", memory_free=1, memory_total=2),
     )
     assert main(["gpu"]) == 0
     out = _strip(capsys.readouterr().out)
@@ -231,7 +231,7 @@ def test_status_cupy_installed_but_device_fails(monkeypatch, capsys):
     monkeypatch.setitem(sys.modules, "cupy", _fake_installed_cupy())
     monkeypatch.setattr(
         device_module, "resolve_device",
-        lambda requested: ComputeDevice(kind="cpu", fallback_reason="cudaErrorInsufficientDriver: CUDA driver version is insufficient for CUDA runtime version"),
+        lambda requested, isolated=False: ComputeDevice(kind="cpu", fallback_reason="cudaErrorInsufficientDriver: CUDA driver version is insufficient for CUDA runtime version"),
     )
     assert main(["gpu"]) == 0
     out = _strip(capsys.readouterr().out)
@@ -361,7 +361,7 @@ def test_install_already_installed_does_nothing(monkeypatch, capsys):
 
     monkeypatch.setitem(sys.modules, "cupy", _fake_installed_cupy())
     monkeypatch.setattr(
-        device_module, "resolve_device", lambda requested: ComputeDevice(kind="gpu", name="NVIDIA GeForce RTX 3070")
+        device_module, "resolve_device", lambda requested, isolated=False: ComputeDevice(kind="gpu", name="NVIDIA GeForce RTX 3070")
     )
     calls = []
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)) or None)
@@ -564,3 +564,22 @@ def test_device_gpu_without_cupy_names_install(negative_tiff, tmp_path, monkeypa
     output = tmp_path / "positive.tiff"
     with pytest.raises(SystemExit, match="halide gpu --install"):
         main(["invert", str(negative_tiff), str(output), *MANUAL, "--device", "gpu"])
+
+
+def test_install_advice_names_the_nvidia_wheels_and_the_pip_cache(monkeypatch, capsys, old_driver_absent_cupy):
+    monkeypatch.setattr(subprocess, "run", lambda argv, **k: subprocess.CompletedProcess(argv, 0, stdout=""))
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    main(["gpu", "--install"])
+    out = _strip(capsys.readouterr().out)
+    assert "nvidia-" in out and "pip cache purge" in out
+
+
+def test_status_never_prints_none_for_a_missing_reason(monkeypatch, capsys):
+    from halide.device import ComputeDevice
+
+    monkeypatch.setitem(sys.modules, "cupy", _fake_installed_cupy())
+    monkeypatch.setattr(device_module, "resolve_device",
+                        lambda requested, isolated=False: ComputeDevice(kind="cpu", fallback_reason=None))
+    main(["gpu"])
+    assert "None" not in _strip(capsys.readouterr().out)

@@ -18,12 +18,38 @@ from halide.batch.orchestrator import (
     service_worker_count,
 )
 from halide.cli._device_args import device_fallback_warning, device_row, gpu_hint
+from halide.cli import console
 from halide.cli.console import RunSheet
 from halide.device import ComputeDevice
 
 
 def frame_count(n: int) -> str:
-    return f"{n} frame" if n == 1 else f"{n} frames"
+    return console.plural(n, "frame")
+
+
+def print_frame_warnings(results) -> None:
+    """The warnings the frames of a finished run came back with (printed even under --quiet), one
+    line per frame — except that a GPU service which stopped mid-run is said once, not on every
+    frame after it: "⚠ The GPU service stopped (<reason>); developing the remaining frames on the
+    CPU"."""
+    from halide.processing import service_stopped
+
+    stopped_reason = None
+    for r in results:
+        if not r.warning:
+            continue
+        kept = []
+        for part in r.warning.split("; "):
+            reason = service_stopped(part)
+            if reason is None:
+                kept.append(part)
+            elif stopped_reason is None:
+                stopped_reason = reason
+        if kept:
+            print(console.warning(f"{r.job.input_path.name}: {'; '.join(kept)}"))
+    if stopped_reason is not None:
+        print(f"{console.Style.YELLOW}{console.ICON_WARN}{console.Style.RESET} "
+              f"The GPU service stopped ({stopped_reason}); developing the remaining frames on the CPU")
 
 
 def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str) -> None:

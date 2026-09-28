@@ -48,14 +48,14 @@ def _status() -> int:
     if halide_device.gpu_support_installed():
         device = halide_device.resolve_device("auto")
         if device.kind == "gpu":
-            print(f"{device.name} — GPU support is installed and working.")
-            print("GPU is in use by default (--device auto).")
+            print(f"{device.name} — GPU support is installed and working")
+            print("GPU is in use by default (--device auto)")
         else:
             # The carried-over minor from Task 3: fallback_reason can embed a raw CUDA error
             # string. Lead with a plain sentence, then show that as its own detail line.
-            print("GPU support is installed, but the card isn't usable right now.")
-            print(f"    {device.fallback_reason}")
-            print("halide will use the CPU until this is fixed (or use --device cpu to force it).")
+            print("GPU support is installed, but the card isn't usable right now")
+            print(f"    {device.fallback_reason or 'no reason was reported'}")
+            print("halide will use the CPU until this is fixed (or use --device cpu to force it)")
         return 0
 
     driver = halide_device.detect_nvidia_driver()
@@ -68,11 +68,11 @@ def _status() -> int:
         print(
             f"{name} found, but its driver is too old for GPU support (needs CUDA 12 or newer; "
             f"this one supports CUDA {_cuda_version_str(driver.cuda_version)}). Update the NVIDIA "
-            "driver to use it."
+            "driver to use it"
         )
         return 0
 
-    print(f"{name} found (driver supports CUDA {_cuda_version_str(driver.cuda_version)}).")
+    print(f"{name} found (driver supports CUDA {_cuda_version_str(driver.cuda_version)})")
     print("GPU support is not installed — add it with: halide gpu --install (about 1 GB download)")
     return 0
 
@@ -80,16 +80,16 @@ def _status() -> int:
 def _install(args: argparse.Namespace) -> int:
     if halide_device.gpu_support_installed():
         device = halide_device.resolve_device("auto")
-        print("GPU support is already installed.")
+        print("GPU support is already installed")
         if device.kind == "gpu":
-            print(f"{device.name} — working, in use by default (--device auto).")
+            print(f"{device.name} — working, in use by default (--device auto)")
         else:
-            print(f"It isn't usable right now: {device.fallback_reason}")
+            print(f"It isn't usable right now: {device.fallback_reason or 'no reason was reported'}")
         return 0
 
     driver = halide_device.detect_nvidia_driver()
     if driver is None:
-        print("No NVIDIA GPU found — nothing to install.")
+        print("No NVIDIA GPU found — nothing to install")
         return 1
 
     name = driver.device_name or "This card"
@@ -98,7 +98,7 @@ def _install(args: argparse.Namespace) -> int:
         print(
             f"{name}'s driver is too old for GPU support (needs CUDA 12 or newer; this one "
             f"supports CUDA {_cuda_version_str(driver.cuda_version)}). Update the NVIDIA driver, "
-            "then run `halide gpu --install` again."
+            "then run `halide gpu --install` again"
         )
         return 1
 
@@ -117,21 +117,24 @@ def _install(args: argparse.Namespace) -> int:
     print(f"GPU support for halide: {name} (driver supports CUDA {cuda_str})")
     print(
         f"This installs {package} into halide's Python environment ({sys.prefix}) — about 1 GB,\n"
-        "mostly NVIDIA's CUDA libraries. Remove it later with:\n"
-        f"    {sys.executable} -m pip uninstall {dist_name}"
+        "mostly NVIDIA's CUDA libraries. To remove it later:\n"
+        f"    {sys.executable} -m pip uninstall {dist_name}\n"
+        "  then the NVIDIA libraries it brought with it (the packages named nvidia-... in\n"
+        f"  `{sys.executable} -m pip list`), and free pip's downloaded copies with:\n"
+        f"    {sys.executable} -m pip cache purge"
     )
     if not args.yes:
         if not sys.stdin.isatty():
-            print("Not installing — pass --yes to install without asking (no terminal to confirm in).")
+            print("Not installing — pass --yes to install without asking (no terminal to confirm in)")
             return 1
         reply = input("Install now? [y/N] ").strip().lower()
         if reply not in ("y", "yes"):
-            print("Not installed.")
+            print("Not installed")
             return 0
 
     result = subprocess.run([sys.executable, "-m", "pip", "install", package])
     if result.returncode != 0:
-        print("Install failed — see the pip output above.")
+        print("Install failed — see the pip output above")
         return 1
 
     # The current process may already have tried (and failed) `import cupy` earlier in this same
@@ -145,6 +148,6 @@ def _install(args: argparse.Namespace) -> int:
         if check.stderr:
             print(check.stderr, end="" if check.stderr.endswith("\n") else "\n", file=sys.stderr)
         print("GPU support was installed, but checking it failed (the error is above). "
-              "Run `halide gpu` to check again.")
+              "Run `halide gpu` to check again")
         return 1
     return 0
