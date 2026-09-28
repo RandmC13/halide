@@ -287,6 +287,36 @@ def test_rename_profile_raises_if_target_exists_case_insensitive(tmp_path):
         rename_profile("a", "b", profiles_dir=tmp_path)
 
 
+def test_rename_profile_case_only_change_succeeds(tmp_path):
+    save_named_profile(PROFILE, "portra400", profiles_dir=tmp_path)
+    new_path = rename_profile("portra400", "Portra400", profiles_dir=tmp_path)
+    assert new_path == tmp_path / "Portra400.json"
+    assert new_path.exists()
+    assert not (tmp_path / "portra400.json").exists()
+    assert load_profile(new_path).name == "Portra400"
+    # exactly one file on disk under the new name - no leftover temp/backup file
+    assert [p.name for p in tmp_path.glob("*.json")] == ["Portra400.json"]
+    # the listed name reflects the new case
+    assert [name for name, _, _ in list_profiles(profiles_dir=tmp_path)] == ["Portra400"]
+
+
+def test_rename_profile_onto_a_different_profile_differing_only_by_case_still_refused(tmp_path):
+    save_named_profile(PROFILE, "a", profiles_dir=tmp_path)
+    save_named_profile(PROFILE, "Portra400", profiles_dir=tmp_path)
+    with pytest.raises(FileExistsError):
+        rename_profile("a", "portra400", profiles_dir=tmp_path)
+    # nothing was touched by the refused rename
+    assert (tmp_path / "a.json").exists()
+    assert (tmp_path / "Portra400.json").exists()
+
+
+def test_rename_profile_exact_same_name_restamps_without_deleting(tmp_path):
+    save_named_profile(PROFILE, "roll16", profiles_dir=tmp_path)
+    new_path = rename_profile("roll16", "roll16", profiles_dir=tmp_path)
+    assert new_path == tmp_path / "roll16.json"
+    assert load_profile(new_path).name == "roll16"
+
+
 def test_delete_profile(tmp_path):
     save_named_profile(PROFILE, "throwaway", profiles_dir=tmp_path)
     delete_profile("throwaway", profiles_dir=tmp_path)
