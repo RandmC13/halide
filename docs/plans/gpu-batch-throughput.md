@@ -2,8 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: **Part A implemented; B0 measured (go, see Task B0); B1-B5 in progress (2026-09-27).** Branch
-`gpu-acceleration` (not merged; the user wants this done first).
+Status: **Implemented and verified on the user's RTX 3070 (2026-09-28).** Part A (exiftool kept
+open, Linux only) and Part B (one GPU service shared by CPU-only workers). B0 went ahead on a RAM
+finding, not the probe (see "B0 as actually run"); B4: 63/63 `pytest -m gpu`, GPU batch 0.69 ->
+0.45 s/frame against per-worker mode in the same run (1.53x; the hoped-for ~0.36 s/frame wasn't
+reached). What was built and why: `CLAUDE.md`, "Decisions and why", the GPU service entry. Branch
+`gpu-acceleration` (not merged).
 
 **Goal:** Make `halide batch` (and bulk `print`/`export`, contact sheets) substantially faster,
 above all on the GPU, without changing any output byte.
@@ -191,7 +195,8 @@ The probe measures, and prints as plain tables:
 Build it with `--devices cpu` checks in this sandbox (steps 1-3 need no GPU), then hand it to the
 user.
 
-- [ ] Write the probe; validate steps 1-3 here on 2-4 Roll16 frames; commit.
+- [ ] Write the probe; validate steps 1-3 here on 2-4 Roll16 frames; commit. *(Not done; see "B0
+  as actually run".)*
 - [x] **User runs it; decision recorded in this plan:**
   - **Go** if the 8-process ceiling is at least ~2x today's GPU batch (≥ 2.8 frames/s);
     otherwise B1-B5 are dropped. Also record the actual ceiling, which becomes B5's target.
@@ -357,16 +362,44 @@ reporting the service's and the workers' host memory and VRAM).
   `tests/conftest.py`'s service guard exempts tests marked `gpu`. The bench gains service rows
   (auto, 4, 8), per-worker rows (auto, 4), the service's own RSS/PSS/VRAM, PSS totals, swap, and
   `--only batch`.
-- [ ] **User runs `pytest -m gpu` and the bench.** Acceptance:
+- [x] **User runs `pytest -m gpu` and the bench.** Acceptance:
   - all GPU tests pass;
   - the service-mode GPU batch is faster than today's GPU batch (0.73 s/frame) by a margin worth
     its complexity. The target is the B0 ceiling; below ~1.5x today, discuss with the user
     before keeping it.
   - The numbers are recorded in this plan.
 
+**B4 as run (user's RTX 3070, 2026-09-28): accepted, Part B kept.**
+- `pytest -m gpu`: **63 passed** — the 46 earlier GPU tests, 16 service-vs-per-worker tests (all
+  bit-identical: develop print/flat/`--auto-density`, print, export; synthetic and the four real
+  scans) and the conftest guard test.
+- Bench (`gpu-acceleration-bench.py --only batch --devices gpu`; Python 3.14.7, 8 physical cores,
+  RAM available 7.6 GiB, swap in use 4.7 GiB, `/dev/shm` 7.6 of 7.8 GiB free; Roll 16, 37 frames,
+  `--profile Roll16-KodakGold200`). Auto picks 6 workers in service mode (`/dev/shm` fits 33) and 4
+  in per-worker mode (GPU memory fits 6, RAM 4):
+
+| command | device | mode | workers | auto picks | wall s | s/frame | ok | CPU fallbacks | GPU procs | peak VRAM/proc MiB | host RAM peak MiB (RSS total / PSS total / largest) | service RSS / PSS MiB | service VRAM MiB | swap MiB |
+|---|---|---|---:|---:|---:|---:|---|---:|---:|---|---|---|---:|---|
+| batch | gpu | service | 4 | 6 | 18.2 | 0.49 | yes | 0 | 1 | 158 | 3332 / 2550 / 523 | 1177 / 934 | 982 | 4787 / 4819 |
+| batch | gpu | service | 8 | 6 | 16.5 | 0.44 | yes | 0 | 1 | 158 | 4450 / 3384 / 525 | 1178 / 933 | 982 | 4819 / 4819 |
+| batch | gpu | service | auto | 6 | 16.8 | 0.45 | yes | 0 | 1 | 158 | 3816 / 2949 / 523 | 1174 / 932 | 982 | 4818 / 4818 |
+| batch | gpu | per-worker | 4 | 4 | 27.1 | 0.73 | yes | 0 | 5 | 1426, 1376, 796, 796, 158 | 5946 / 4811 / 1262 | - | - | 4818 / 5143 |
+| batch | gpu | per-worker | auto | 4 | 25.4 | 0.69 | yes | 0 | 5 | 1426, 1376, 796, 796, 158 | 5847 / 4717 / 1305 | - | - | 5141 / 5313 |
+
+- Service mode at its default (6 workers) is **1.53x** per-worker mode at its default in the same
+  run (0.69 -> 0.45 s/frame), and ~2x CPU batch (0.90 s/frame, earlier bench). Meets the
+  ~1.5x bar; the B0 plan's ~2.8 frames/s (0.36 s/frame) was not reached (2.2 frames/s at best).
+- No CPU fallbacks. Swap flat on the service rows (4787 -> 4819 MiB), rising on the per-worker rows
+  (to 5313 MiB): the RAM pressure B0 found is gone.
+- Memory: service RSS ~1178 / PSS ~933 MiB, VRAM 982 MiB; largest worker RSS ~525 MiB; the halide
+  parent's own CUDA context 158 MiB VRAM (it resolves the device).
+- Constants **not** refit (ruling): `_GPU_SERVICE_HOST_BYTES` + frame = 1205 MiB vs 1178 measured,
+  and the service-mode worker estimate ~876 MiB vs 525 measured — the margin covers a mid-batch
+  service death, when every worker develops on the CPU; 6 vs 8 workers is 0.45 vs 0.44 s/frame.
+
 ### Task B5: Record it
 
-- [ ] `CLAUDE.md`: a "Decisions and why" entry covering:
+- [x] `CLAUDE.md`: a "Decisions and why" entry covering:
   - why one GPU service rather than more frames in VRAM, or threads (with the investigation's
     numbers);
   - the exiftool session;
@@ -374,9 +407,11 @@ reporting the service's and the workers' host memory and VRAM).
   - failure handling;
   - the new worker-count rule and its fitted constant;
   - B0's and B4's measurements.
-- [ ] Update the Architecture tree (`io/exiftool.py`, `shared_frames.py`, `gpu_service.py`),
+- [x] Update the Architecture tree (`io/exiftool.py`, `shared_frames.py`, `gpu_service.py`),
   `docs/README.md`, this plan's status, and the investigation ("acted on").
-- [ ] Commit.
+- [x] Commit. Also done here (parked from the final review): below Python 3.13 `attach_frame`
+  refuses and `sweep` does nothing, instead of a resource-tracker shim that corrupted the shared
+  tracker's bookkeeping.
 
 ---
 

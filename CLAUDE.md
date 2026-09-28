@@ -62,8 +62,10 @@ halide gpu [--install]                         # optional NVIDIA GPU support: wh
 ```
 `invert`/`batch`/`print`/`export`/`contact`/`calibrate` all take `--device auto|cpu|gpu`
 (also `$HALIDE_DEVICE`; default `auto` — GPU whenever one is usable) — see "Decisions and why",
-GPU acceleration. Its tests that need a real card are marked `@pytest.mark.gpu` and skip without
-one; run them with `pytest -m gpu`.
+GPU acceleration. On a GPU, `batch`/`print`/`export` and the contact sheet window share one GPU
+service process between their workers; `HALIDE_GPU_SERVICE=0` (or `off`) makes each worker use the
+GPU itself instead (per-worker mode, the troubleshooting switch). Its tests that need a real card
+are marked `@pytest.mark.gpu` and skip without one; run them with `pytest -m gpu`.
 Tab completion (zsh, bash, fish) sets itself up on the first run from a terminal (see "Decisions
 and why").
 With no calibration source given in a terminal, `invert`/`batch` offer the saved profiles (newest
@@ -110,6 +112,11 @@ src/halide/
   device.py    # ComputeDevice, resolve_device (auto/cpu/gpu, $HALIDE_DEVICE), to_device/to_host,
                # detect_nvidia_driver (card detection without CuPy) — optional GPU acceleration,
                # see "Decisions and why".
+  gpu_service.py # the one GPU process a GPU batch's CPU-only workers share: running_service,
+               # ServiceClient (develop/print_/export), ServiceUnavailable — see "Decisions and
+               # why", GPU service.
+  shared_frames.py # decoded frames in shared memory (/dev/shm) handed between a worker and the
+               # GPU service: new_frame, attach_frame, batch_prefix/sweep.
 ```
 
 The internal working color space is **ACEScg**, chosen (not just used) — the blog is explicit that
@@ -423,9 +430,17 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
       broken exiftool never hangs the batch. Arguments exiftool's argument file can't carry
       verbatim (a line break, leading/trailing white space, a leading `#`) go one-shot.
       `-charset filename=utf8` (needed on Windows) was verified byte-neutral on Linux.
+    - The parent-death signal is set in a `preexec_fn`, which Python warns is unsafe with threads
+      (a session starts lazily, mid-batch, possibly beside CUDA's threads). Accepted: the child
+      only calls `prctl` and `getppid` before exec, and there's no other way to set it.
+    - **On the user's machine it paid off only where one frame runs at a time** (GPU, 1 worker:
+      1.44 -> 1.14 s/frame); multi-worker batches didn't move (CPU 8 workers 0.89 -> 0.89, GPU 2
+      workers 0.92 -> 0.92). Those were limited by RAM (GPU) and by cores/memory bandwidth (CPU),
+      not by exiftool — see the GPU service entry.
 - **GPU acceleration (optional, CuPy) — `docs/plans/gpu-acceleration.md`; verified on the user's
-  RTX 3070 (2026-09-27): all 46 `pytest -m gpu` tests pass, and the GPU is ~20% faster end to end —
-  see the last sub-bullet.**
+  RTX 3070 (2026-09-27): all 46 `pytest -m gpu` tests pass, and the GPU was ~20% faster end to end
+  — see the last sub-bullet. A GPU batch is now ~2x the CPU through one shared GPU service (next
+  entry); the per-worker design described below is its fallback.**
   The user asked for a "thorough investigation ... if it increases performance I'd like it to be on
   by default but able to be disabled." Answered with `--device auto|cpu|gpu` (`auto` = default,
   GPU whenever it's usable).
@@ -532,20 +547,22 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     will check on real hardware (see the last sub-bullet for what to look at if they fail). Its parity
     tests therefore compare the **solved `DensityProfile` within D2**, never the sort order or bin
     membership.
-  - **Batch workers and CUDA/forkserver.** Workers never import cupy inside the forkserver
-    (`_FORKSERVER_PRELOAD` is unchanged — a forked CUDA context is unusable in the child); only a
-    `device_kind` string (`"cpu"`/`"gpu"`) and a VRAM pool-limit number cross the process boundary,
-    and each worker resolves its own `ComputeDevice`/CUDA context and CuPy memory-pool limit
-    (`cupy.get_default_memory_pool().set_limit(size=share)`) on its first GPU job, keeping both warm
-    across frames after that. `default_worker_count` gains a third cap for a GPU device:
-    `memory_free // estimate_worker_device_bytes(jobs)` (`device_worker_cap`), alongside the
-    existing CPU-core and RAM caps — an unusable GPU inside one worker falls that worker back to the
-    CPU with a warning on every frame it develops, rather than crashing the batch. The run sheet's
-    Workers row says "auto-selected to fit free GPU memory" when that cap is what set the count,
-    and an explicit `--workers N` above it gets a warning (`device_budget_warning`, beside the RAM
-    one): each worker's pool share shrinks as N grows, so too many GPU workers mostly means frames
-    redone on the CPU. A GPU worker's *host* RAM is ~3x a CPU worker's (below), so for GPU pools
-    the RAM estimate adds `_GPU_HOST_OVERHEAD_BYTES`.
+  - **Batch workers and CUDA/forkserver — per-worker GPU mode, now the fallback** (the shared GPU
+    service, next entry, is the default; this is what runs when it can't be used). Workers never
+    import cupy inside the forkserver (`_FORKSERVER_PRELOAD` is unchanged — a forked CUDA context
+    is unusable in the child); only a `device_kind` string (`"cpu"`/`"gpu"`) and a VRAM pool-limit
+    number cross the process boundary, and each worker resolves its own `ComputeDevice`/CUDA
+    context and CuPy memory-pool limit (`cupy.get_default_memory_pool().set_limit(size=share)`) on
+    its first GPU job, keeping both warm across frames after that. `default_worker_count` gains a
+    third cap for a GPU device: `memory_free // estimate_worker_device_bytes(jobs)`
+    (`device_worker_cap`), alongside the existing CPU-core and RAM caps — an unusable GPU inside
+    one worker falls that worker back to the CPU with a warning on every frame it develops, rather
+    than crashing the batch. The run sheet's Workers row says "auto-selected to fit free GPU
+    memory" when that cap is what set the count, and an explicit `--workers N` above it gets a
+    warning (`device_budget_warning`, beside the RAM one): each worker's pool share shrinks as N
+    grows, so too many GPU workers mostly means frames redone on the CPU. A GPU worker's *host*
+    RAM is ~3x a CPU worker's (below), so for GPU pools the RAM estimate adds
+    `_GPU_HOST_OVERHEAD_BYTES`.
     - **Constants fitted on the user's RTX 3070** (`docs/plans/gpu-acceleration-bench.py`, plan
       §7), replacing provisional estimates (768 MiB + 4 x frame = 1492 MiB per worker):
       one 181 MiB frame peaked at 821 MiB of CuPy pool with a given profile and 878 MiB with
@@ -557,9 +574,9 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
       CuPy's host-side libraries, ~840 MiB — so `_GPU_HOST_OVERHEAD_BYTES = 1 GiB` is added to the
       RAM estimate for GPU pools (and to `memory_budget_warning`), or a machine with a big card and
       little RAM would be given more workers than its RAM holds. On the user's machine (7.6 GiB
-      RAM, 6.58 GiB VRAM free) RAM is now what limits GPU batch to **4 workers** — the count it ran
-      best at (1/2/4 workers: 53/34/25 s for 37 frames), with no CPU fallbacks; the card alone would
-      allow 5.
+      RAM, 6.58 GiB VRAM free) RAM is what limits per-worker mode to **4 workers** (1/2/4 workers:
+      53/34/25 s for 37 frames), with no CPU fallbacks; the card alone would allow 5. That RAM
+      limit is what the shared service removed.
   - **Test temp files are deleted per test, not kept** (`pyproject.toml`:
     `tmp_path_retention_policy = "failed"`, count 1; `tests/gpu/test_gpu_parity.py` also deletes its
     files after a *failed* test). Found via real use: pytest's default keeps every test's `tmp_path`
@@ -597,6 +614,94 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     increases performance") `auto` stays the default everywhere (D3). Before this sandbox saw a real
     card, every GPU path had only run against the strict fake device; `halide gpu --install` has
     still only run against fakes (the user installed CuPy with pip themselves).
+- **A GPU batch uses one GPU service process shared by CPU-only workers** (`gpu_service.py`,
+  `shared_frames.py`; plan `docs/plans/gpu-batch-throughput.md` Part B, evidence
+  `docs/investigations/gpu-batch-throughput.md`). `batch`, `print`, `export` and the picker's
+  contact sheet window all use it on a GPU. Verified on the user's RTX 3070 (2026-09-28): 63/63
+  `pytest -m gpu`, including 16 service-vs-per-worker tests that require **bit-identical** output
+  (print, flat, `--auto-density`, print stage, export; synthetic and real scans), and a 37-frame
+  batch at 0.45 s/frame against 0.69 for per-worker mode in the same run (1.53x).
+  - **Why not more frames in VRAM at once.** The user's idea was to load many frames onto the card.
+    But GPU work is only ~0.14 s of a 1.44 s one-worker frame (upload 0.066 s, all the arithmetic
+    ~0.045 s, download 0.026 s); the rest is CPU file work (decode ~0.26 s, compress + write
+    ~0.26 s, exiftool ~0.65 s before Part A). One 16-megapixel frame already fills the card (47M
+    values vs 5,888 cores; each pass is memory-bandwidth bound, ~0.85 ms), so two frames at once
+    take twice as long, and one card can keep up with ~7 frames/s. In darkroom terms: a second
+    enlarger doesn't help when the queue is at the wash and the dryer.
+  - **Why not threads in one process.** tifffile decodes/encodes strip by strip (3,266 per scan)
+    holding Python's global lock: measured in memory, decode was 0.33 s/frame on 1 thread and
+    0.47-0.58 s on 2-8. The file work needs separate processes, so sharing one GPU means one GPU
+    process serving CPU-only worker processes, with frames in shared memory.
+  - **Why it was needed (B0, the user's machine, after Part A, per-worker mode).** 1/2/4 workers:
+    44.2/29.9/29.9 s for 37 frames (1.19/1.61/3.24 s per frame per worker). At 4 workers the
+    machine swapped out ~167 MB/s, 29% of CPU time went to the kernel, the CPU was still 34% idle
+    and the GPU busy ~30%: RAM-bound, because every GPU worker carried ~0.8 GiB of CUDA/CuPy host
+    libraries. The disk wasn't the limit (the NVMe writes 1.3 GB/s with `fsync`; a batch needs
+    ~0.45 GB/s). The plan's probe script and its go criterion (an 8-process ceiling of >= 2.8
+    frames/s) were never run; the go was decided on this RAM finding instead.
+  - **How a frame goes.** The worker reads the header, creates a segment (`new_frame`), decodes
+    straight into it (`read_tiff(out=)`), and sends only (name, shape, dtype) plus a picklable
+    request over `multiprocessing.connection` (Unix socket / named pipe, random authkey). The
+    service — started with **spawn**, so CUDA only ever exists in it — attaches, uploads, runs the
+    same `run_device_job`/`run_device_export` as the in-process GPU path, and downloads into the
+    same segment; the worker then compresses, writes and tags. One compute thread runs frames one at
+    a time; each connection has its own reader thread. Same device code on the same card is why
+    service output is bit-identical to per-worker output.
+  - **`/dev/shm` is RAM** (tmpfs; on the user's CachyOS, like `/tmp`). The frames are the workers'
+    working buffers, not extra copies, but they count against RAM and against `/dev/shm`'s own size
+    (64 MiB in a default Docker container). Details that each fixed a real failure:
+    - `os.posix_fallocate` right after creating a segment: tmpfs allocates lazily, so an oversized
+      segment "succeeds" and then kills the process with SIGBUS on first write (reproduced; not
+      catchable). Now it's `SharedMemoryUnavailable`, and that frame is developed on the CPU with
+      a warning.
+    - `np.frombuffer(shm.buf)`, not `np.ndarray(buffer=)`: the latter holds no buffer export, so
+      an array kept past close became a dangling pointer (reproduced segfault).
+    - Segments are named with a per-batch prefix (`batch_prefix`: the pool owner's pid plus a
+      random token). A forkserver pool shares the parent's resource tracker, so a worker killed
+      while holding a frame (OOM killer) leaves its segment until the *parent* exits; `sweep(prefix)`
+      unlinks those. It runs only after the pool and the service have both stopped (every worker
+      shares the prefix, so an earlier sweep would unlink live frames).
+    - The service attaches with `SharedMemory(track=False)` (Python >= 3.13), so its tracker doesn't
+      claim the worker's segment. Below 3.13 `attach_frame` refuses and `sweep` does nothing: an
+      earlier hand-unregister shim dropped the creator's registration from the shared tracker and
+      made it print KeyError tracebacks.
+  - **Failures.** An error on the service's device (out of memory, a driver error) comes back as a
+    reply carrying a `DeviceFailure`; the worker raises `DeviceJobFailed` and redoes the frame on
+    the CPU (`fall_back_to_cpu`, the same warning as the in-process path). A dead, unreachable or
+    stuck service raises `ServiceUnavailable`: at once for a dead one (the connection breaks), after
+    `REQUEST_TIMEOUT` (300 s) for a stuck one. The connection handshake is bounded by the same
+    timeout (a frozen service still completes a Unix-socket connect and then never answers; before
+    that fix, it hung). Startup is bounded (120 s) and cancellable — closing the contact sheet
+    window mid-startup is quiet, not reported as a fallback. The service is never restarted: a
+    client that lost it stays dead, and each later frame in that worker is developed on the CPU
+    with a warning; the batch completes. Once a request was sent, a failure counts as
+    `host_touched` — the service may have half-written the frame, or (stuck) may still write it —
+    so the CPU starts from the scan re-read into a fresh private buffer, and an export's CPU
+    fallback (`export_fallback`) converts into a fresh 8-bit buffer, never the shared output. A
+    stuck request's mapping stays alive in the service until it stops (RAM not counted anywhere;
+    only a stuck service gets there).
+  - **Worker count** (`service_worker_count`): min(physical cores, RAM cap, `/dev/shm` cap, jobs).
+    RAM cap = (available - the service's own memory, `_GPU_SERVICE_HOST_BYTES` 1 GiB + one frame)
+    / (a CPU worker's estimate + its shared frame). No VRAM cap: the card only ever holds the
+    service's one context and one frame. `/dev/shm` cap = 80% of its free space / one frame (an
+    export's 8-bit output too); an explicit `--workers` above either cap gets a warning, and a
+    worker that finds no room develops that frame on the CPU. Measured (B4): service ~1178 MiB RSS
+    / ~933 MiB PSS (estimate 1205 MiB), 982 MiB VRAM; largest worker ~525 MiB RSS (estimate ~876
+    MiB). **Not refit, deliberately**: if the service dies mid-batch, every worker develops on the
+    CPU while still holding its shared frame — about what the estimate covers — and 6 workers
+    (what it picks on 7.6 GiB) vs 8 measured 0.45 vs 0.44 s/frame, so the margin costs little.
+  - **Falls back to per-worker GPU mode** (previous entry), with the reason on the run sheet's
+    Compute row (the contact sheet window prints it), when: Python < 3.13; `/dev/shm` is missing
+    or can't hold one frame; the service doesn't start (including its startup timeout); or
+    `HALIDE_GPU_SERVICE=0`/`off`/`false`/`no` — the troubleshooting switch, also how the bench and
+    the parity tests reach per-worker mode. It never fails the batch.
+  - **Measured (B4, user's RTX 3070, 37 frames of Roll 16, 7.6 GiB RAM available, one run):**
+    service 4 / 8 / auto (6) workers 18.2 / 16.5 / 16.8 s = 0.49 / 0.44 / 0.45 s/frame; per-worker
+    4 / auto (4) 27.1 / 25.4 s = 0.73 / 0.69 s/frame; no CPU fallbacks. Swap stayed flat on the
+    service rows (4787 -> 4819 MiB) and rose on the per-worker rows (to 5313 MiB). For context:
+    per-worker GPU batch was 0.73 s/frame before this plan and CPU batch 0.90 s/frame. The plan's
+    hoped-for ~0.36 s/frame (2.8 frames/s) wasn't reached; 1.53x cleared the user's "~1.5x or
+    discuss" bar, so it was kept. Full table: the plan's Task B4.
 - **`--auto-density-roll` selects neutral candidates per frame, then pools candidates — never pools
   raw pixels across frames first.** The per-channel median used to judge "how neutral is this
   pixel" (`calibration/auto.py::_saturation`) is only a valid proxy for the film's own systematic
@@ -857,8 +962,8 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   `--device`/`$HALIDE_DEVICE` actually resolves to a GPU (`halide.device`, GPU acceleration above)
   — even `halide gpu`'s own status check only uses `ctypes`/`importlib`, not cupy. Workers still get
   everything preloaded except cupy: `colour` is listed in `_FORKSERVER_PRELOAD`, but cupy is
-  deliberately not (a forked CUDA context is unusable in the child; each GPU worker resolves its own
-  device instead). `tests/unit/test_cli_startup.py` fails if building the parser imports any of
+  deliberately not (a forked CUDA context is unusable in the child; the GPU service is spawned and
+  resolves the device itself — or, in per-worker mode, each GPU worker does). `tests/unit/test_cli_startup.py` fails if building the parser imports any of
   them again (`HEAVY` includes `"cupy"`). Outputs unchanged bit-for-bit (verified on real scans:
   invert, export, batch, contact).
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not

@@ -18,8 +18,9 @@ themselves; these hold the reasoning, evidence and designs behind them.
     §7 numbers; `gpu-acceleration-bench.py` times the real `invert`/`batch` on CPU vs. GPU and
     measures a GPU worker's memory — rerun it to refit the worker-count constants on new hardware.
   - `gpu-batch-throughput.md`: one exiftool kept open per worker, and one GPU process shared by
-    CPU-only workers, to make batch faster. Part A (exiftool, Linux only) is implemented; B0
-    measured (go); B1-B4 built, awaiting the user's real-GPU run.
+    CPU-only workers, to make batch faster. Implemented and verified on the user's RTX 3070
+    (63/63 `pytest -m gpu`; GPU batch 0.69 -> 0.45 s/frame against the per-worker mode, which is
+    now the fallback). Results in the plan's Task B0/B4 sections.
 - **`specs/`**: designs agreed but not built yet.
   - `enlarger-skin.md`: the deferred skeuomorphic "enlarger controller" look for the GUI's
     controls.
@@ -27,7 +28,7 @@ themselves; these hold the reasoning, evidence and designs behind them.
   - `anchor-frame.md`: can halide suggest the best frame to calibrate from? It led to the
     multi-point picker. The `check --suggest-anchor` design in it is still unbuilt.
   - `gpu-batch-throughput.md`: why GPU batch is only ~20% faster (the GPU is idle ~90% of the
-    time; exiftool and TIFF I/O dominate), and what would speed it up. Planned in
-    `plans/gpu-batch-throughput.md`.
+    time; exiftool and TIFF I/O dominate), and what would speed it up. Acted on in
+    `plans/gpu-batch-throughput.md` (built; GPU batch ~1.5x faster).
 
 New write-ups go in the matching folder, not the repo root.

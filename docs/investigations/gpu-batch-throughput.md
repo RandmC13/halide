@@ -6,6 +6,18 @@ batch only ~19% faster than CPU batch (0.73 vs 0.90 s/frame). The question: an 8
 of NVIDIA's libraries? Why not load as many frames as fit into VRAM and process them all in
 parallel?
 
+## Acted on (2026-09-28)
+
+Built as `docs/plans/gpu-batch-throughput.md`: Part A (one kept-open exiftool per worker, Linux
+only) and Part B (one GPU service shared by CPU-only workers, frames in shared memory). The disk
+question below was answered first: not the limit (the user's NVMe writes 1.3 GB/s with `fsync`;
+a batch needs ~0.45 GB/s). What limited multi-worker GPU batch was RAM — every GPU worker's own
+CUDA libraries pushed the machine into swap. Outcome on the user's RTX 3070, 37 frames, same run:
+per-worker mode 0.69 s/frame, shared service 0.45 s/frame (1.53x), bit-identical output, no swap
+growth. CPU batch is 0.90 s/frame. The "roughly twice today's GPU batch" guess below wasn't quite
+reached (0.73 -> 0.45 s/frame against the pre-plan number). Details: `CLAUDE.md`, "Decisions and
+why", the GPU service entry.
+
 ## Short answer
 
 The GPU is idle about 90% of the time. The time goes to work that happens on the CPU around each

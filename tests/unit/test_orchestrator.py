@@ -982,7 +982,7 @@ def test_service_mode_worker_count_is_ram_after_the_service_and_shared_memory(tm
 
 def test_on_the_users_machine_service_mode_runs_more_workers_than_per_worker_gpu(tmp_path):
     # 8 physical cores, 7.6 GiB RAM: per-worker GPU mode fits 4 (~1.2 GiB each); CPU-only workers
-    # sharing one service fit more — the point of Part B. (Provisional constants; B4 refits.)
+    # sharing one service fit more — the point of Part B. (Constants measured and kept in B4.)
     jobs = [BatchJob(input_path=tmp_path / f"{i}.tif", output_path=None) for i in range(37)]
     with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
         "halide.batch.orchestrator._shared_frame_bytes", return_value=_FRAME

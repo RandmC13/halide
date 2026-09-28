@@ -88,7 +88,8 @@ _DEVICE_FRAME_MULTIPLIER = 5
 # (and a single GPU `invert` 1209 vs 369 MiB) — CUDA's and CuPy's own host-side libraries, ~840 MiB.
 # Added to the RAM estimate for GPU pools (rounded up to 1 GiB), so a machine with a big card and
 # little RAM isn't given more workers than its RAM holds. On the user's machine (7.6 GiB free) this,
-# not the card, is what limits GPU batch to 4 workers — the count the benchmark ran best at.
+# not the card, is what limits per-worker GPU mode (the fallback when the shared service below
+# can't be used) to 4 workers.
 _GPU_HOST_OVERHEAD_BYTES = 1024 * 1024 * 1024
 
 # The shared GPU service (docs/plans/gpu-batch-throughput.md Part B, halide/gpu_service.py): on a GPU,
@@ -96,9 +97,9 @@ _GPU_HOST_OVERHEAD_BYTES = 1024 * 1024 * 1024
 # workers are CPU-only processes that hand it frames through shared memory (halide/shared_frames.py).
 # The service's own host memory is taken off the RAM budget before sizing the workers:
 # `_GPU_SERVICE_HOST_BYTES` (CUDA's and CuPy's host-side libraries — the measured GPU worker overhead
-# above) plus one frame's working memory, per batch (estimate_service_host_bytes). PROVISIONAL: B0
-# didn't measure the service itself (docs/plans/gpu-batch-throughput.md, "B0 as actually run"); Task
-# B4's benchmark refits it on the user's card.
+# above) plus one frame's working memory, per batch (estimate_service_host_bytes): 1205 MiB for a
+# real 181 MiB frame. Measured on the user's RTX 3070 (Task B4): the service peaked at ~1178 MiB RSS
+# (~933 MiB PSS), so this stands as it is.
 _GPU_SERVICE_HOST_BYTES = _GPU_HOST_OVERHEAD_BYTES
 
 # Shared-memory frames live in /dev/shm on Linux (tmpfs: RAM, but with its own size limit — 64 MiB
@@ -429,7 +430,11 @@ def _workload_constants(workload: str) -> tuple[int, int]:
 def estimate_service_worker_memory_bytes(jobs: list[BatchJob], workload: str = "develop") -> int:
     """One service-mode worker's peak RAM: a CPU worker's (it's a CPU-only process — no CUDA, no
     CuPy) plus its shared frame(s), counted on top even though they're the same working buffer the
-    CPU constants already include — generous on purpose until Task B4 measures it."""
+    CPU constants already include. Deliberately generous and not refit after Task B4 measured
+    ~525 MiB against this ~876 MiB for a real scan: if the service dies mid-batch, every worker
+    develops on the CPU while still holding its shared frame — about what this estimates — and the
+    margin keeps that from swapping. 6 workers (what it picks on 7.6 GiB) vs 8 measured 0.45 vs
+    0.44 s/frame, so little is lost."""
     baseline, multiplier = _workload_constants(workload)
     return estimate_worker_memory_bytes(jobs, baseline_bytes=baseline, multiplier=multiplier) + (
         _shared_frame_bytes(jobs, workload) or 0
