@@ -97,8 +97,10 @@ class ProofRenderer(QThread):
         try:
             # As run_batch: on a GPU, one shared service (or, if it can't be used, a CUDA context
             # per worker). Stopped — and its leftover shared frames swept — only after the pool
-            # below has shut down.
-            with batch_compute(jobs, self._device) as compute:
+            # below has shut down. `cancel=self.isInterruptionRequested` bounds how long closing the
+            # window while the service is still starting has to wait on a slow/hung driver probe
+            # (gpu_service.running_service's own startup poll).
+            with batch_compute(jobs, self._device, cancel=self.isInterruptionRequested) as compute:
                 if compute.fallback_reason:  # to the terminal, like calibrate's Compute line
                     print(console.warning(f"GPU service not used ({compute.fallback_reason}) — each worker "
                                           f"uses the GPU itself instead"))

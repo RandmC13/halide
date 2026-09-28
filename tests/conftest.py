@@ -53,9 +53,9 @@ def _no_real_gpu_service_in_tests(request, monkeypatch):
 
     real = orchestrator._start_service
 
-    def start(kind, initializer):
+    def start(kind, initializer, cancel=None):
         if kind == "gpu" and initializer is None:
             raise ServiceUnavailable("the GPU service isn't started in tests")
-        return real(kind, initializer)
+        return real(kind, initializer, cancel)
 
     monkeypatch.setattr(orchestrator, "_start_service", start)

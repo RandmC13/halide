@@ -18,8 +18,8 @@ themselves; these hold the reasoning, evidence and designs behind them.
     §7 numbers; `gpu-acceleration-bench.py` times the real `invert`/`batch` on CPU vs. GPU and
     measures a GPU worker's memory — rerun it to refit the worker-count constants on new hardware.
   - `gpu-batch-throughput.md`: one exiftool kept open per worker, and one GPU process shared by
-    CPU-only workers, to make batch faster. Part A (exiftool, Linux only) is implemented; Part B
-    awaits the B0 disk/throughput measurement.
+    CPU-only workers, to make batch faster. Part A (exiftool, Linux only) is implemented; B0
+    measured (go); B1-B4 built, awaiting the user's real-GPU run.
 - **`specs/`**: designs agreed but not built yet.
   - `enlarger-skin.md`: the deferred skeuomorphic "enlarger controller" look for the GUI's
     controls.

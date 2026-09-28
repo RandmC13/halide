@@ -141,9 +141,9 @@ def read_tiff_shape(path: str | Path) -> tuple[int, ...]:
     with `read_tiff(path, out=...)`. Reads `series[0].shape`, matching what `tif.asarray()` (what
     `read_tiff` actually decodes) reports — not `pages[0].shape`, which isn't guaranteed to agree
     (see `read_tiff`'s own comment on this). Similar header-only idea to
-    halide.batch.orchestrator._decoded_pixel_bytes, which reads page.shape/page.dtype for the same
-    reason (sizing the worker pool without paying for a decode) but only ever needs a byte count, not
-    an exact shape to allocate."""
+    halide.batch.orchestrator._decoded_pixel_bytes, which reads series[0].shape/series[0].dtype for
+    the same reason (sizing the worker pool without paying for a decode) but only ever needs a byte
+    count, not an exact shape to allocate."""
     with tifffile.TiffFile(path) as tif:
         return tuple(tif.series[0].shape)
 

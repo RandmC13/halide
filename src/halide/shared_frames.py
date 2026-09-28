@@ -1,5 +1,5 @@
 """Full-resolution decoded frames living in shared memory (`/dev/shm` on Linux) instead of a
-process-private heap — Part B of docs/plans/gpu-acceleration.md's "faster batch" work
+process-private heap — Part B of docs/plans/gpu-batch-throughput.md's "faster batch" work
 (docs/investigations/gpu-batch-throughput.md): a CPU-only worker decodes a scan straight into one of
 these buffers, hands its name to a separate GPU service process, and the service attaches to the
 same bytes instead of the frame being pickled/copied through a pipe.
@@ -17,10 +17,17 @@ Two roles, two functions, deliberately not symmetric:
   the OOM killer) before its own `finally` can run — see Review Focus item 5 in the plan.
 - `attach_frame` (the service side): opens an existing segment by name and never unlinks it — the
   creator owns that lifecycle, and the service is just borrowing the bytes for as long as the `with`
-  block runs. It attaches with `track=False` (Python >= 3.13, matching this project's floor) so the
+  block runs. It attaches with `track=False` on Python >= 3.13, where that keyword exists, so the
   *service's own* resource tracker doesn't also register the segment: if it did, the segment would
   have two independent trackers claiming to own its cleanup, defeating the "let the resource tracker
-  clean it up when its creator dies" guarantee above.
+  clean it up when its creator dies" guarantee above. `track=False` itself is a Python 3.13 addition
+  (gh-82300) — this project's own floor is 3.11 (pyproject.toml), not 3.13 — so below 3.13 the same
+  effect (this process's own tracker not double-claiming the segment) is achieved by hand: attach the
+  old way (always tracked) and immediately unregister it (see `_UNTRACKED_ATTACH_SUPPORTED`). The
+  batch orchestrator additionally never starts the shared GPU service at all below 3.13 (a
+  controller ruling, not a hard technical requirement of this module — see
+  `batch/orchestrator.py::batch_compute`'s Python-version fallback), so in practice this shim mostly
+  matters for calling `attach_frame`/`sweep` directly (as the tests do) on an older interpreter.
 
 Review Focus item 5, under the *real* batch topology (found during review, not the first pass):
 a batch's worker pool is a forkserver (or spawn) pool, and every process spawned from it shares the
@@ -47,6 +54,11 @@ from typing import Iterator
 import numpy as np
 
 _NAME_STEM = "halide"
+
+# `SharedMemory(..., track=False)` only exists from Python 3.13 (gh-82300) — passing it on an older
+# interpreter raises TypeError, not just behaving differently. One boolean, not `sys.version_info`
+# inline at every call site, so a test can flip it without patching the interpreter itself.
+_UNTRACKED_ATTACH_SUPPORTED = sys.version_info >= (3, 13)
 
 # Linux only: this is where POSIX shared_memory objects actually live on this platform, and it's
 # the one thing that lets sweep() find a leftover segment by name rather than needing a live handle
@@ -241,8 +253,14 @@ def attach_frame(name: str, shape: tuple[int, ...], dtype) -> Iterator[np.ndarra
     """Attach to an existing segment by name and yield it as an array of `shape`/`dtype` — the
     service side of `new_frame`. Never unlinks: the creator (`new_frame`) owns that. `track=False`
     keeps this process's own resource tracker from also registering the segment (see the module
-    docstring)."""
-    shm = shared_memory.SharedMemory(name=name, create=False, track=False)
+    docstring) — on Python < 3.13, where that keyword doesn't exist at all
+    (`_UNTRACKED_ATTACH_SUPPORTED`), the same segment is attached the old (always-tracked) way and
+    then dropped from this process's own tracker by hand, via `_unregister`."""
+    if _UNTRACKED_ATTACH_SUPPORTED:
+        shm = shared_memory.SharedMemory(name=name, create=False, track=False)
+    else:
+        shm = shared_memory.SharedMemory(name=name, create=False)
+        _unregister(shm._name)
     try:
         yield np.frombuffer(shm.buf, dtype=np.dtype(dtype)).reshape(shape)
     finally:
@@ -286,7 +304,11 @@ def sweep(prefix: str) -> int:
         if not entry.startswith(prefix):
             continue
         try:
-            leftover = shared_memory.SharedMemory(name=entry, create=False, track=False)
+            if _UNTRACKED_ATTACH_SUPPORTED:
+                leftover = shared_memory.SharedMemory(name=entry, create=False, track=False)
+            else:
+                leftover = shared_memory.SharedMemory(name=entry, create=False)
+                _unregister(leftover._name)
         except FileNotFoundError:
             continue
         # This handle never called .buf (no numpy export was ever taken against it), so a plain

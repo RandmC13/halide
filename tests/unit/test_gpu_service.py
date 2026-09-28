@@ -104,6 +104,15 @@ def _fail_at_startup() -> None:
     raise RuntimeError("cudaErrorInsufficientDriver: no usable GPU")
 
 
+def _slow_startup(arrived: str) -> None:
+    """Initializer (bound with functools.partial): touches `arrived` then sleeps well past any
+    test's patience — a driver probe that hangs before the service ever reports ready. Used to
+    check that a `cancel` callback bounds running_service's startup wait instead of it blocking for
+    the full _STARTUP_TIMEOUT."""
+    Path(arrived).touch()
+    time.sleep(60)
+
+
 # --- fixtures and helpers ---------------------------------------------------------------------
 
 
@@ -535,6 +544,44 @@ def test_a_service_that_cannot_start_raises_in_the_parent():
         with running_service("gpu", initializer=_fail_at_startup):
             pytest.fail("should not have started")
     assert time.monotonic() - start < 60
+
+
+def test_a_cancel_callback_bounds_a_hung_startup(tmp_path):
+    """Finding 4, final whole-branch review: closing the picker's contact sheet window while the
+    service is still starting must not wait out the full _STARTUP_TIMEOUT (120 s) on a hung driver
+    probe. `cancel` is polled every _STARTUP_POLL_INTERVAL while running_service waits for the
+    service to report ready; setting it makes the wait give up promptly, and `_stop`'s own bounded
+    termination (it SIGTERMs a process stuck outside its stop-signal wait) is what actually ends the
+    still-starting child, not a graceful reply from it."""
+    arrived = tmp_path / "arrived"
+    cancelled = threading.Event()
+    outcome = []
+
+    def worker():
+        try:
+            with running_service("cpu", initializer=partial(_slow_startup, str(arrived)), cancel=cancelled.is_set):
+                outcome.append("started")
+        except ServiceUnavailable as exc:
+            outcome.append(str(exc))
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    _wait_for(arrived)  # the child is now stuck inside its startup hook, before ever reporting ready
+    started = time.monotonic()
+    cancelled.set()
+    thread.join(15)
+    assert not thread.is_alive()
+    assert time.monotonic() - started < 15  # bounded, not the 60 s sleep or the 120 s startup timeout
+    assert outcome == ["the GPU service's startup was cancelled"]
+
+
+def test_no_cancel_callback_behaves_as_before(tmp_path):
+    """cancel=None (every production caller except the GUI) must still time out the same way it
+    always did — a plain, uncancellable startup wait."""
+    scan_start = time.monotonic()
+    with running_service("cpu") as address:
+        assert address.kind == "cpu"
+    assert time.monotonic() - scan_start < 10
 
 
 _PARENT_SCRIPT = """

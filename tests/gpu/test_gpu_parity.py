@@ -330,7 +330,11 @@ def test_real_scans_roll_auto_density_balance_on_gpu_matches_cpu():
 # Task B4 (docs/plans/gpu-batch-throughput.md): the shared GPU service against the in-process GPU
 # path (per-worker mode, HALIDE_GPU_SERVICE=0), both through the real batch code. Same device code
 # on the same card, so these are held to bit-identity — not to D2: TIFF pixel bytes and provenance
-# (whose "device" is "gpu" on both sides), and export PNG pixels. Any difference is a service bug.
+# (whose "device" is "gpu" on both sides), and export PNG pixels. Any difference is a service bug —
+# except the "auto-density"/"auto-density-flat" develop cases, where per-frame auto calibration's
+# GPU argsort/percentile isn't guaranteed reproducible run to run (see
+# _assert_tiffs_identical_diagnosing_nondeterminism below, which tells the two apart on a mismatch
+# instead of assuming it's always the service).
 #
 # Real-scan outputs don't go to tmp_path: /tmp is RAM on the user's machine, with only a few GiB
 # free, and each output is ~130 MiB. They go to a scratch folder inside the repo (gitignored),
@@ -413,14 +417,71 @@ def _assert_pngs_identical(service_path, in_process_path):
                     f"differ, max {int(diff.max())} code values")
 
 
+def _rerun_per_worker(monkeypatch, scans, folder, stage, profile, tone):
+    """Re-run just the per-worker GPU path into a fresh folder — only ever called to diagnose a
+    service-vs-per-worker mismatch that has already happened (see
+    _assert_tiffs_identical_diagnosing_nondeterminism), never on the happy path."""
+    rerun = folder / "per_worker_rerun"
+    rerun.mkdir(exist_ok=True)
+    jobs = [BatchJob(input_path=s, output_path=rerun / f"{s.stem}.tif") for s in scans]
+    _batch_in_mode(monkeypatch, "per_worker", jobs, "develop", lambda compute: run_batch(
+        jobs, stage, profile, tone, max_workers=_BATCH_WORKERS, device=_DEVICE, compute=compute))
+    return rerun
+
+
+def _assert_tiffs_identical_diagnosing_nondeterminism(per_worker_rerun, folder, profile, name):
+    """service vs per-worker: on a mismatch with no explicit profile ("auto-density"/
+    "auto-density-flat" — per-frame auto calibration, `calibration/auto.py`), the mismatch isn't
+    automatically a service bug: CLAUDE.md records that GPU argsort/percentile ties aren't
+    guaranteed to land the same way as the CPU's, and the same non-associative-reduction /
+    thread-scheduling effect isn't guaranteed to reproduce identically run to run on the GPU either
+    — the service and the per-worker path both run the *same* device code, but as two separate CUDA
+    executions. So before blaming "a service bug", re-run the per-worker path a second time (cheap:
+    only ever done once a mismatch has already happened) and check whether per-worker agrees with
+    its own first run — if it doesn't, the GPU itself wasn't reproducible here and the mismatch is
+    inconclusive, not evidence against the service specifically. `per_worker_rerun` is a
+    zero-argument callable (not the folder itself) so this second run only actually happens once,
+    even if more than one frame in the same batch mismatches."""
+    # _assert_tiffs_identical raises a plain AssertionError for a shape/dtype/provenance mismatch,
+    # but pytest.fail() (the pixel-mismatch path, the one nondeterminism could actually hit) raises
+    # pytest.fail.Exception instead — a BaseException subclass, not an AssertionError — so both must
+    # be caught here.
+    try:
+        _assert_tiffs_identical(folder / "service" / f"{name}.tif", folder / "per_worker" / f"{name}.tif")
+    except (AssertionError, pytest.fail.Exception) as failure:
+        if profile is not None:
+            raise  # no explicit profile == no per-frame auto calibration == no known GPU nondeterminism source
+        rerun = per_worker_rerun()
+        try:
+            _assert_tiffs_identical(rerun / f"{name}.tif", folder / "per_worker" / f"{name}.tif")
+        except (AssertionError, pytest.fail.Exception):
+            pytest.fail(
+                f"{name}: service and per-worker disagree, but per-worker itself wasn't reproducible "
+                f"across two runs on this card — looks like GPU sort/percentile nondeterminism in the "
+                f"per-frame auto calibration, not a service bug. Original failure: {failure}"
+            )
+        pytest.fail(
+            f"{name}: service disagrees with per-worker, and per-worker reproduced itself exactly "
+            f"across two runs — looks like a real service bug, not GPU nondeterminism. Original "
+            f"failure: {failure}"
+        )
+
+
 def _develop_both_ways(monkeypatch, scans, folder, stage, profile, tone):
     for mode in _MODES:
         (folder / mode).mkdir()
         jobs = [BatchJob(input_path=s, output_path=folder / mode / f"{s.stem}.tif") for s in scans]
         _batch_in_mode(monkeypatch, mode, jobs, "develop", lambda compute: run_batch(
             jobs, stage, profile, tone, max_workers=_BATCH_WORKERS, device=_DEVICE, compute=compute))
+    rerun_cache: dict = {}
+
+    def per_worker_rerun():
+        if "path" not in rerun_cache:
+            rerun_cache["path"] = _rerun_per_worker(monkeypatch, scans, folder, stage, profile, tone)
+        return rerun_cache["path"]
+
     for s in scans:
-        _assert_tiffs_identical(folder / "service" / f"{s.stem}.tif", folder / "per_worker" / f"{s.stem}.tif")
+        _assert_tiffs_identical_diagnosing_nondeterminism(per_worker_rerun, folder, profile, s.stem)
 
 
 def _print_both_ways(monkeypatch, flats, folder):

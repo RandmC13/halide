@@ -71,6 +71,51 @@ def test_attach_frame_sees_the_creators_data_and_does_not_unlink():
     assert not _segment_exists(frame.name)
 
 
+def test_attach_frame_works_before_python_3_13_via_manual_unregister():
+    """`SharedMemory(..., track=False)` only exists from Python 3.13 (gh-82300) — this sandbox runs
+    newer, so the gate is patched rather than the interpreter itself
+    (`halide.shared_frames._UNTRACKED_ATTACH_SUPPORTED`, not `sys.version_info`). Below that
+    version, `attach_frame` must still attach successfully (not raise TypeError for an unknown
+    `track` keyword) and must not leave a second, spurious resource_tracker registration for a
+    segment its creator already owns — the module docstring's whole reason `track=False` exists in
+    the first place. Run in a subprocess so a real "leaked shared_memory objects" warning at
+    interpreter exit, if the manual-unregister shim were wrong, shows up as this test's own stderr
+    rather than bleeding into some unrelated test."""
+    result = _run(
+        """
+        import halide.shared_frames as sf
+        sf._UNTRACKED_ATTACH_SUPPORTED = False
+        import numpy as np
+
+        with sf.new_frame((2, 2, 3), np.float32) as frame:
+            frame.array[:] = 5.0
+            with sf.attach_frame(frame.name, frame.shape, frame.dtype) as attached:
+                assert float(attached[0, 0, 0]) == 5.0
+        """
+    )
+    assert result.returncode == 0, f"subprocess crashed (exit {result.returncode}): {result.stderr}"
+    assert "leaked shared_memory" not in result.stderr
+
+
+def test_sweep_works_before_python_3_13_via_manual_unregister(monkeypatch):
+    """Same gate as attach_frame's own pre-3.13 shim (see above), exercised on sweep()'s attach."""
+    import halide.shared_frames as shared_frames_module
+
+    monkeypatch.setattr(shared_frames_module, "_UNTRACKED_ATTACH_SUPPORTED", False)
+    prefix = "sweep-pre313-test-"
+    shm = shared_frames_module.shared_memory.SharedMemory(create=True, size=48, name=f"{prefix}leaked")
+    try:
+        assert _segment_exists(shm.name)
+        removed = sweep(prefix)
+        assert removed == 1
+        assert not _segment_exists(shm.name)
+    finally:
+        try:
+            shm.close()
+        except BufferError:
+            pass
+
+
 def test_shared_frame_descriptor_is_a_plain_picklable_tuple():
     import pickle
 

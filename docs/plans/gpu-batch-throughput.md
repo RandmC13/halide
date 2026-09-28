@@ -244,7 +244,7 @@ the existing bench (`gpu-acceleration-bench.py`, rerun after Part A), `dd` and `
   def read_tiff(path, out: np.ndarray | None = None) -> RawScan   # decodes into `out` when given
   ```
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   - `read_tiff(path, out=buf)` returns pixels identical to `read_tiff(path)` and writes them into
     `buf` (same object) for float32 scans. For uint8/16/32 scans it normalises into `buf`,
     matching today's values exactly.
@@ -254,14 +254,14 @@ the existing bench (`gpu-acceleration-bench.py`, rerun after Part A), `dd` and `
     `SharedMemory` to raise `OSError`).
   - A child process that creates a frame and is killed leaves no segment after the resource
     tracker runs (Linux only; skip elsewhere).
-- [ ] **Step 2: Run, verify they fail.**
-- [ ] **Step 3: Implement.** For float32 input, `tifffile.TiffFile.asarray(out=...)` decodes
+- [x] **Step 2: Run, verify they fail.**
+- [x] **Step 3: Implement.** For float32 input, `tifffile.TiffFile.asarray(out=...)` decodes
   directly into the buffer with no extra copy. For other dtypes, decode then normalise into
   `out` with `np.divide(..., out=)`, using the same arithmetic as today. The header (shape and
   dtype) is read first to size the frame. `SharedMemory(..., track=False)` when attaching
   (Python ≥ 3.13).
-- [ ] **Step 4: Full suite, CPU outputs bit-identical** (test_banding etc. unchanged).
-- [ ] **Step 5: Commit.**
+- [x] **Step 4: Full suite, CPU outputs bit-identical** (test_banding etc. unchanged).
+- [x] **Step 5: Commit.**
 
 ### Task B2: The GPU service process
 
@@ -301,7 +301,7 @@ the existing bench (`gpu-acceleration-bench.py`, rerun after Part A), `dd` and `
   An error inside a request (out of memory etc.) is returned as a reply. The worker then
   develops that frame on the CPU, exactly as `_run_on_device` does today, including the
   re-read-from-disk rule when the failure was during download.
-- [ ] **Step 1: Failing tests** (no GPU needed):
+- [x] **Step 1: Failing tests** (no GPU needed):
   - A `"cpu"`-kind service, in real separate processes, develops, prints and exports frames
     **bit-identical** to calling the CPU functions directly. This proves the IPC and
     shared-memory plumbing across real processes.
@@ -314,8 +314,8 @@ the existing bench (`gpu-acceleration-bench.py`, rerun after Part A), `dd` and `
   - Leaving `running_service` stops the process even when requests are in flight.
   - The module and the service's own imports keep cupy out of the parent
     (`"cupy" not in sys.modules` in the parent after starting a `"gpu"` service with a fake).
-- [ ] **Step 2-4:** run → implement → run, full suite.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2-4:** run → implement → run, full suite.
+- [x] **Step 5: Commit.**
 
 ### Task B3: Workers use the service; the worker count stops being VRAM-bound
 
@@ -324,7 +324,7 @@ the existing bench (`gpu-acceleration-bench.py`, rerun after Part A), `dd` and `
 (its pool), `src/halide/processing.py` (`process_scan`/`print_scan`/`export_delivery_image`
 accept `service: ServiceClient | None`); tests in `tests/unit/test_orchestrator.py`.
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   - On a GPU device, `run_batch` starts one service and the workers get its address, not
     `("gpu", pool_limit)`. No worker resolves a CUDA device: every worker reports no cupy
     import, checked with a real pool and a `"cpu"`-kind service.
@@ -339,8 +339,8 @@ accept `service: ServiceClient | None`); tests in `tests/unit/test_orchestrator.
   - The GUI proof window starts and stops the service with its pool, including when the window
     is closed mid-render.
   - The CPU path is untouched: identical worker args and outputs.
-- [ ] **Step 2-4:** run → implement → run, full suite.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2-4:** run → implement → run, full suite.
+- [x] **Step 5: Commit.**
 
 ### Task B4: Real-GPU verification and the benchmark
 

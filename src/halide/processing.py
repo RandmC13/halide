@@ -150,9 +150,10 @@ def _read_scan(
     working space. Split out for the device path, which uploads the buffer *unconverted* (the
     conversion runs on the GPU) and needs it untouched to start over on the CPU if the GPU fails.
 
-    `out`, if given, is decoded into directly (see halide.io.tiff.read_tiff) — used by the future GPU
-    service path (Task B2) to decode straight into a shared-memory frame instead of this process's
-    own heap. Callers that don't pass `out` see no change in behavior."""
+    `out`, if given, is decoded into directly (see halide.io.tiff.read_tiff) — used by the GPU
+    service path (halide/gpu_service.py, halide/shared_frames.py) to decode straight into a
+    shared-memory frame instead of this process's own heap. Callers that don't pass `out` see no
+    change in behavior."""
     scan = read_tiff(path, out=out)
     if scan.icc_profile is None:
         raise ScanColorError(f"{path}: no embedded ICC profile found; cannot verify color space")
