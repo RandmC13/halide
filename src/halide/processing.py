@@ -21,6 +21,7 @@ from halide import banding
 from halide import device as _device  # to_device/to_host looked up at call time: tests inject a fake
 from halide.banding import map_in_bands
 from halide.calibration.auto import auto_density_balance, roll_auto_density_balance
+from halide.core._xp import array_namespace
 from halide.core.density import apply_density_balance, apply_white_balance
 from halide.core.pipeline import negative_to_positive
 from halide.core.tone_render import ResolvedTone, apply_tone, resolve_tone
@@ -123,7 +124,10 @@ def provenance_json(
             record["film_stock"] = profile.film_stock  # for contact sheets' edge print
     if scan_gain != 1.0:
         record["scan_gain"] = float(scan_gain)
-    return json.dumps({_PROVENANCE_KEY: record})
+    # allow_nan=False (F05): a NaN/inf value here would otherwise be written as a bare, non-standard
+    # `NaN`/`Infinity` token — valid to json.dumps by default, but not valid JSON for any other
+    # reader — so this raises a clear ValueError instead of silently writing a broken file.
+    return json.dumps({_PROVENANCE_KEY: record}, allow_nan=False)
 
 
 def read_provenance(description: str | None) -> dict | None:
@@ -147,7 +151,7 @@ def load_working_space_image(path: str | Path) -> np.ndarray:
     buffer (see halide.banding): converting the whole frame at once held ~5 frames of
     colour-science's float64 temporaries (+900 MiB on a real scan)."""
     image, source_profile = _read_scan(path)
-    return _to_working_space(image, source_profile)
+    return _to_working_space(image, source_profile, name=str(path))
 
 
 def _read_scan(
@@ -179,11 +183,63 @@ def _read_scan(
     return np.require(scan.image, requirements="W"), source_profile
 
 
-def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes: int | None = None):
-    """Convert `image` (host or device array) in place, band by band; a no-op for None."""
+_MAX_NONFINITE_FRACTION = 0.01  # F05: above this, the export itself looks broken, not just noisy
+
+
+def _clean_nonfinite_band(band, xp) -> int:
+    """Count non-finite (NaN/inf) values in `band` and zero them in place — 0 if there are none, so
+    clean input is never touched by `nan_to_num` (bit-identical, F05's hard constraint)."""
+    count = int(xp.count_nonzero(~xp.isfinite(band)))
+    if count:
+        xp.nan_to_num(band, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    return count
+
+
+def _report_nonfinite(name: str, count: int, total: int, on_warning: Callable[[str], None] | None) -> None:
+    """After `_clean_nonfinite_band` has zeroed `count` of `total` values: warn about a few (the
+    reciprocal's MIN_TRANSMITTANCE floor then prints them as the brightest white, and the print
+    fit's percentiles are robust to a handful) — or fail the frame outright above
+    `_MAX_NONFINITE_FRACTION`, since that many means the export is broken, not the scan (F05)."""
+    fraction = count / total
+    if fraction > _MAX_NONFINITE_FRACTION:
+        raise ScanColorError(
+            f"{name}: {fraction * 100:.1f}% of its pixels aren't valid numbers - this export looks "
+            f"broken; re-export it from the raw converter."
+        )
+    _warn(on_warning, f"{name}: {count} pixels weren't valid numbers (NaN/inf) and were treated as "
+                      f"clear film. If this is more than a handful, check the raw converter's export.")
+
+
+def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes: int | None = None,
+                      *, name: str | None = None, on_warning: Callable[[str], None] | None = None):
+    """Convert `image` (host or device array) in place, band by band; a no-op for None.
+
+    Also where non-finite (NaN/inf) pixels are handled (F05): a raw converter's export can contain
+    a few, e.g. from a highlight-recovery artifact. Counted and zeroed per band — only on a band
+    that actually has any, so clean input costs nothing extra and stays bit-identical — before they
+    can poison invert()'s reciprocal, the print fit's percentiles, or the JSON provenance with NaN.
+    `name`/`on_warning` are None for callers with no live warning channel (thumbnails, previews,
+    the roll density pre-pass): cleaning still happens, just without a message naming the file."""
     if source_profile is None:
         return image
-    return map_in_bands(image, lambda band: convert_to_working_space(band, source_profile), band_bytes=band_bytes)
+    xp = array_namespace(image)
+    counts: list[int] = []
+
+    def convert(band):
+        # A NaN/inf input propagates through the profile matmul (e.g. inf * -coef + inf = NaN) and
+        # numpy warns about it ("invalid value encountered in matmul") every time — noise once this
+        # is an intentionally handled case, not a bug, so it's suppressed here rather than left to
+        # print on every real occurrence; np.errstate is thread-local/scoped, not a global change.
+        with np.errstate(invalid="ignore"):
+            converted = convert_to_working_space(band, source_profile)
+        counts.append(_clean_nonfinite_band(converted, xp))
+        return converted
+
+    result = map_in_bands(image, convert, band_bytes=band_bytes)
+    total = sum(counts)
+    if total:
+        _report_nonfinite(name if name is not None else str(image.shape), total, image.size, on_warning)
+    return result
 
 
 def process_scan(
@@ -250,7 +306,7 @@ def process_scan(
                 developed, image = _run_on_device(input_path, image, device, develop_request, request, on_warning)
                 used_device = "gpu" if developed is not None else "cpu"
             if developed is None:
-                developed = develop_request(image, request)
+                developed = develop_request(image, request, name=str(input_path), on_warning=on_warning)
             resolved, profile = developed
 
             record = provenance_json(resolved, profile, scan_gain, used_device) if resolved is not None else None
@@ -359,14 +415,20 @@ class ExportRequest:
     shape and a future export option has somewhere to go."""
 
 
-def develop_request(frame, request: DevelopRequest, band_bytes: int | None = None
+def develop_request(frame, request: DevelopRequest, band_bytes: int | None = None, *,
+                    name: str | None = None, on_warning: Callable[[str], None] | None = None
                     ) -> tuple[ResolvedTone | None, DensityProfile]:
     """All of process_scan's arithmetic, in place on `frame` — the decoded, not yet converted scan,
     as a host (numpy) array or a device (CuPy) array. One implementation for the CPU, the
     in-process GPU path and the GPU service: core/ picks the array library from the array
     (core/_xp.py), so the GPU runs exactly the CPU's steps in the CPU's order, and the CPU path is
-    the code it always was. Returns (tone used, profile used)."""
-    _to_working_space(frame, request.source_profile, band_bytes)
+    the code it always was. Returns (tone used, profile used).
+
+    `name`/`on_warning`: see _to_working_space (F05's non-finite handling). The GPU service calls
+    this with neither (it runs in its own process, with no live callback to report through), so a
+    frame developed that way cleans non-finite pixels silently rather than warning about them — a
+    known, narrow gap, no worse than the pre-existing one for auto-density's own warnings.warn."""
+    _to_working_space(frame, request.source_profile, band_bytes, name=name, on_warning=on_warning)
     if request.scan_gain != 1.0:
         # A scalar of the frame's own dtype: the multiply stays in float32, and a scalar (unlike a
         # 0-d numpy array) is accepted as an operand by a device array too.
@@ -389,10 +451,11 @@ def develop_request(frame, request: DevelopRequest, band_bytes: int | None = Non
     return _develop_in_place(frame, profile, request.tone_params, band_bytes), profile
 
 
-def print_request(frame, request: PrintRequest, band_bytes: int | None = None) -> ResolvedTone:
+def print_request(frame, request: PrintRequest, band_bytes: int | None = None, *,
+                  name: str | None = None, on_warning: Callable[[str], None] | None = None) -> ResolvedTone:
     """print_scan's whole print stage in place on `frame` (host or device array) — see
     develop_request."""
-    _to_working_space(frame, request.source_profile, band_bytes)
+    _to_working_space(frame, request.source_profile, band_bytes, name=name, on_warning=on_warning)
     if request.scale is not None:
         frame /= frame.dtype.type(request.scale)  # a scalar of the frame's dtype: see develop_request
     print_params = request.print_params
@@ -556,15 +619,18 @@ def export_fallback(input_path, acescg_image: np.ndarray, failure: DeviceFailure
 
 def _run_on_device(input_path, host: np.ndarray, device: ComputeDevice | None, job, request, on_warning):
     """Run `job(frame, request, band_bytes)` on a GPU copy of `host` and download the result into
-    `host` (see run_device_job).
+    `host` (see run_device_job). `job` is bound with `name`/`on_warning` first (F05's non-finite
+    handling) — this runs in-process (unlike the GPU service), so the caller's own warning channel
+    is still reachable here.
 
     Returns (job's result, host), or (None, host) when there's no GPU to use or it failed — then
     `host` is the decoded, unconverted scan, ready for the CPU to start over on (read again from
     disk if the failure came during the download; see fall_back_to_cpu)."""
     if device is None or device.kind != "gpu":
         return None, host
+    bound_job = functools.partial(job, name=str(input_path), on_warning=on_warning)
     try:
-        return run_device_job(host, job, request), host
+        return run_device_job(host, bound_job, request), host
     except DeviceJobFailed as failed:
         return None, fall_back_to_cpu(input_path, host, failed.failure, on_warning)
 
@@ -666,7 +732,7 @@ def print_scan(
                 resolved, image = _run_on_device(input_path, image, device, print_request, request, on_warning)
                 used_device = "gpu" if resolved is not None else "cpu"
             if resolved is None:
-                resolved = print_request(image, request)
+                resolved = print_request(image, request, name=str(input_path), on_warning=on_warning)
             write_tiff(tmp_path, image, icc_profile=output_profile_bytes())
             del image, frame  # before exiftool runs — see process_scan
         try:

@@ -22,6 +22,7 @@ standard viewer shows solid white.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -165,6 +166,15 @@ def fit_print(
     """
     shadow_point, highlight_point = paper_exposure_range(curve)
     d_lo, d_hi = negative_density_range(positive_linear)
+    if not (math.isfinite(d_lo) and math.isfinite(d_hi)):
+        # Defence in depth (F05): the working-space boundary already cleans NaN/inf pixels, so this
+        # should be unreachable in the normal pipeline — but a caller feeding fit_print directly, or
+        # a frame that somehow got here uncleaned, must fail clearly rather than print a paper grade
+        # or exposure that silently comes out NaN.
+        raise ValueError(
+            "couldn't fit the print: this frame's density range isn't a valid number (NaN/inf) — "
+            "check it for non-finite pixels"
+        )
     if contrast is None:
         span = d_hi - d_lo
         contrast = MAX_PRINT_CONTRAST if span <= 0 else min((highlight_point - shadow_point) / span, MAX_PRINT_CONTRAST)
@@ -205,6 +215,12 @@ def estimate_linear_scale(
     # instead, and the linear output then differs in the last bit on some frames (30 of 200 random
     # float32 frames when checked). On a GPU it is a 0-d device array; float() it at the host.
     highlight = array_namespace(positive_linear).percentile(positive_linear, highlight_percentile)
+    if not math.isfinite(float(highlight)):
+        # Defence in depth (F05) — see fit_print's matching guard.
+        raise ValueError(
+            "couldn't work out a linear exposure scale: this frame's highlight statistic isn't a "
+            "valid number (NaN/inf) — check it for non-finite pixels"
+        )
     if highlight <= 0:
         return 1.0
     return target_value / highlight
