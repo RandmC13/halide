@@ -213,7 +213,7 @@ def test_closing_the_window_mid_render_stops_the_workers_and_the_service(proof_w
 
 
 def test_closing_the_window_while_the_service_is_still_starting_does_not_hang(proof_window, monkeypatch, tmp_path,
-                                                                              services):
+                                                                              services, capsys):
     """Finding 4, final whole-branch review: closing the contact sheet window while the service is
     still starting (a hung driver probe) used to wait on gpu_service's full startup timeout (120 s).
     ProofRenderer.run passes cancel=self.isInterruptionRequested into batch_compute, so this must now
@@ -239,3 +239,5 @@ def test_closing_the_window_while_the_service_is_still_starting_does_not_hang(pr
     assert time.monotonic() - started < 15  # bounded, not the 60 s startup hook or the 120 s timeout
     renderer.frameDone.emit.assert_not_called()
     assert services == []  # the service never got as far as reporting ready
+    # A cancellation isn't a fallback: no "GPU service not used ... each worker uses the GPU" line.
+    assert "GPU service not used" not in capsys.readouterr().out

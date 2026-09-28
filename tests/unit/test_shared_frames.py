@@ -71,49 +71,51 @@ def test_attach_frame_sees_the_creators_data_and_does_not_unlink():
     assert not _segment_exists(frame.name)
 
 
-def test_attach_frame_works_before_python_3_13_via_manual_unregister():
+def test_attach_frame_refuses_before_python_3_13_and_leaves_the_tracker_alone():
     """`SharedMemory(..., track=False)` only exists from Python 3.13 (gh-82300) — this sandbox runs
-    newer, so the gate is patched rather than the interpreter itself
-    (`halide.shared_frames._UNTRACKED_ATTACH_SUPPORTED`, not `sys.version_info`). Below that
-    version, `attach_frame` must still attach successfully (not raise TypeError for an unknown
-    `track` keyword) and must not leave a second, spurious resource_tracker registration for a
-    segment its creator already owns — the module docstring's whole reason `track=False` exists in
-    the first place. Run in a subprocess so a real "leaked shared_memory objects" warning at
-    interpreter exit, if the manual-unregister shim were wrong, shows up as this test's own stderr
-    rather than bleeding into some unrelated test."""
+    newer, so the gate is patched (`halide.shared_frames._UNTRACKED_ATTACH_SUPPORTED`), not the
+    interpreter. Below that version there is no correct way to attach: an earlier shim attached
+    tracked and unregistered by hand, which, with the one resource tracker a batch's processes
+    share, also dropped the *creator's* registration and made the tracker print KeyError
+    tracebacks. So attach_frame must refuse with SharedMemoryUnavailable (a caller's usual "develop
+    on the CPU" path), and the creator's own cleanup must still be silent. In a subprocess, so the
+    tracker's own stderr (it shares the child's) is part of what's checked."""
     result = _run(
         """
+        import numpy as np
         import halide.shared_frames as sf
         sf._UNTRACKED_ATTACH_SUPPORTED = False
-        import numpy as np
 
         with sf.new_frame((2, 2, 3), np.float32) as frame:
-            frame.array[:] = 5.0
-            with sf.attach_frame(frame.name, frame.shape, frame.dtype) as attached:
-                assert float(attached[0, 0, 0]) == 5.0
+            try:
+                with sf.attach_frame(frame.name, frame.shape, frame.dtype):
+                    raise SystemExit("attached below 3.13")
+            except sf.SharedMemoryUnavailable as exc:
+                assert "3.13" in str(exc), exc
+            name = frame.name
+        print(name)
         """
     )
-    assert result.returncode == 0, f"subprocess crashed (exit {result.returncode}): {result.stderr}"
-    assert "leaked shared_memory" not in result.stderr
+    assert result.returncode == 0, f"subprocess failed (exit {result.returncode}): {result.stderr}"
+    assert result.stderr == ""
+    assert not _segment_exists(result.stdout.strip().splitlines()[-1])
 
 
-def test_sweep_works_before_python_3_13_via_manual_unregister(monkeypatch):
-    """Same gate as attach_frame's own pre-3.13 shim (see above), exercised on sweep()'s attach."""
+def test_sweep_does_nothing_before_python_3_13(monkeypatch):
+    """Same gate: opening a leftover to unlink it would register it with the shared tracker, so
+    below 3.13 sweep returns 0 and leaves /dev/shm alone (nothing there creates batch frames: the
+    orchestrator doesn't start the GPU service below 3.13)."""
     import halide.shared_frames as shared_frames_module
 
     monkeypatch.setattr(shared_frames_module, "_UNTRACKED_ATTACH_SUPPORTED", False)
     prefix = "sweep-pre313-test-"
     shm = shared_frames_module.shared_memory.SharedMemory(create=True, size=48, name=f"{prefix}leaked")
     try:
+        assert sweep(prefix) == 0
         assert _segment_exists(shm.name)
-        removed = sweep(prefix)
-        assert removed == 1
-        assert not _segment_exists(shm.name)
     finally:
-        try:
-            shm.close()
-        except BufferError:
-            pass
+        shm.close()
+        shm.unlink()
 
 
 def test_shared_frame_descriptor_is_a_plain_picklable_tuple():
@@ -200,6 +202,7 @@ def test_array_kept_past_the_with_block_stays_valid_and_the_segment_name_is_gone
         """
     )
     assert result.returncode == 0, f"subprocess crashed (exit {result.returncode}): {result.stderr}"
+    assert result.stderr == ""
     name = result.stdout.strip().splitlines()[-1]
     assert not _segment_exists(name)
 
@@ -326,9 +329,7 @@ def test_sweep_removes_a_sigkilled_pool_workers_segment_with_no_resource_tracker
     values = dict(line.split(" ", 1) for line in lines)
     assert values["removed"] == "1"
     assert not _segment_exists(values["name"])
-    stderr_lower = result.stderr.lower()
-    assert "leaked" not in stderr_lower, result.stderr
-    assert "resource_tracker" not in stderr_lower, result.stderr
+    assert result.stderr == ""  # no "leaked shared_memory" warning, no tracker traceback
 
 
 # --- Task B3 carry-over fixes -----------------------------------------------------------------
@@ -365,7 +366,7 @@ def test_a_frame_already_swept_by_name_still_closes_cleanly_with_no_tracker_nois
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
-    assert "leaked" not in result.stderr.lower() and "Traceback" not in result.stderr, result.stderr
+    assert result.stderr == ""  # no "leaked" warning, no tracker traceback
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
@@ -384,5 +385,5 @@ def test_sweeping_a_segment_this_processs_tracker_never_registered_prints_nothin
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "1"
-    assert "KeyError" not in result.stderr and "Traceback" not in result.stderr, result.stderr
+    assert result.stderr == ""  # no tracker KeyError traceback
     assert not _segment_exists("orphan-sweep-test-x")
