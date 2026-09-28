@@ -63,6 +63,24 @@ def test_host_rss_poller_reports_the_gpu_service_on_its_own(bench):
     assert not bench._is_gpu_service([sys.executable, "-c", "from multiprocessing.forkserver import main"])
 
 
+def test_where_workers_are_spawned_too_nothing_is_attributed_to_the_service(bench):
+    """Windows: no forkserver, so the pool's workers are spawned like the service and the cmdline
+    can't tell them apart — the poller must not guess (the service columns then read "unknown")."""
+    from halide.gpu_service import running_service
+
+    with running_service("cpu") as address:
+        poller = bench._HostRssPoller(os.getpid(), identify_service=False)
+        poller.sample()
+    assert poller.service_pids == set() and poller.service_rss == 0
+    assert poller.peak_process > 0
+
+
+def test_the_service_is_identifiable_exactly_where_the_pool_uses_forkserver(bench):
+    from halide.batch.orchestrator import _pool_context
+
+    assert bench._SERVICE_IDENTIFIABLE == (_pool_context() is not None)
+
+
 def test_host_rss_poller_sees_a_process_and_its_children(bench):
     child = "import subprocess, sys, time; p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)']); time.sleep(3); p.wait()"
     proc = subprocess.Popen([sys.executable, "-c", child])
