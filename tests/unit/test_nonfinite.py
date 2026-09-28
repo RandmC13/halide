@@ -57,6 +57,11 @@ def _write_negative(path, seed=1, bad_slice=None, bad_value=np.nan, bad_fraction
     return img
 
 
+def _write_negative_file(path, seed=1):
+    _write_negative(path, seed=seed)
+    return path
+
+
 def test_one_nan_pixel_invert_succeeds_and_warns(tmp_path):
     scan = tmp_path / "nan.tif"
     # One bad raw value corrupts all 3 of that pixel's channels once the ICC conversion's matrix
@@ -175,6 +180,13 @@ def test_over_one_percent_nonfinite_through_service_raises_plainly_no_retry(tmp_
                 client.develop(frame, request, name=str(scan))
             assert not isinstance(excinfo.value, DeviceJobFailed)
         assert "aren't valid numbers - this export looks broken" in str(excinfo.value)
+        # An input error is a whole, in-step reply: F06's "any interruption kills the client" rule
+        # must not catch it, so the same client goes on to develop the next frame.
+        good, _ = _read_scan(_write_negative_file(tmp_path / "good.tif", seed=10))
+        with new_frame(good.shape, good.dtype) as frame:
+            frame.array[...] = good
+            reply = client.develop(frame, request, name="good.tif")
+        assert reply.resolved is not None
 
 
 def test_service_reports_nonfinite_warning_without_printing(tmp_path, capsys, fake_gpu):

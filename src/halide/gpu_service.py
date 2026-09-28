@@ -36,13 +36,14 @@ from __future__ import annotations
 import functools
 import os
 import queue
-import signal
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from multiprocessing import connection, get_context
+
+from halide.interrupts import children_ignore_terminal_signals, ignore_terminal_signals
 
 # How long a worker waits for one reply before treating the service as stuck. Generous: a frame
 # takes ~0.14 s of GPU time, but the queue may hold one frame per worker ahead of it, and a first
@@ -193,6 +194,15 @@ class ServiceClient:
                 # request's shared buffers can be trusted any more.
                 raise self._give_up(f"the GPU service stopped responding ({_describe(exc)})",
                                     host_touched=True) from exc
+            except BaseException as exc:
+                # F06: anything else here — Ctrl-C (KeyboardInterrupt) during poll/recv, above all —
+                # leaves a reply still owed on this connection, so the next request would read this
+                # one's reply and its own frame would be written out undeveloped. Any doubt means
+                # dead, as for a timeout; the original exception carries on (the caller is
+                # cancelling, not falling back).
+                self._give_up(f"a request to the GPU service was interrupted ({_describe(exc)})",
+                              host_touched=True)
+                raise
         if status == "ok":
             return payload
         if status == "input_error":
@@ -445,8 +455,10 @@ def _service_main(device_kind: str, where: tuple[str | tuple, str, bytes],
     """The spawned service process. Reports ("ready", address) or ("error", text) on `status`,
     then serves until the parent says stop — or goes away (EOF), so a crashed parent never leaves
     a service holding the GPU."""
-    # Ctrl-C reaches the whole process group; the parent decides when the service stops.
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    # Ctrl-C and SIGHUP (the terminal closing) reach the whole process group; the parent decides
+    # when the service stops (halide.interrupts). Already ignored from start-up when the parent
+    # launched it inside children_ignore_terminal_signals; this covers any other launch.
+    ignore_terminal_signals()
     try:
         if initializer is not None:
             initializer()
@@ -521,7 +533,8 @@ def running_service(device_kind: str, *, initializer: Callable[[], None] | None 
     parent_status, child_status = context.Pipe()
     process = context.Process(target=_service_main, args=(device_kind, where, initializer, child_status),
                               name="halide-gpu-service", daemon=True)
-    process.start()
+    with children_ignore_terminal_signals():
+        process.start()
     child_status.close()
     try:
         address = _wait_for_ready(parent_status, cancel)

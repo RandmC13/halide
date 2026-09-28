@@ -305,22 +305,61 @@ def sweep(prefix: str) -> int:
         entries = os.listdir(_SHM_DIR)
     except OSError:
         return 0
-    removed = 0
+    return sum(_remove(entry) for entry in entries if entry.startswith(prefix))
+
+
+def prefix_pid(name: str) -> int | None:
+    """The pid a halide segment name (or prefix) was made by — `halide-<pid>-…`, both
+    `batch_prefix()`'s and `_standalone_prefix()`'s format — or None for anything else. One place
+    to parse the name, so a change to the prefix format changes it here alone."""
+    stem, sep, rest = name.partition("-")
+    if stem != _NAME_STEM or not sep:
+        return None
+    digits, sep, _ = rest.partition("-")
+    if not sep or not (digits.isascii() and digits.isdigit()):
+        return None
+    return int(digits)
+
+
+def sweep_stale() -> int:
+    """Unlink every halide segment whose creating process is no longer running (F12): what a
+    batch killed outright (a whole-group SIGKILL, the OOM killer taking the parent) left behind —
+    nothing that died could run its own `sweep`, and the shared resource tracker died with it.
+    Without this such a segment holds RAM (/dev/shm is tmpfs) until reboot, and shrinks every
+    later batch's /dev/shm cap. Run at the start of every GPU batch, before that cap is measured.
+    A live process's segments are never touched (a batch running beside this one, a test); a pid
+    that has been reused by an unrelated process just keeps its leftover until a later run.
+    Returns how many segments were removed. Same platform and Python limits as `sweep`."""
+    if sys.platform != "linux" or not _UNTRACKED_ATTACH_SUPPORTED:
+        return 0
+    try:
+        entries = os.listdir(_SHM_DIR)
+    except OSError:
+        return 0
+    import psutil
+
+    stale = []
     for entry in entries:
-        if not entry.startswith(prefix):
-            continue
-        try:
-            leftover = shared_memory.SharedMemory(name=entry, create=False, track=False)
-        except FileNotFoundError:
-            continue
-        # This handle never called .buf (no numpy export was ever taken against it), so a plain
-        # close() is always safe here — unlike new_frame/attach_frame's own cleanup.
-        try:
-            leftover.unlink()
-        except FileNotFoundError:
-            leftover.close()  # removed by someone else between the open and here: theirs to track
-            continue
-        _unregister(f"/{entry}")
-        leftover.close()
-        removed += 1
-    return removed
+        pid = prefix_pid(entry)
+        if pid is not None and not psutil.pid_exists(pid):
+            stale.append(entry)
+    return sum(_remove(entry) for entry in stale)
+
+
+def _remove(entry: str) -> bool:
+    """Unlink the segment `entry` (a name in /dev/shm) on behalf of a process that's gone; whether
+    this call removed it."""
+    try:
+        leftover = shared_memory.SharedMemory(name=entry, create=False, track=False)
+    except FileNotFoundError:
+        return False
+    # This handle never called .buf (no numpy export was ever taken against it), so a plain
+    # close() is always safe here — unlike new_frame/attach_frame's own cleanup.
+    try:
+        leftover.unlink()
+    except FileNotFoundError:
+        leftover.close()  # removed by someone else between the open and here: theirs to track
+        return False
+    _unregister(f"/{entry}")
+    leftover.close()
+    return True

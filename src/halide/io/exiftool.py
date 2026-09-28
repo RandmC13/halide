@@ -304,13 +304,21 @@ def _fits_argument_file(args: list[str]) -> bool:
     return True
 
 
-def _one_shot(args: list[str]) -> bool:
-    """The original call, unchanged: a fresh exiftool for this one command."""
+def _one_shot(args: list[str], written: str | Path | None = None) -> bool:
+    """The original call: a fresh exiftool for this one command — bounded by the same timeout as a
+    session request (F17), so an exiftool that hangs on a file (a stalled network share) can't hang
+    the batch after the session has already given up on it. On timeout it is killed (by
+    subprocess.run itself), its temporary file removed, and ExifToolError raised: the frame's
+    pixels are already written, so the caller reports it as metadata that couldn't be copied."""
     try:
-        subprocess.run([EXECUTABLE, *args], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([EXECUTABLE, *args], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=DEFAULT_TIMEOUT)
         return True
     except FileNotFoundError:
         return False
+    except subprocess.TimeoutExpired:
+        _remove_leftover(written)
+        raise ExifToolError(f"exiftool didn't answer within {DEFAULT_TIMEOUT:g} s") from None
 
 
 def _remove_leftover(written: str | Path | None) -> None:
@@ -326,10 +334,10 @@ def execute(args: list[str], written: str | Path | None = None) -> bool:
     Returns False if exiftool isn't installed. `written` is the file the command rewrites, so a
     temporary file left by a killed exiftool can be cleared before the command is retried."""
     if not _fits_argument_file(args):
-        return _one_shot(args)
+        return _one_shot(args, written)
     current = session()
     if current is None:
-        return _one_shot(args)
+        return _one_shot(args, written)
     try:
         current.run(args)
         return True
@@ -338,7 +346,7 @@ def execute(args: list[str], written: str | Path | None = None) -> bool:
         _discard(current, give_up=False)
     restarted = session()
     if restarted is None:
-        return _one_shot(args)
+        return _one_shot(args, written)
     try:
         restarted.run(args)
         return True
@@ -346,4 +354,4 @@ def execute(args: list[str], written: str | Path | None = None) -> bool:
         # Twice in a row: don't restart for every remaining frame of this process.
         _remove_leftover(written)
         _discard(restarted, give_up=True)
-    return _one_shot(args)
+    return _one_shot(args, written)

@@ -14,7 +14,15 @@ from textwrap import dedent
 import numpy as np
 import pytest
 
-from halide.shared_frames import SharedMemoryUnavailable, attach_frame, batch_prefix, new_frame, sweep
+from halide.shared_frames import (
+    SharedMemoryUnavailable,
+    attach_frame,
+    batch_prefix,
+    new_frame,
+    prefix_pid,
+    sweep,
+    sweep_stale,
+)
 
 
 def _segment_exists(name: str) -> bool:
@@ -387,3 +395,53 @@ def test_sweeping_a_segment_this_processs_tracker_never_registered_prints_nothin
     assert result.stdout.strip() == "1"
     assert result.stderr == ""  # no tracker KeyError traceback
     assert not _segment_exists("orphan-sweep-test-x")
+
+
+def _dead_pid() -> int:
+    """The pid of a process that has run and been reaped — no longer running."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+@pytest.mark.parametrize(
+    "name, pid",
+    [
+        ("halide-1234-5aafe945-2e7234167abf465f8f74f90a03b33524", 1234),  # batch_prefix() + uuid
+        ("halide-1234-5aafe945-", 1234),  # batch_prefix() itself
+        ("halide-77-2e7234167abf465f8f74f90a03b33524", 77),  # _standalone_prefix() + uuid
+        ("halide-1234", None),  # no separator after the pid
+        ("halide--abc", None),
+        ("halide-12a4-x", None),
+        ("halide-²-x", None),  # a Unicode digit isn't a pid
+        ("sem.halide-1234-x", None),
+        ("other-1234-x", None),
+        ("", None),
+    ],
+)
+def test_prefix_pid_reads_the_creators_pid_from_a_segment_name(name, pid):
+    assert prefix_pid(name) == pid
+
+
+def test_prefix_pid_reads_this_modules_own_prefixes():
+    import os
+
+    assert prefix_pid(batch_prefix()) == os.getpid()
+    with new_frame((1, 1, 3), np.float32) as frame:
+        assert prefix_pid(frame.name) == os.getpid()
+
+
+@pytest.mark.skipif(sys.platform != "linux" or sys.version_info < (3, 13), reason="/dev/shm sweep, Python 3.13+")
+def test_sweep_stale_removes_a_dead_processs_segment_and_leaves_live_ones():
+    """F12 (review 2.4-2): a batch killed outright (whole-group SIGKILL, closing the terminal)
+    leaves its frames in /dev/shm, which is RAM, until reboot. A dead creator's segments go; a
+    live process's never do."""
+    dead = shared_memory.SharedMemory(create=True, size=48, name=f"halide-{_dead_pid()}-deadbeef-{time.time_ns()}",
+                                      track=False)
+    try:
+        with new_frame((2, 2, 3), np.float32) as live, new_frame((2, 2, 3), np.float32, prefix=batch_prefix()) as ours:
+            assert sweep_stale() >= 1
+            assert not _segment_exists(dead.name)
+            assert _segment_exists(live.name) and _segment_exists(ours.name)
+    finally:
+        dead.close()

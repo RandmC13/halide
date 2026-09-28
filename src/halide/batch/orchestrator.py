@@ -22,6 +22,7 @@ import multiprocessing
 import os
 import shutil
 import sys
+import time
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
@@ -31,6 +32,7 @@ from typing import Callable
 
 from halide.core.types import DensityProfile, Stage, ToneCurveParams
 from halide.device import ComputeDevice
+from halide.interrupts import cancel_on_hangup_and_term, children_ignore_terminal_signals, ignore_terminal_signals
 from halide.io.contact_sheet_defaults import DEFAULT_FRAME_WIDTH
 
 # tifffile and halide.processing (numpy, Pillow, colour-science) are imported inside the functions
@@ -521,6 +523,11 @@ def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: 
     if device is None or device.kind != "gpu":
         yield BatchCompute(device=device, workload=workload)
         return
+    from halide.shared_frames import sweep_stale
+
+    # F12: frames a batch killed outright left behind (nothing of it survived to sweep them) —
+    # first, so the /dev/shm cap below counts the space they held as free.
+    sweep_stale()
     if not _service_python_supported():
         yield BatchCompute(device=device, workload=workload,
                            fallback_reason="the shared GPU service needs Python 3.13 or newer")
@@ -540,6 +547,10 @@ def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: 
     from halide.shared_frames import batch_prefix, sweep
 
     with contextlib.ExitStack() as stack:
+        # F12: while the service runs, closing the terminal (SIGHUP) or SIGTERM cancels like Ctrl-C
+        # (KeyboardInterrupt), so the unwinding below still stops the service and sweeps. Entered
+        # first, so it is the last thing undone.
+        stack.enter_context(cancel_on_hangup_and_term())
         prefix = batch_prefix()
         # Registered before the service is entered, so — since an ExitStack unwinds last-registered
         # first (LIFO) — this callback is the *last* thing to run on the way out: the service (entered
@@ -771,6 +782,20 @@ def _thumbnail_worker(job: BatchJob, thumbnail_long_edge: int) -> BatchResult:
 _FORKSERVER_PRELOAD = ["__main__", "halide.processing", "colour"]
 
 
+def _start_forkserver(context) -> None:
+    """Start the pool's forkserver (if it isn't already running) with Ctrl-C and SIGHUP ignored
+    from its first instruction (2.4-9): Ctrl-C in the first second of a batch otherwise interrupted
+    its preload of colour/scipy and printed pages of tracebacks. It passes the ignored signals on
+    to every worker it forks, and the pool's worker initializer ignores them again anyway. Main
+    thread only, like any signal handling; the picker's background pools start it as before."""
+    if not isinstance(context, multiprocessing.context.ForkServerContext):
+        return
+    from multiprocessing import forkserver
+
+    with children_ignore_terminal_signals():
+        forkserver.ensure_running()
+
+
 def _pool_context():
     """The multiprocessing context for worker pools: forkserver with halide preloaded where the
     platform has it (Linux; Python 3.14's default there anyway), else the platform default. Only
@@ -835,76 +860,72 @@ def _run_pool(
 
     results: list[BatchResult] = []
 
-    def _crashed_result(job: BatchJob) -> BatchResult:
-        return BatchResult(
-            job=job,
-            error=(
-                "worker process crashed while processing this file or another file in the "
-                "same batch (often caused by running out of memory) — try re-running with "
-                "a lower --workers value"
-            ),
-        )
+    def record(result: BatchResult) -> None:
+        results.append(result)
+        if on_result:
+            on_result(result)
 
-    interrupted: list = []  # the pool's worker processes, if Ctrl+C stopped it without waiting
+    in_flight: dict = {}
+    stopped: list = []  # the pool's worker processes, once a cancel stopped it without waiting
     try:
-        with ProcessPoolExecutor(max_workers=max_workers, mp_context=_pool_context()) as executor:
-            pending = list(jobs)
-            in_flight: dict = {}
-
-            def submit_next() -> None:
-                # Loops rather than submitting exactly one job, so that once the pool is broken every
-                # remaining queued job is immediately resolved as a crashed result instead of being
-                # submitted (and raising) one at a time as later callers happen to invoke this again.
-                while pending:
-                    job = pending.pop(0)
-                    try:
-                        future = executor.submit(worker, job, *worker_args)
-                    except BrokenProcessPool:
-                        result = _crashed_result(job)
-                        results.append(result)
-                        if on_result:
-                            on_result(result)
-                        continue
-                    in_flight[future] = job
-                    if on_start:
-                        on_start(job)
-                    break
-
-            for _ in range(min(max_workers, len(jobs))):
-                submit_next()
-
+        # F12: closing the terminal (SIGHUP) or SIGTERM cancels exactly like Ctrl-C.
+        with cancel_on_hangup_and_term():
             try:
-                while in_flight:
-                    done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        job = in_flight.pop(future)
-                        try:
-                            result = future.result()
-                        except BrokenProcessPool:
-                            result = _crashed_result(job)
-                        results.append(result)
-                        if on_result:
-                            on_result(result)
-                        submit_next()
+                context = _pool_context()
+                _start_forkserver(context)
+                # Workers ignore Ctrl-C and SIGHUP (2.4-9): the parent owns cancelling, below.
+                with ProcessPoolExecutor(max_workers=max_workers, mp_context=context,
+                                         initializer=ignore_terminal_signals) as executor:
+                    try:
+                        pending = list(jobs)
+
+                        def submit_next() -> None:
+                            # Loops rather than submitting exactly one job, so that once the pool is
+                            # broken every remaining queued job is immediately resolved as a crashed
+                            # result instead of being submitted (and raising) one at a time as later
+                            # callers happen to invoke this again.
+                            while pending:
+                                job = pending.pop(0)
+                                try:
+                                    future = executor.submit(worker, job, *worker_args)
+                                except BrokenProcessPool:
+                                    record(_crashed_result(job))
+                                    continue
+                                in_flight[future] = job
+                                if on_start:
+                                    on_start(job)
+                                break
+
+                        for _ in range(min(max_workers, len(jobs))):
+                            submit_next()
+
+                        while in_flight:
+                            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                            for future in done:
+                                record(_finished(future, in_flight.pop(future)))
+                                submit_next()
+                    except KeyboardInterrupt:
+                        # Ctrl+C (or SIGHUP/SIGTERM, above) can land on any bytecode boundary, from
+                        # the first submit (starting the workers — 2.4-9, the first second of a
+                        # batch) to the last result. Return whatever completed rather than
+                        # propagating, so the caller can report "X/N completed, cancelled" (see
+                        # batch_cmd.py/export_cmd.py) instead of every already-finished result being
+                        # lost to a bare KeyboardInterrupt traceback — the same "don't discard good
+                        # results" principle this function already applies to BrokenProcessPool.
+                        # Nothing new starts (cancel_futures); the workers ignored the signal, so the
+                        # frames they are on finish and are counted (_finish_in_flight).
+                        # The processes, first: a non-waiting shutdown forgets them, and the `with`'s
+                        # own shutdown(wait=True) then has nothing left to wait for.
+                        stopped = list((getattr(executor, "_processes", None) or {}).values())
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        _finish_in_flight(in_flight, record, stopped)
+                        return results
             except KeyboardInterrupt:
-                # Ctrl+C can land on any bytecode boundary in this loop, not just inside wait() — the
-                # try wraps the whole loop body rather than just the blocking call. Workers in the same
-                # process group receive SIGINT directly too and will exit on their own; cancel_futures
-                # drops anything not yet started rather than waiting for a full drain. Return whatever
-                # completed rather than propagating, so the caller can report "X/N completed, cancelled"
-                # (see batch_cmd.py/export_cmd.py) instead of every already-finished result being lost
-                # to a bare KeyboardInterrupt traceback — the same "don't discard good results" principle
-                # this function already applies to BrokenProcessPool above.
-                # The processes, first: a non-waiting shutdown forgets them, and the `with`'s own
-                # shutdown(wait=True) then has nothing left to wait for.
-                interrupted = list((getattr(executor, "_processes", None) or {}).values())
-                executor.shutdown(wait=False, cancel_futures=True)
-                return results
+                return results  # before the pool existed: nothing started, nothing to stop
     finally:
+        # Only once every worker is gone is nothing using a frame, and the sweep safe.
+        _wait_for_exit(stopped)
         if shm_prefix is not None:
-            # Normally the `with` has already waited for every worker to exit; after Ctrl+C they're
-            # waited for here. Only then is nothing using a frame, and the sweep safe.
-            _wait_for_exit(interrupted)
             from halide.shared_frames import sweep
 
             sweep(shm_prefix)
@@ -912,19 +933,64 @@ def _run_pool(
     return results
 
 
-# How long a worker still running after Ctrl+C gets to finish before it's terminated. Ctrl+C in a
-# terminal reaches the workers too, so they're normally gone at once; this covers one that wasn't
-# signalled (a KeyboardInterrupt raised in the parent alone) and is mid-frame.
+# How long the frames in progress get to finish after a cancel before their workers are
+# terminated. The workers ignore Ctrl-C (the parent owns cancelling), so each finishes the frame it
+# is on — normally a few seconds; this bounds one that is stuck.
 _INTERRUPT_GRACE = 10.0
 
 
-def _wait_for_exit(processes: list) -> None:
-    """Wait for `processes` to exit — terminating any still there after _INTERRUPT_GRACE."""
+def _finished(future, job: BatchJob) -> BatchResult:
+    try:
+        return future.result()
+    except BrokenProcessPool:
+        return _crashed_result(job)
+
+
+def _crashed_result(job: BatchJob) -> BatchResult:
+    return BatchResult(
+        job=job,
+        error=(
+            "worker process crashed while processing this file or another file in the "
+            "same batch (often caused by running out of memory) — try re-running with "
+            "a lower --workers value"
+        ),
+    )
+
+
+def _finish_in_flight(in_flight: dict, record: Callable[[BatchResult], None], processes: list) -> None:
+    """After a cancel: record the frames still in progress as they finish, for up to
+    _INTERRUPT_GRACE, so "X/N frames processed" counts every frame written. A second Ctrl-C (or
+    SIGHUP/SIGTERM) stops waiting: the workers are terminated at once."""
+    try:
+        done, not_done = wait(in_flight, timeout=_INTERRUPT_GRACE)
+    except KeyboardInterrupt:
+        _terminate(processes)
+        return
+    for future in done:
+        if not future.cancelled():
+            record(_finished(future, in_flight.pop(future)))
+    if not_done:
+        _terminate(processes)  # stuck: stop waiting for them
+
+
+def _terminate(processes: list) -> None:
     for process in processes:
-        process.join(_INTERRUPT_GRACE)
         if process.is_alive():
             process.terminate()
-            process.join()
+
+
+def _wait_for_exit(processes: list) -> None:
+    """Wait for `processes` to exit — terminating any still there after _INTERRUPT_GRACE, or at
+    once on a second Ctrl-C (or SIGHUP/SIGTERM) meanwhile."""
+    deadline = time.monotonic() + _INTERRUPT_GRACE
+    try:
+        for process in processes:
+            process.join(max(0.0, deadline - time.monotonic()))
+    except KeyboardInterrupt:
+        pass
+    _terminate(processes)
+    for process in processes:
+        process.join()
 
 
 @contextlib.contextmanager
