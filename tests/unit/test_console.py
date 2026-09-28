@@ -1,8 +1,11 @@
 """Unit tests for the pure/non-TTY-dependent logic in halide.cli.console: formatting helpers and
 the run_guarded() exception boundary. The interactive (confirm/menu/spinner) TTY branches aren't
 exercised here — sys.stdin/stdout under pytest are never a real terminal, so these tests are
-already implicitly covering the non-interactive fallback path for confirm/menu/confirm_overwrite,
-which is exactly the behavior that must never block a script waiting on input."""
+already implicitly covering the non-interactive fallback path for confirm/menu, which is exactly
+the behavior that must never block a script waiting on input. The overwrite policy itself
+(`--overwrite`/`--skip-existing`/refuse) lives in cli/_output_policy.py and is tested in
+tests/unit/test_output_policy.py — it replaced console.confirm_overwrite, whose non-interactive
+"always proceed" was exactly the silent-overwrite bug D-1 fixed."""
 
 from __future__ import annotations
 
@@ -26,11 +29,6 @@ def test_human_bytes_formats_units():
 def test_confirm_non_tty_returns_default_without_blocking():
     assert console.confirm("proceed?", default=False) is False
     assert console.confirm("proceed?", default=True) is True
-
-
-def test_confirm_overwrite_non_tty_always_proceeds():
-    # Matches today's silent-overwrite behavior for scripts/batch — never prompts non-interactively.
-    assert console.confirm_overwrite("some/output.tif") is True
 
 
 def test_menu_non_tty_returns_none():

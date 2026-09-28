@@ -20,6 +20,12 @@ from halide.batch.progress import GridProgressRenderer
 from halide.cli import console
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
 from halide.cli._device_args import add_device_argument, device_row, requested_device_arg, resolve_device_arg
+from halide.cli._output_policy import (
+    add_output_policy_arguments,
+    is_interactive,
+    policy_from_args,
+    resolve_existing,
+)
 from halide.device import ComputeDevice
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
@@ -35,6 +41,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "export), or individual files, followed by the sheet to write",
     )
     add_contact_layout_arguments(parser)
+    add_output_policy_arguments(parser)
     parser.add_argument("--workers", type=int, help="Number of parallel worker processes (default: auto-selected)")
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
     add_device_argument(parser)
@@ -73,8 +80,12 @@ def run(args: argparse.Namespace) -> int:
     if not files:
         print("No processed frames (TIFF/PNG/JPEG) found")
         return 1
-    if sheet_path.exists() and not console.confirm_overwrite(sheet_path):
-        return 1
+    resolved = resolve_existing(
+        [(sheet_path, sheet_path)], policy_from_args(args), interactive=is_interactive()
+    )
+    if not resolved:
+        print(console.success(f"{sheet_path} already exists — skipped (--skip-existing)."))
+        return 0
 
     # The thumbnails are made on the CPU (run_thumbnail_batch: the frames are already developed,
     # and what's left isn't worth uploading a frame for). So the device is resolved only when a GPU

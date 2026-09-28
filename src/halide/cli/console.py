@@ -541,14 +541,6 @@ def confirm(prompt: str, default: bool = False) -> bool:
     return reply in ("y", "yes")
 
 
-def confirm_overwrite(path: str | Path) -> bool:
-    """True = proceed with the write. Non-interactively, always proceeds (today's silent-overwrite
-    behavior, matching `batch`) rather than blocking a script on input it'll never get."""
-    if not sys.stdin.isatty():
-        return True
-    return confirm(f"{path} already exists — overwrite?")
-
-
 def prompt_line(prompt: str) -> str | None:
     """TTY-aware single-line free-text prompt. Returns the typed line (possibly empty, meaning
     "leave as-is" to a caller offering that convention), or None if stdin isn't a real terminal
