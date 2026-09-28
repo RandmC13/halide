@@ -268,18 +268,52 @@ def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = Non
     old_path = directory / f"{old_name}.json"
     if not old_path.exists():
         raise FileNotFoundError(f"no saved profile named {old_name!r} in {directory}")
-    # Case-insensitive, like save_named_profile (2.2-12): "a" -> "B" is still a collision if "b"
-    # is already a saved profile, on any filesystem.
-    if find_profile(new_name, directory) is not None:
-        raise FileExistsError(f"a profile named {new_name!r} already exists in {directory}")
     new_path = directory / f"{new_name}.json"
+
+    # Case-insensitive, like save_named_profile (2.2-12): "a" -> "B" is still a collision if "b"
+    # is already a saved profile - but not when the only match find_profile finds is old_path
+    # itself, which is exactly what a case-only rename ("portra400" -> "Portra400") looks like to
+    # a case-insensitive lookup.
+    existing = find_profile(new_name, directory)
+    if existing is not None and existing.resolve() != old_path.resolve():
+        raise FileExistsError(f"a profile named {new_name!r} already exists in {directory}")
 
     # Rewrites the raw JSON rather than round-tripping through DensityProfile, so the optional
     # "tone"/"scan" sidecars survive a rename (round-tripping used to silently drop "tone").
     data = json.loads(old_path.read_text())
     data["name"] = new_name
+    content = json.dumps(data, indent=2) + "\n"
+
+    if old_path.name == new_path.name:
+        # Renaming onto the exact same name (not even a case change) - just restamp the "name"
+        # field in place. This has to be handled separately: falling through to the general branch
+        # below would atomically overwrite old_path with the new content and then immediately
+        # unlink it (old_path IS new_path here), deleting the profile outright.
+        with atomic_output(old_path) as tmp:
+            tmp.write_text(content)
+        return old_path
+
+    if old_path.name.casefold() == new_path.name.casefold():
+        # A case-only change (e.g. "portra400" -> "Portra400"): asking the filesystem to rename a
+        # path onto one that differs only in case can be treated as "the same file" and silently
+        # no-op the case change, on a case-insensitive-but-preserving filesystem (macOS/Windows) -
+        # not reproducible on this dev sandbox's Linux filesystem, but real on the user's. Moving
+        # the old file to a name the filesystem can't confuse with either case first, then writing
+        # the new path fresh, means no single rename call ever has to disambiguate "same file, new
+        # case" - and the original survives under its backup name if the write fails partway.
+        backup = directory / f".{old_name}.halide-case-rename-{os.getpid()}.json"
+        old_path.replace(backup)
+        try:
+            with atomic_output(new_path) as tmp:
+                tmp.write_text(content)
+        except BaseException:
+            backup.replace(old_path)  # put it back under its original name/case
+            raise
+        backup.unlink(missing_ok=True)
+        return new_path
+
     with atomic_output(new_path) as tmp:
-        tmp.write_text(json.dumps(data, indent=2) + "\n")
+        tmp.write_text(content)
     old_path.unlink()
     return new_path
 
