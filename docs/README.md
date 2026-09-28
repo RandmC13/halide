@@ -21,6 +21,10 @@ themselves; these hold the reasoning, evidence and designs behind them.
     CPU-only workers, to make batch faster. Implemented and verified on the user's RTX 3070
     (63/63 `pytest -m gpu`; GPU batch 0.69 -> 0.45 s/frame against the per-worker mode, which is
     now the fallback). Results in the plan's Task B0/B4 sections.
+  - `review-fixes.md`: fixes for every finding of the codebase review (F01-F43), the user's four
+    decisions, and the contact-sheet edge-print changes. 18 tasks, data safety first.
+  - `next-features.md`: the feature ideas queued for after the fixes (end-of-batch summary, log
+    file, dry run, recursive folders, naming templates). Not designed yet.
   - `codebase-review.md`: the plan for a full review of halide (requirements from every earlier
     session, code audit, CLI and GUI experience) before new features. Report goes to
     `investigations/codebase-review.md`.
