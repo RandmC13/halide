@@ -31,6 +31,12 @@ def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str) 
     sheet.row("Roll", f"{input_dir.resolve().name}{RunSheet.SEP}{frame_count(n_frames)} → {destination}")
 
 
+def skipped_row(sheet: RunSheet, skipped) -> None:
+    """One row for everything a folder listing left out (halide.io.roll.Skipped) — never a line per file."""
+    if skipped:
+        sheet.row("Skipped", skipped.describe())
+
+
 def start_compute(stack: contextlib.ExitStack, sheet: RunSheet, jobs: list[BatchJob], device: ComputeDevice,
                   workload: str = "develop") -> BatchCompute:
     """How the batch reaches the device (batch/orchestrator.py::batch_compute) — on a GPU, the

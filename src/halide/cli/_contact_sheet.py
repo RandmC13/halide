@@ -9,6 +9,7 @@ from pathlib import Path
 from halide.batch.orchestrator import BatchJob, BatchResult
 from halide.cli import console
 from halide.io.contact_sheet_defaults import DEFAULT_COLUMNS, DEFAULT_FRAME_WIDTH
+from halide.io.roll import Skipped
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
@@ -81,20 +82,15 @@ def write_contact_sheet(
     print(console.success(f"Contact sheet → {sheet_path} ({sheet.width}×{sheet.height} px)"))
 
 
-def discover_processed_files(folder: Path, sheet_path: Path) -> list[Path]:
+def discover_processed_files(folder: Path, sheet_path: Path) -> tuple[list[Path], Skipped]:
     """Every already-processed frame in `folder` (halide's own TIFF output, or PNG/JPEG from
     `halide export`), excluding the sheet being written itself and any earlier contact sheet in
-    that folder — shared by `halide contact`'s own directory case and `halide batch
+    that folder (the listing is halide.io.roll.list_scans; the second value is what it skipped) — shared by `halide contact`'s own directory case and `halide batch
     --skip-existing --contact-sheet`'s whole-roll rebuild."""
-    from halide.batch.orchestrator import TIFF_SUFFIXES
-    from halide.io.contact_sheet import is_contact_sheet
+    from halide.io.roll import list_scans
 
-    source_suffixes = TIFF_SUFFIXES + (".png", ".jpg", ".jpeg")
-    files = sorted(f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in source_suffixes)
-    return [
-        f for f in files
-        if f.resolve() != sheet_path.resolve() and not (f.suffix.lower() not in TIFF_SUFFIXES and is_contact_sheet(f))
-    ]
+    files, skipped = list_scans(folder, extra_suffixes=(".png", ".jpg", ".jpeg"))
+    return [f for f in files if f.resolve() != sheet_path.resolve()], skipped
 
 
 def write_sheet_from_folder(

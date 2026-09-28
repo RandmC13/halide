@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import datetime
 import functools
 import json
 import subprocess
@@ -15,6 +16,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import numpy as np
+import tifffile
 from PIL import Image
 
 from halide import banding
@@ -29,6 +31,7 @@ from halide.core.types import DensityProfile, Stage, ToneCurveParams  # noqa: F4
 from halide.device import ComputeDevice
 from halide.io.atomic import atomic_output
 from halide.io.exiftool import ExifToolError
+from halide.io.roll import RAW_SUFFIXES
 from halide.io.icc import (
     LinearRGBProfile,
     UnsupportedICCProfileError,
@@ -79,6 +82,13 @@ def _acescg_matrix() -> np.ndarray:
 
 class ScanColorError(Exception):
     """Raised when a scan's embedded ICC profile is missing or unsupported."""
+
+
+class ScanInputError(ScanColorError):
+    """Raised when an input file isn't a scan halide can develop: not a TIFF, unreadable, or not
+    RGB (F25), or already a halide positive (F15). A ScanColorError subclass so it travels the same
+    way — unwrapped through the GPU paths, reported per frame by a batch, a plain message from the
+    CLI — because it too is a fact about the input, never a GPU failure to retry on the CPU."""
 
 
 class PrintInputError(Exception):
@@ -154,6 +164,68 @@ def load_working_space_image(path: str | Path) -> np.ndarray:
     return _to_working_space(image, source_profile, name=str(path))
 
 
+_EXPORT_HELP = ("halide develops linear TIFFs exported from darktable or RawTherapee - see the README's "
+                "'Exporting your scans'.")
+
+
+def _looks_like(path: Path) -> str:
+    """What a file that isn't a readable TIFF appears to be, from its first bytes and its suffix."""
+    try:
+        with open(path, "rb") as handle:
+            magic = handle.read(8)
+    except OSError:
+        magic = b""
+    if magic[:2] == b"\xff\xd8":
+        return "it looks like a JPEG"
+    if magic[:4] == b"\x89PNG":
+        return "it looks like a PNG"
+    if path.suffix.lower() in RAW_SUFFIXES:
+        return "it looks like a raw file"
+    return "it may be damaged or cut short"
+
+
+def _not_a_tiff(path: Path) -> ScanInputError:
+    return ScanInputError(f"{path.name} isn't a TIFF halide can read ({_looks_like(path)}). "
+                          f"{_EXPORT_HELP}")
+
+
+def _check_scan_layout(path: str | Path) -> None:
+    """Fail with a plain message, from the header alone, for anything that isn't a readable RGB TIFF
+    (F25) — before decoding, so a JPEG, a raw file, a greyscale or RGBA export never surfaces as a
+    tifffile/numpy traceback."""
+    path = Path(path)
+    try:
+        shape = read_tiff_shape(path)
+    except FileNotFoundError:
+        raise ScanInputError(f"input file not found: {path}") from None
+    except Exception:  # noqa: BLE001 -- tifffile raises its own types for a non-TIFF; all mean the same
+        raise _not_a_tiff(path) from None
+    channels = shape[-1] if len(shape) >= 3 else 1
+    if channels == 3:
+        return
+    if channels == 4:
+        raise ScanInputError(f"{path.name} has an alpha (transparency) channel; export without it.")
+    if channels == 1:
+        raise ScanInputError(f"{path.name} is greyscale; halide needs an RGB scan of a colour negative.")
+    raise ScanInputError(f"{path.name} has {channels} channels; halide needs RGB.")
+
+
+def _reject_positive(path: str | Path) -> None:
+    """F15: a file halide itself already wrote (it carries halide's provenance) isn't a negative —
+    developing it again would invert a positive. Header only; a file that can't be read is left for
+    _read_scan to report properly."""
+    path = Path(path)
+    try:
+        record = read_provenance(read_tiff_description(path))
+    except Exception:  # noqa: BLE001 -- reported by the real read, just after
+        return
+    if record is None:
+        return
+    made = datetime.date.fromtimestamp(path.stat().st_mtime).isoformat()
+    raise ScanInputError(f"{path.name} is already a halide positive (made on {made}). To re-print it use "
+                         f"`halide print`; to develop again, point halide at the original scan.")
+
+
 def _read_scan(
     path: str | Path, out: np.ndarray | None = None
 ) -> tuple[np.ndarray, LinearRGBProfile | None]:
@@ -166,9 +238,13 @@ def _read_scan(
     service path (halide/gpu_service.py, halide/shared_frames.py) to decode straight into a
     shared-memory frame instead of this process's own heap. Callers that don't pass `out` see no
     change in behavior."""
-    scan = read_tiff(path, out=out)
+    _check_scan_layout(path)
+    try:
+        scan = read_tiff(path, out=out)
+    except (tifffile.TiffFileError, OSError, EOFError):
+        raise _not_a_tiff(Path(path)) from None
     if scan.icc_profile is None:
-        raise ScanColorError(f"{path}: no embedded ICC profile found; cannot verify color space")
+        raise ScanColorError(f"{path}: no embedded ICC profile found; cannot verify colour space")
     if scan.icc_profile == output_profile_bytes():
         # Tagged with halide's own ACEScg output profile (e.g. a flat positive coming back for
         # `halide print`): already in the working space by definition. Converting anyway isn't a
@@ -178,7 +254,9 @@ def _read_scan(
     try:
         source_profile = parse_linear_rgb_profile(scan.icc_profile)
     except UnsupportedICCProfileError as exc:
-        raise ScanColorError(f"{path}: unsupported color profile — {exc}") from exc
+        # icc.py's damaged / not-D50 messages are whole sentences; the rest are terse facts.
+        lead = "" if str(exc).startswith("the embedded colour profile") else "unusable colour profile — "
+        raise ScanColorError(f"{path}: {lead}{exc}") from exc
     # copies only if tifffile handed back read-only data (never the case when `out` was given)
     return np.require(scan.image, requirements="W"), source_profile
 
@@ -296,6 +374,7 @@ def process_scan(
 
     Returns the tone values actually used (None for Stage.DENSITY_ONLY, which has no tone stage).
     """
+    _reject_positive(input_path)  # F15: before anything is written
     output_path = Path(output_path) if output_path is not None else None
     # Written under a hidden temp name beside the real one and only moved into place once every
     # step below (the TIFF write, then exiftool, then the provenance description) has run — a

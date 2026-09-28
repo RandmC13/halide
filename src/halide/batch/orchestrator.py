@@ -34,13 +34,13 @@ from halide.core.types import DensityProfile, Stage, ToneCurveParams
 from halide.device import ComputeDevice
 from halide.interrupts import cancel_on_hangup_and_term, children_ignore_terminal_signals, ignore_terminal_signals
 from halide.io.contact_sheet_defaults import DEFAULT_FRAME_WIDTH
+from halide.io.roll import TIFF_SUFFIXES, list_scans  # noqa: F401 -- TIFF_SUFFIXES re-exported
 
 # tifffile and halide.processing (numpy, Pillow, colour-science) are imported inside the functions
 # that use them: every CLI command imports this module, and `halide --help` shouldn't pay for them.
 # Workers don't pay either — the forkserver preloads halide.processing (_FORKSERVER_PRELOAD).
 # halide.gpu_service and halide.shared_frames likewise (the latter imports numpy).
 
-TIFF_SUFFIXES = (".tif", ".tiff")
 
 # Peak worker memory fits `baseline + K * decoded_pixel_bytes`. Measured on real worker processes
 # (`--workers 1` batches over the four real full-res scans, 3276x4849 = ~182 MiB decoded, peak
@@ -159,11 +159,13 @@ class BatchResult:
 
 
 def discover_jobs(input_dir: str | Path, output_dir: str | Path, suffix: str = "") -> list[BatchJob]:
-    input_dir = Path(input_dir)
+    """One job per scan in `input_dir` (halide.io.roll.list_scans decides what is a scan)."""
+    files, _ = list_scans(input_dir)
+    return jobs_for_files(files, output_dir, suffix)
+
+
+def jobs_for_files(files: list[Path], output_dir: str | Path, suffix: str = "") -> list[BatchJob]:
     output_dir = Path(output_dir)
-    files = sorted(
-        f for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() in TIFF_SUFFIXES
-    )
     jobs = []
     for f in files:
         name = f"{f.stem}{suffix}{f.suffix}" if suffix else f.name

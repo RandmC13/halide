@@ -80,6 +80,7 @@ class PointView:
     frame_number: int | None  # None: the frame isn't in the loaded roll ("frame missing")
     green_density: float  # at the reference scan exposure
     agreement: Agreement | None
+    note: str | None = None  # e.g. the frame had no scan EXIF, so its point wasn't normalised (F16)
 
 
 @dataclass
@@ -217,6 +218,10 @@ class CalibrationSession:
                 frame_number=numbers.get(p.frame),
                 green_density=anchors.green_density(anchors.normalised_rgb(p, reference)),
                 agreement=agreements[i],
+                # A point from a frame with no scan EXIF can't be matched to the roll's exposure
+                # (2.1-10): it counts as it was sampled. Only worth saying when the roll has one.
+                note=(f"point {i + 1}: frame has no scan exposure data, used unnormalised"
+                      if p.scan is None and reference is not None else None),
             )
             for i, p in enumerate(self.points)
         ]

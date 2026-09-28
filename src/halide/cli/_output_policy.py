@@ -141,3 +141,54 @@ def resolve_bulk_jobs(
     kept_jobs = [job for job in jobs if job.output_path in kept_outputs]
     skipped = len(jobs) - len(kept_jobs)
     return kept_jobs, skipped, kept_outputs
+
+
+# --- Pre-flight checks (F25): before any work starts, each a plain error naming the path ----------
+
+
+def check_input_file(path: Path) -> None:
+    """The input of a single-file command must exist and be a file."""
+    if not path.exists():
+        raise SystemExit(f"input file not found: {path}")
+    if path.is_dir():
+        raise SystemExit(f"{path} is a folder, not a scan file. Name one TIFF, or use the folder form "
+                         f"of the command (batch, or print/export with an output folder).")
+
+
+def check_input_folder(path: Path) -> None:
+    """The input of a bulk command must exist and be a folder."""
+    if not path.exists():
+        raise SystemExit(f"input directory not found: {path}")
+    if not path.is_dir():
+        raise SystemExit(f"{path} is a file, not a folder of scans.")
+
+
+def _check_writable_folder(folder: Path) -> None:
+    if not folder.is_dir():
+        raise SystemExit(f"{folder} isn't a folder. Choose a different output location.")
+    if not os.access(folder, os.W_OK | os.X_OK):
+        raise SystemExit(f"halide can't write to {folder} (permission denied). "
+                         f"Choose a different output folder, or fix its permissions.")
+
+
+def prepare_output_folder(folder: Path) -> None:
+    """A bulk command's output folder: created if missing (as before), then it must be writable —
+    checked now, so a read-only folder fails before a single frame is developed rather than as one
+    failure per frame."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        pass  # a file by that name: reported just below
+    except OSError as exc:
+        raise SystemExit(f"halide can't create the output folder {folder} ({exc.strerror or exc}). "
+                         f"Choose a different output folder.") from exc
+    _check_writable_folder(folder)
+
+
+def check_output_parent(output_path: Path) -> None:
+    """A single-file command's output: its folder must already exist and be writable."""
+    parent = output_path.parent
+    if not parent.exists():
+        raise SystemExit(f"the output folder {parent} doesn't exist. Create it, or choose a different "
+                         f"output path.")
+    _check_writable_folder(parent)

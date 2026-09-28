@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from halide.batch.orchestrator import TIFF_SUFFIXES
+from halide.io.roll import list_scans
 from halide.calibration.anchors import NeutralPoint
 from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask
 from halide.calibration.profile_store import (
@@ -50,6 +50,7 @@ from halide.calibration.profile_store import (
     save_named_profile,
     validate_profile_name,
 )
+from halide.cli import console
 from halide.core.tone_render import ResolvedTone
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.device import ComputeDevice
@@ -574,7 +575,7 @@ class MainWindow(QWidget):
         return answer == QMessageBox.StandardButton.Yes
 
     def load_roll(self, folder: Path, keep_points: bool = False) -> None:
-        paths = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in TIFF_SUFFIXES)
+        paths, left_out = list_scans(folder)
         if not paths:
             self._status(f"No TIFF scans in {folder}")
             return
@@ -586,6 +587,8 @@ class MainWindow(QWidget):
             self.details_form.set_values(self.session.details)
             self.print_controls.set_override(None)
         self._start_roll(paths, folder)
+        if left_out:
+            self._status(f"Skipped {left_out.describe()}")
 
     def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
         """Individual scans as a roll of their own (`halide calibrate a.tif b.tif`, `invert --pick`)."""
@@ -999,6 +1002,7 @@ class MainWindow(QWidget):
             wb = ", ".join(f"{x:.4f}" for x in self._display_estimate.white_balance)
             ds = ", ".join(f"{x:.4f}" for x in self._display_estimate.density_scale)
             lines.append(f"This frame's auto estimate (comparison only): ({wb}) / ({ds})")
+        lines.extend(v.note for v in views if v.note)
         lines.append(CC_EXPLANATION)
         self.details_label.setText("\n\n".join(lines))
 
@@ -1074,6 +1078,9 @@ class MainWindow(QWidget):
         if not self.session.can_fit():
             return
         profile = self.session.profile()
+        for view in self.session.views():
+            if view.note:
+                print(console.warning(view.note))
         if self.is_pick_session:
             self._pick_result_emitted = True
             self.pickCompleted.emit((profile, self.session.tone_override))

@@ -563,4 +563,7 @@ def test_a_real_gpu_batch_through_the_service(roll_dir, tmp_path, monkeypatch, c
         from halide.io.tiff import read_tiff_description
 
         assert json.loads(read_tiff_description(out_dir / name))["halide"]["device"] == "gpu"
-    assert "Warning" not in capsys.readouterr().out
+    # The synthetic scans carry no camera EXIF, so the run's own "not verifiable" warning is
+    # expected (F16); what must be absent is any GPU trouble.
+    out = capsys.readouterr().out
+    assert "GPU" not in out and "CPU" not in out
