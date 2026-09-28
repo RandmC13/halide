@@ -92,7 +92,7 @@ class _Renderer:
         self.failures.append((result.job.input_path.name, result.error))
 
     def _announce(self) -> None:
-        print(f"{Style.BOLD}{VERB.get(self.verb, 'Processing')} {plural(self.total, 'frame')}{Style.RESET}", flush=True)
+        print(f"{Style.BOLD}{VERB.get(self.verb, 'Processing')} {plural(self.total, console.NOUN.get(self.verb, 'frame'))}{Style.RESET}", flush=True)
 
     def start(self) -> None:
         self._start_time = time.monotonic()
@@ -294,7 +294,13 @@ class GridProgressRenderer(_Renderer):
         sys.stdout.write(Style.cursor_up(self._last_frame_lines))
         for line in frame.splitlines():
             sys.stdout.write(f"{Style.CLEAR_LINE}{line}\n")
-        self._last_frame_lines = frame.count("\n")
+        new_lines = frame.count("\n")
+        extra = self._last_frame_lines - new_lines
+        if extra > 0:
+            # A shorter frame (the cancel note went away) must wipe the rows it no longer covers,
+            # then come back up so the next print starts right under the frame.
+            sys.stdout.write(f"{Style.CLEAR_LINE}\n" * extra + Style.cursor_up(extra))
+        self._last_frame_lines = new_lines
         sys.stdout.flush()
 
     def start(self) -> None:
@@ -400,7 +406,7 @@ def cancel_notice(renderer: GridProgressRenderer | None):
     cancelled batch is still running — the frames in progress finishing — in a terminal only, on
     the progress sheet if there is one, else (--quiet) as one plain line."""
     def show(message: str) -> None:
-        if not sys.stdout.isatty():
+        if not interactive_output():
             return
         if renderer is not None:
             renderer.note(message)

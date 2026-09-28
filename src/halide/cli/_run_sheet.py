@@ -48,8 +48,7 @@ def print_frame_warnings(results) -> None:
         if kept:
             print(console.warning(f"{r.job.input_path.name}: {'; '.join(kept)}"))
     if stopped_reason is not None:
-        print(f"{console.Style.YELLOW}{console.ICON_WARN}{console.Style.RESET} "
-              f"The GPU service stopped ({stopped_reason}); developing the remaining frames on the CPU")
+        print(console.warning(f"The GPU service stopped ({stopped_reason}); developing the remaining frames on the CPU"))
 
 
 def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str) -> None:

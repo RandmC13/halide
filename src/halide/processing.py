@@ -190,6 +190,18 @@ def _not_a_tiff(path: Path) -> ScanInputError:
                           f"{_EXPORT_HELP}")
 
 
+def _decode_tiff(path: str | Path, out: np.ndarray | None = None):
+    """read_tiff, with anything the decoder raises on a damaged or cut-short file (tifffile's own
+    errors, a libdeflate/zlib failure, a short read) reported as the plain "isn't a TIFF halide can
+    read" message instead of library text. Not a blanket catch: running out of memory is not a bad file."""
+    try:
+        return read_tiff(path, out=out)
+    except (MemoryError, KeyboardInterrupt):
+        raise
+    except Exception:  # noqa: BLE001 -- see docstring: every decoder failure means "unreadable file"
+        raise _not_a_tiff(Path(path)) from None
+
+
 def _check_scan_layout(path: str | Path) -> None:
     """Fail with a plain message, from the header alone, for anything that isn't a readable RGB TIFF
     (F25) — before decoding, so a JPEG, a raw file, a greyscale or RGBA export never surfaces as a
@@ -208,7 +220,7 @@ def _check_scan_layout(path: str | Path) -> None:
         raise ScanInputError(f"{path.name} has an alpha (transparency) channel; export without it")
     if channels == 1:
         raise ScanInputError(f"{path.name} is greyscale; halide needs an RGB scan of a colour negative")
-    raise ScanInputError(f"{path.name} has {channels} channels; halide needs RGB.")
+    raise ScanInputError(f"{path.name} has {channels} channels; halide needs RGB")
 
 
 def _reject_positive(path: str | Path) -> None:
@@ -240,10 +252,7 @@ def _read_scan(
     shared-memory frame instead of this process's own heap. Callers that don't pass `out` see no
     change in behavior."""
     _check_scan_layout(path)
-    try:
-        scan = read_tiff(path, out=out)
-    except (tifffile.TiffFileError, OSError, EOFError):
-        raise _not_a_tiff(Path(path)) from None
+    scan = _decode_tiff(path, out)
     if scan.icc_profile is None:
         raise ScanColorError(f"{path}: no embedded ICC profile found; cannot verify colour space")
     if scan.icc_profile == output_profile_bytes():
@@ -790,8 +799,12 @@ def thumbnail_existing_output(
     along for the caption."""
     path = Path(input_path)
     if path.suffix.lower() in _DISPLAY_SUFFIXES:
-        with Image.open(path) as image:
-            save_thumbnail(thumbnail_path, thumbnail_from_display(image, thumbnail_long_edge), None)
+        try:
+            with Image.open(path) as image:
+                save_thumbnail(thumbnail_path, thumbnail_from_display(image, thumbnail_long_edge), None)
+        except OSError:
+            raise ScanInputError(f"{path.name} isn't an image halide can read (it may be damaged or cut short). "
+                                 "Export it again") from None
         return
     record = read_provenance(read_tiff_description(path))
     image = load_working_space_image(path)
@@ -907,7 +920,7 @@ def export_delivery_image(
     output_path = Path(output_path)
     with contextlib.ExitStack() as shared:
         frames = _shared_frame(input_path, service, shm_prefix, shared, on_warning, extra_uint8=True)
-        scan = read_tiff(input_path, out=None if frames is None else frames[0].array)
+        scan = _decode_tiff(input_path, None if frames is None else frames[0].array)
         warning = None
         if scan.icc_profile is None:
             warning = f"{input_path} has no embedded ICC profile; assuming it is ACEScg"

@@ -245,13 +245,52 @@ def test_cancelled_says_how_many_developed_and_that_nothing_is_half_written(caps
     assert text == "✗ Cancelled - 2 of 6 frames developed; nothing half-written"
 
 
-def test_the_cancel_note_is_gone_from_the_final_redraw(capsys):
+class _Screen:
+    """A tiny terminal: text, \\r, \\n, cursor-up and clear-to-end-of-line — enough to replay what
+    the renderer really writes and look at what would be on screen."""
+
+    def __init__(self):
+        self.rows, self.row, self.col = [""], 0, 0
+
+    def feed(self, text):
+        for m in re.finditer(r"\033\[([0-9;]*)([A-Za-z])|(.)", text, re.S):
+            code, final, ch = m.groups()
+            if final == "A":
+                self.row = max(0, self.row - int(code or 1))
+            elif final == "K":
+                self.rows[self.row] = self.rows[self.row][: self.col]
+            elif final:
+                pass  # colour
+            elif ch == "\n":
+                self.row += 1
+                self.col = 0
+                while len(self.rows) <= self.row:
+                    self.rows.append("")
+            elif ch == "\r":
+                self.col = 0
+            else:
+                line = self.rows[self.row].ljust(self.col)
+                self.rows[self.row] = line[: self.col] + ch + line[self.col + 1 :]
+                self.col += 1
+
+    def text(self):
+        return "\n".join(self.rows).rstrip("\n")
+
+
+def test_the_cancel_note_is_gone_from_the_final_screen_and_the_separator_stays(capsys):
     r = GridProgressRenderer(total=3, terminal_size=(80, 40))
     r.start()
-    r.note("Finishing the frames in progress")
-    assert "Finishing" in "\n".join(_visible_lines(r))
-    r.cancel([1, 2])
-    assert "Finishing" not in "\n".join(_visible_lines(r))
+    r.mark_processing(0)
+    r.note("Finishing the frames in progress — Ctrl-C again to stop now")
+    r.cancel([0, 1, 2])
+    r.finish(cancelled=True)
+    screen = _Screen()
+    screen.feed(capsys.readouterr().out)
+    text = screen.text()
+    assert "Finishing the frames" not in text
+    lines = text.split("\n")
+    end = next(i for i, line in enumerate(lines) if "Cancelled" in line)
+    assert lines[end - 1] == "" and lines[end - 2].strip().startswith("[ ")  # status, blank, then the line
 
 
 def test_no_colour_grid_has_no_escape_colours_and_states_differ_by_shape(monkeypatch):

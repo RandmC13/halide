@@ -26,7 +26,7 @@ def test_a_stopped_gpu_service_is_reported_once_not_on_every_frame(capsys):
     lines = _ANSI.sub("", capsys.readouterr().out).splitlines()
     assert lines == [
         "⚠ Warning: d.tif: something else",
-        "⚠ The GPU service stopped (no reply: EOFError); developing the remaining frames on the CPU",
+        "⚠ Warning: The GPU service stopped (no reply: EOFError); developing the remaining frames on the CPU",
     ]
 
 
