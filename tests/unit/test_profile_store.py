@@ -1,9 +1,14 @@
+import os
 from dataclasses import replace
 
 import pytest
 
 from halide.calibration.profile_store import (
+    ProfileExistsError,
+    ProfileNameError,
+    damaged_profile_message,
     delete_profile,
+    find_profile,
     list_profiles,
     load_profile,
     load_scan_reference,
@@ -12,7 +17,9 @@ from halide.calibration.profile_store import (
     resolve_profile_path,
     save_named_profile,
     save_profile,
+    suggest_profile_name,
     update_profile,
+    validate_profile_name,
 )
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.io.scan_metadata import ScanSettings
@@ -79,19 +86,178 @@ def test_list_profiles_returns_all_sorted(tmp_path):
     save_named_profile(PROFILE, "zzz", profiles_dir=tmp_path)
     save_named_profile(PROFILE, "aaa", profiles_dir=tmp_path)
     results = list_profiles(profiles_dir=tmp_path)
-    assert [name for name, _ in results] == ["aaa", "zzz"]
+    assert [name for name, _, _ in results] == ["aaa", "zzz"]
+    assert all(problem is None for _, _, problem in results)
 
 
-def test_list_profiles_skips_unreadable_files(tmp_path, capsys):
+def test_list_profiles_reports_damaged_json_without_crashing(tmp_path):
     save_named_profile(PROFILE, "good", profiles_dir=tmp_path)
     (tmp_path / "corrupt.json").write_text("not valid json{{{")
     results = list_profiles(profiles_dir=tmp_path)
-    assert [name for name, _ in results] == ["good"]
-    assert "skipping unreadable" in capsys.readouterr().out
+    by_name = {name: (profile, problem) for name, profile, problem in results}
+    assert by_name["good"][0] is not None and by_name["good"][1] is None
+    assert by_name["corrupt"][0] is None
+    assert by_name["corrupt"][1] is not None  # a plain-English reason, not a crash
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions, so chmod 000 has no effect")
+def test_list_profiles_reports_unreadable_file_without_crashing(tmp_path):
+    save_named_profile(PROFILE, "good", profiles_dir=tmp_path)
+    blocked = tmp_path / "noperm.json"
+    save_named_profile(PROFILE, "noperm", profiles_dir=tmp_path)
+    blocked.chmod(0)
+    try:
+        results = list_profiles(profiles_dir=tmp_path)
+    finally:
+        blocked.chmod(0o644)  # tmp_path cleanup needs this back
+    by_name = {name: (profile, problem) for name, profile, problem in results}
+    assert by_name["good"][0] is not None  # one bad file doesn't take down the rest (2.2-4)
+    assert by_name["noperm"][0] is None
+    assert by_name["noperm"][1] is not None
 
 
 def test_list_profiles_on_nonexistent_directory_returns_empty(tmp_path):
     assert list_profiles(profiles_dir=tmp_path / "does_not_exist") == []
+
+
+def test_suggest_profile_name_excludes_damaged_profiles(tmp_path):
+    save_named_profile(PROFILE, "portra400", profiles_dir=tmp_path)
+    (tmp_path / "portra40x.json").write_text("not valid json{{{")
+    assert suggest_profile_name("portra40", profiles_dir=tmp_path) == "portra400"
+
+
+def test_suggest_profile_name_none_when_nothing_close(tmp_path):
+    save_named_profile(PROFILE, "portra400", profiles_dir=tmp_path)
+    assert suggest_profile_name("completely-different-xyz", profiles_dir=tmp_path) is None
+
+
+def test_damaged_profile_message_names_recovery_steps():
+    message = damaged_profile_message("myroll", ValueError("boom"))
+    assert "myroll" in message
+    assert "damaged" in message
+    assert "halide calibrate --profile myroll" in message
+    assert "halide profile delete myroll" in message
+
+
+# --- validate_profile_name --------------------------------------------------------------------
+
+
+def test_validate_profile_name_rejects_empty():
+    with pytest.raises(ProfileNameError, match="can't be empty"):
+        validate_profile_name("")
+
+
+def test_validate_profile_name_rejects_whitespace_only():
+    with pytest.raises(ProfileNameError, match="can't be empty"):
+        validate_profile_name("   ")
+
+
+def test_validate_profile_name_rejects_slash():
+    with pytest.raises(ProfileNameError, match=r"can't contain / or \\"):
+        validate_profile_name("a/b")
+
+
+def test_validate_profile_name_rejects_backslash():
+    with pytest.raises(ProfileNameError, match=r"can't contain / or \\"):
+        validate_profile_name("a\\b")
+
+
+def test_validate_profile_name_rejects_nul():
+    with pytest.raises(ProfileNameError, match=r"can't contain / or \\"):
+        validate_profile_name("a\0b")
+
+
+def test_validate_profile_name_rejects_leading_dot():
+    with pytest.raises(ProfileNameError, match="can't start with"):
+        validate_profile_name(".hidden")
+
+
+def test_validate_profile_name_rejects_dotdot():
+    with pytest.raises(ProfileNameError, match="can't start with"):
+        validate_profile_name("..")
+
+
+def test_validate_profile_name_rejects_leading_dash():
+    with pytest.raises(ProfileNameError, match="can't start with"):
+        validate_profile_name("-weird")
+
+
+def test_validate_profile_name_rejects_too_long():
+    with pytest.raises(ProfileNameError, match="at most 64 characters"):
+        validate_profile_name("a" * 65)
+
+
+def test_validate_profile_name_accepts_64_characters():
+    assert validate_profile_name("a" * 64) == "a" * 64
+
+
+def test_validate_profile_name_strips_surrounding_whitespace():
+    assert validate_profile_name("  portra400  ") == "portra400"
+
+
+# --- traversal / find_profile ------------------------------------------------------------------
+
+
+def test_dotdot_name_cannot_touch_files_outside_profiles_dir(tmp_path):
+    profiles_dir = tmp_path / "profiles"
+    profiles_dir.mkdir()
+    sentinel = tmp_path / "sentinel-important.json"
+    sentinel.write_text("do not touch")
+
+    with pytest.raises(ProfileNameError):
+        delete_profile("../sentinel-important", profiles_dir=profiles_dir)
+    assert sentinel.exists()
+
+    with pytest.raises(ProfileNameError):
+        save_named_profile(PROFILE, "../sentinel-important", profiles_dir=profiles_dir)
+    assert sentinel.read_text() == "do not touch"
+
+    with pytest.raises(ProfileNameError):
+        rename_profile("../sentinel-important", "whatever", profiles_dir=profiles_dir)
+    with pytest.raises(ProfileNameError):
+        update_profile("../sentinel-important", profiles_dir=profiles_dir, notes="x")
+
+
+def test_find_profile_exact_match(tmp_path):
+    save_named_profile(PROFILE, "Portra400", profiles_dir=tmp_path)
+    assert find_profile("Portra400", tmp_path) == tmp_path / "Portra400.json"
+
+
+def test_find_profile_case_insensitive_match(tmp_path):
+    save_named_profile(PROFILE, "Portra400", profiles_dir=tmp_path)
+    assert find_profile("portra400", tmp_path) == tmp_path / "Portra400.json"
+
+
+def test_find_profile_returns_none_when_missing(tmp_path):
+    assert find_profile("nonexistent", tmp_path) is None
+
+
+def test_find_profile_on_nonexistent_directory_returns_none(tmp_path):
+    assert find_profile("anything", tmp_path / "does_not_exist") is None
+
+
+# --- save_named_profile overwrite protection ----------------------------------------------------
+
+
+def test_saving_existing_name_raises_unless_overwrite(tmp_path):
+    save_named_profile(PROFILE, "roll16", profiles_dir=tmp_path)
+    with pytest.raises(ProfileExistsError):
+        save_named_profile(replace(PROFILE, notes="second"), "roll16", profiles_dir=tmp_path)
+    assert load_profile(tmp_path / "roll16.json").notes is None  # the original survives
+
+    path = save_named_profile(replace(PROFILE, notes="second"), "roll16", profiles_dir=tmp_path, overwrite=True)
+    assert load_profile(path).notes == "second"
+
+
+def test_saving_name_differing_only_by_case_counts_as_existing(tmp_path):
+    save_named_profile(PROFILE, "Portra400", profiles_dir=tmp_path)
+    with pytest.raises(ProfileExistsError):
+        save_named_profile(replace(PROFILE, notes="second"), "portra400", profiles_dir=tmp_path)
+
+    # overwrite=True reuses the file's own on-disk name/casing rather than creating a second file
+    path = save_named_profile(replace(PROFILE, notes="second"), "portra400", profiles_dir=tmp_path, overwrite=True)
+    assert path == tmp_path / "Portra400.json"
+    assert sorted(p.name for p in tmp_path.glob("*.json")) == ["Portra400.json"]
 
 
 def test_rename_profile(tmp_path):
@@ -110,6 +276,13 @@ def test_rename_profile_raises_if_source_missing(tmp_path):
 def test_rename_profile_raises_if_target_exists(tmp_path):
     save_named_profile(PROFILE, "a", profiles_dir=tmp_path)
     save_named_profile(PROFILE, "b", profiles_dir=tmp_path)
+    with pytest.raises(FileExistsError):
+        rename_profile("a", "b", profiles_dir=tmp_path)
+
+
+def test_rename_profile_raises_if_target_exists_case_insensitive(tmp_path):
+    save_named_profile(PROFILE, "a", profiles_dir=tmp_path)
+    save_named_profile(PROFILE, "B", profiles_dir=tmp_path)
     with pytest.raises(FileExistsError):
         rename_profile("a", "b", profiles_dir=tmp_path)
 

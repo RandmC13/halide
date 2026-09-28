@@ -8,6 +8,7 @@ default directory (`~/.config/halide/profiles/`, or `$XDG_CONFIG_HOME/halide/pro
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 from dataclasses import asdict, replace
@@ -19,10 +20,69 @@ from halide.io.atomic import atomic_output
 from halide.io.scan_metadata import ScanSettings
 
 
+class ProfileError(ValueError):
+    """Base for a profile-name/identity problem that should reach the user as a plain message,
+    never a raw traceback or an OS error string."""
+
+
+class ProfileNameError(ProfileError):
+    """A profile name that can't be used at all - empty, contains a path separator, starts with
+    '.'/'-', or is too long. Raised before the name ever reaches a Path (2.2-1: an unvalidated
+    name let `../evil` delete or overwrite a file outside the profiles directory)."""
+
+
+class ProfileExistsError(ProfileError):
+    """A save would silently replace an existing profile of the same name (compared
+    case-insensitively - see find_profile) and `overwrite` wasn't passed."""
+
+    def __init__(self, name: str, existing_path: Path) -> None:
+        super().__init__(f"a profile named {name!r} already exists ({existing_path})")
+        self.name = name
+        self.existing_path = existing_path
+
+
+_MAX_NAME_LENGTH = 64
+
+
+def validate_profile_name(name: str) -> str:
+    """Reject a profile name that could escape the profiles directory or hit an OS limit, before
+    it's ever turned into a Path. Returns the name with surrounding whitespace stripped."""
+    stripped = name.strip()
+    if not stripped:
+        raise ProfileNameError("Profile names can't be empty.")
+    if "/" in stripped or "\\" in stripped or "\0" in stripped:
+        raise ProfileNameError(
+            "Profile names can't contain / or \\ - they name a file in halide's profiles folder."
+        )
+    if stripped.startswith(".") or stripped.startswith("-"):
+        raise ProfileNameError("Profile names can't start with '.' or '-'.")
+    if len(stripped) > _MAX_NAME_LENGTH:
+        raise ProfileNameError(f"Profile names can be at most {_MAX_NAME_LENGTH} characters.")
+    return stripped
+
+
 def default_profiles_dir() -> Path:
     config_home = os.environ.get("XDG_CONFIG_HOME")
     base = Path(config_home) if config_home else Path.home() / ".config"
     return base / "halide" / "profiles"
+
+
+def find_profile(name: str, profiles_dir: Path | None = None) -> Path | None:
+    """The saved profile file for `name`: an exact match first, then a case-insensitive
+    (`casefold`) match - so 'Portra' and 'portra' resolve to the same file, matching what actually
+    happens on macOS's default case-insensitive-but-preserving filesystem (2.2-12). None if no
+    file matches either way."""
+    directory = profiles_dir or default_profiles_dir()
+    exact = directory / f"{name}.json"
+    if exact.exists():
+        return exact
+    if not directory.exists():
+        return None
+    target = name.casefold()
+    for path in directory.glob("*.json"):
+        if path.stem.casefold() == target:
+            return path
+    return None
 
 
 def save_profile(
@@ -110,13 +170,25 @@ def save_named_profile(
     scan: ScanSettings | None = None,
     anchors: list[dict] | None = None,
     roll: str | None = None,
+    overwrite: bool = False,
 ) -> Path:
     """Save `profile` under `name` in the profiles directory, stamping its name and creation time.
-    `tone`/`scan`/`anchors`/`roll` are optional sidecars to save alongside it - see save_profile."""
+    `tone`/`scan`/`anchors`/`roll` are optional sidecars to save alongside it - see save_profile.
+
+    Raises ProfileNameError for an unusable name (validate_profile_name), and ProfileExistsError
+    if a profile of that name already exists (compared case-insensitively, via find_profile) and
+    `overwrite` isn't True (2.2-2/2.2-12/2.6-5: a re-run with the same --save-profile-as name, or a
+    name differing only by case, used to overwrite a real calibration with no warning). Overwriting
+    an existing name-differing-only-by-case match reuses that file's own on-disk name/casing rather
+    than creating a second file."""
+    name = validate_profile_name(name)
     directory = profiles_dir or default_profiles_dir()
     directory.mkdir(parents=True, exist_ok=True)
+    existing = find_profile(name, directory)
+    if existing is not None and not overwrite:
+        raise ProfileExistsError(name, existing)
+    path = existing if existing is not None else directory / f"{name}.json"
     stamped = replace(profile, name=name, created_at=datetime.now(timezone.utc).isoformat())
-    path = directory / f"{name}.json"
     save_profile(stamped, path, tone=tone, scan=scan, anchors=anchors, roll=roll)
     return path
 
@@ -150,29 +222,57 @@ def load_anchors(path: str | Path) -> tuple[list[dict], str | None]:
     return list(data.get("anchors") or []), data.get("roll")
 
 
-def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityProfile]]:
-    """(filename stem, profile) pairs for every valid saved profile, sorted by name. A single
-    unreadable file is skipped with a warning rather than making every other profile inaccessible."""
+def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityProfile | None, str | None]]:
+    """(filename stem, profile, problem) triples for every *.json file in the profiles directory,
+    sorted by name. A file that can't be read - permission denied, corrupt/truncated JSON, or
+    missing a required field - is never skipped silently and never crashes the whole listing (2.2-4:
+    the previous version's own docstring promised this but only caught JSON errors, not OSError):
+    it's listed with `profile=None` and a plain-English `problem` string, for the caller to show."""
     directory = profiles_dir or default_profiles_dir()
     if not directory.exists():
         return []
-    results = []
+    results: list[tuple[str, DensityProfile | None, str | None]] = []
     for path in sorted(directory.glob("*.json")):
         try:
-            results.append((path.stem, load_profile(path)))
+            results.append((path.stem, load_profile(path), None))
         except (ValueError, json.JSONDecodeError) as exc:
-            print(f"Warning: skipping unreadable profile {path}: {exc}")
+            results.append((path.stem, None, str(exc)))
+        except OSError as exc:
+            results.append((path.stem, None, exc.strerror or str(exc)))
     return results
 
 
+def suggest_profile_name(name: str, profiles_dir: Path | None = None) -> str | None:
+    """A "did you mean" suggestion for a mistyped profile name - the closest saved, readable
+    profile name by string similarity, or None if none is close enough. Shared by every profile
+    subcommand (show/rename/edit/delete) and --profile's own not-found error (2.2-7)."""
+    names = [stem for stem, profile, problem in list_profiles(profiles_dir) if problem is None]
+    matches = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
+    return matches[0] if matches else None
+
+
+def damaged_profile_message(name: str, exc: Exception) -> str:
+    """A plain message for a saved profile file that exists but can't be parsed/read (corrupt or
+    hand-edited JSON, a missing required field) - so a raw JSONDecodeError/ValueError never reaches
+    the user directly (2.2-5)."""
+    return (
+        f"profile {name!r} is damaged and can't be read ({exc}) - re-save it from "
+        f"`halide calibrate --profile {name}`, or delete it with `halide profile delete {name}`"
+    )
+
+
 def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = None) -> Path:
+    old_name = validate_profile_name(old_name)
+    new_name = validate_profile_name(new_name)
     directory = profiles_dir or default_profiles_dir()
     old_path = directory / f"{old_name}.json"
     if not old_path.exists():
         raise FileNotFoundError(f"no saved profile named {old_name!r} in {directory}")
-    new_path = directory / f"{new_name}.json"
-    if new_path.exists():
+    # Case-insensitive, like save_named_profile (2.2-12): "a" -> "B" is still a collision if "b"
+    # is already a saved profile, on any filesystem.
+    if find_profile(new_name, directory) is not None:
         raise FileExistsError(f"a profile named {new_name!r} already exists in {directory}")
+    new_path = directory / f"{new_name}.json"
 
     # Rewrites the raw JSON rather than round-tripping through DensityProfile, so the optional
     # "tone"/"scan" sidecars survive a rename (round-tripping used to silently drop "tone").
@@ -195,6 +295,7 @@ def update_profile(name: str, profiles_dir: Path | None = None, **fields: str | 
     """Update one or more editable metadata fields on a saved profile in place. Leaves the
     calibration data, name, source, and created_at untouched. Raises ValueError for any field
     not in EDITABLE_FIELDS, and FileNotFoundError if `name` isn't a saved profile."""
+    name = validate_profile_name(name)
     unknown = set(fields) - set(EDITABLE_FIELDS)
     if unknown:
         raise ValueError(f"not an editable profile field: {', '.join(sorted(unknown))}")
@@ -212,6 +313,7 @@ def update_profile(name: str, profiles_dir: Path | None = None, **fields: str | 
 
 
 def delete_profile(name: str, profiles_dir: Path | None = None) -> None:
+    name = validate_profile_name(name)
     directory = profiles_dir or default_profiles_dir()
     path = directory / f"{name}.json"
     if not path.exists():

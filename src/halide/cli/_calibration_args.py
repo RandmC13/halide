@@ -5,27 +5,36 @@ flags/logic."""
 from __future__ import annotations
 
 import argparse
-import difflib
+import json
 import sys
 from dataclasses import replace
 
 from halide.calibration.profile_store import (
+    ProfileExistsError,
+    ProfileNameError,
+    damaged_profile_message,
     list_profiles,
     load_profile,
     load_scan_reference,
     load_tone_override,
     resolve_profile_path,
     save_named_profile,
+    suggest_profile_name,
+    validate_profile_name,
 )
+from halide.cli._output_policy import OutputPolicy, is_interactive, policy_from_args
 from halide.io.scan_metadata import ScanSettings, read_scan_metadata
 from halide.cli import console
 from halide.core.types import DensityProfile, Stage, ToneCurveParams
 
 
-def _suggest_profile_name(name: str) -> str | None:
-    names = [n for n, _ in list_profiles()]
-    matches = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
-    return matches[0] if matches else None
+def _profile_name_type(value: str) -> str:
+    """--save-profile-as's argparse `type=`: validated at parse time (exit code 2, shown in
+    --help's usage line) rather than only once the run has gone ahead and calibrated something."""
+    try:
+        return validate_profile_name(value)
+    except ProfileNameError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def add_stage_arguments(parser: argparse.ArgumentParser) -> None:
@@ -70,8 +79,10 @@ def add_calibration_arguments(
     parser.add_argument(
         "--save-profile-as",
         metavar="NAME",
+        type=_profile_name_type,
         help="Save the calibration profile used for this run (however it was obtained — manual, "
-        "loaded, automatic, or picked) under NAME for reuse via --profile NAME next time",
+        "loaded, automatic, or picked) under NAME for reuse via --profile NAME next time. Refuses "
+        "an existing name unless --overwrite is also given (or, in a terminal, confirmed)",
     )
     parser.add_argument(
         "--notes",
@@ -201,7 +212,8 @@ def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
     ):
         return
 
-    saved = sorted(list_profiles(), key=lambda item: item[1].created_at or "", reverse=True)
+    readable = [(stem, profile) for stem, profile, problem in list_profiles() if problem is None]
+    saved = sorted(readable, key=lambda item: item[1].created_at or "", reverse=True)
     options: list[tuple[str, str]] = []
     for stem, profile in saved[:_MENU_PROFILES]:
         bits = [b for b in (profile.film_stock, (profile.created_at or "")[:10]) if b]
@@ -250,14 +262,17 @@ def resolve_density_profile(
     if args.profile:
         try:
             path = resolve_profile_path(args.profile)
-            return load_profile(path), load_tone_override(path)
         except FileNotFoundError as exc:
-            suggestion = _suggest_profile_name(args.profile)
+            suggestion = suggest_profile_name(args.profile)
             if suggestion and console.confirm(f"No profile named '{args.profile}' — did you mean '{suggestion}'?"):
                 path = resolve_profile_path(suggestion)
-                return load_profile(path), load_tone_override(path)
-            hint = f" — did you mean '{suggestion}'?" if suggestion else ""
-            raise SystemExit(f"{exc}{hint}") from exc
+            else:
+                hint = f" — did you mean '{suggestion}'?" if suggestion else ""
+                raise SystemExit(f"{exc}{hint}") from exc
+        try:
+            return load_profile(path), load_tone_override(path)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise SystemExit(damaged_profile_message(path.stem, exc)) from exc
     if manual_given:
         return (
             DensityProfile(
@@ -318,7 +333,20 @@ def maybe_save_profile(
     notes = getattr(args, "notes", None)
     if notes:
         profile = replace(profile, notes=notes)
-    path = save_named_profile(profile, save_as, tone=tone, scan=scan)
+
+    overwrite = policy_from_args(args) is OutputPolicy.OVERWRITE
+    try:
+        path = save_named_profile(profile, save_as, tone=tone, scan=scan, overwrite=overwrite)
+    except ProfileExistsError:
+        if is_interactive() and console.confirm(f"A profile named '{save_as}' already exists - replace it?"):
+            path = save_named_profile(profile, save_as, tone=tone, scan=scan, overwrite=True)
+        elif is_interactive():
+            raise SystemExit("Nothing saved. (--overwrite replaces it without asking next time.)")
+        else:
+            raise SystemExit(
+                f"a profile named {save_as!r} already exists. Add --overwrite to replace it, or "
+                "choose a different --save-profile-as name."
+            )
     if announce:
         print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))
     return path
