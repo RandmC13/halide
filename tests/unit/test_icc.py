@@ -253,3 +253,66 @@ def test_convert_to_working_space_on_real_scans(name):
     np.testing.assert_array_max_ulp(
         convert_to_working_space(band, profile), _convert_with_colour(band, profile), maxulp=2
     )
+
+
+# ---------------------------------------------------------------------------
+# F08: density-based linearity, damage-proof parsing, D50 white point
+# ---------------------------------------------------------------------------
+def _with_trc(trc: bytes) -> bytes:
+    tags = dict(LINEAR_TAGS)
+    for ch in ("rTRC", "gTRC", "bTRC"):
+        tags[ch] = trc
+    return build_icc(tags)
+
+
+def test_rejects_gamma_1_013_curve():
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(0, [1.013])))
+
+
+def test_rejects_a_black_offset_of_0_004():
+    # y = 0.996 x + 0.004 (parametric type 2 with c = 0 would clip; type 1: (a x + b)^1)
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(1, [1.0, 0.996, 0.004])))
+
+
+def test_rejects_unadapted_primaries():
+    tags = dict(LINEAR_TAGS)
+    tags["rXYZ"] = _xyz_tag(0.6734 * 0.95, 0.2790, -0.0019)  # column sum off by ~0.03 in X
+    with pytest.raises(UnsupportedICCProfileError, match="isn't adapted to D50"):
+        parse_linear_rgb_profile(build_icc(tags))
+
+
+def _tag_boundaries() -> list[int]:
+    data = build_icc(LINEAR_TAGS)
+    (n,) = struct.unpack(">I", data[128:132])
+    cuts = {132 + 12 * n - 1, 131}
+    for i in range(n):
+        _, off, size = struct.unpack(">4sII", data[132 + 12 * i : 144 + 12 * i])
+        cuts.update({off, off + 1, off + size - 1})
+    return sorted(c for c in cuts if c < len(data))
+
+
+@pytest.mark.parametrize("cut", _tag_boundaries())
+def test_truncated_profile_is_reported_as_damaged(cut):
+    data = build_icc(LINEAR_TAGS)[:cut]
+    if cut < 132:  # not even a tag table: the header check speaks first
+        with pytest.raises(UnsupportedICCProfileError):
+            parse_linear_rgb_profile(data)
+        return
+    with pytest.raises(UnsupportedICCProfileError, match=r"damaged \(.* runs past the end\); re-export the scan"):
+        parse_linear_rgb_profile(data)
+
+
+def test_tag_smaller_than_its_contents_is_damaged():
+    data = bytearray(build_icc(LINEAR_TAGS))
+    (n,) = struct.unpack(">I", data[128:132])
+    for i in range(n):
+        if data[132 + 12 * i : 136 + 12 * i] == b"rXYZ":
+            data[140 + 12 * i : 144 + 12 * i] = struct.pack(">I", 8)  # size too small
+    with pytest.raises(UnsupportedICCProfileError, match="'rXYZ' tag runs past the end"):
+        parse_linear_rgb_profile(bytes(data))
+
+
+def test_halides_own_output_profile_passes():
+    parse_linear_rgb_profile(output_profile_bytes())
