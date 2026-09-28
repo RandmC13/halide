@@ -9,12 +9,28 @@ import json
 import numpy as np
 import pytest
 
+import halide.device
+from halide import gpu_service
 from halide.calibration.auto import auto_density_balance
-from halide.core.density import solve_density_balance
+from halide.core._xp import register_namespace
 from halide.core.tone_render import ResolvedTone
 from halide.core.types import DensityProfile, ToneCurveParams
+from halide.device import ComputeDevice
+from halide.gpu_service import ServiceClient
 from halide.io.tiff import read_tiff, write_tiff
-from halide.processing import ScanColorError, Stage, print_scan, process_scan, provenance_json
+from halide.processing import (
+    DeviceJobFailed,
+    DevelopRequest,
+    ScanColorError,
+    Stage,
+    _read_scan,
+    develop_request,
+    print_scan,
+    process_scan,
+    provenance_json,
+)
+from tests.unit import _fake_device
+from tests.unit._fake_device import FakeDeviceArray, fake_xp
 from tests.unit.test_icc import LINEAR_TAGS, build_icc
 
 SHADOW_RGB = (0.094, 0.131, 0.050)
@@ -44,8 +60,8 @@ def _write_negative(path, seed=1, bad_slice=None, bad_value=np.nan, bad_fraction
 def test_one_nan_pixel_invert_succeeds_and_warns(tmp_path):
     scan = tmp_path / "nan.tif"
     # One bad raw value corrupts all 3 of that pixel's channels once the ICC conversion's matrix
-    # multiply mixes them (a real effect, not a test artifact — see 2.1-2), so this counts as 3
-    # non-finite values at the working-space boundary, not 1.
+    # multiply mixes them (a real effect, not a test artifact — see 2.1-2) — but it's still one
+    # *pixel* (one spot on the frame), which is what the warning counts and reports (R7).
     _write_negative(scan, seed=1, bad_slice=(0, 0, 0), bad_value=np.nan)
     out = tmp_path / "out.tif"
     warnings = []
@@ -56,7 +72,7 @@ def test_one_nan_pixel_invert_succeeds_and_warns(tmp_path):
     result = read_tiff(out)
     assert np.isfinite(result.image).all()
     assert len(warnings) == 1
-    assert "3 pixels weren't valid numbers (NaN/inf) and were treated as clear film" in warnings[0]
+    assert "1 pixel wasn't a valid number (NaN/inf) and was treated as clear film" in warnings[0]
     assert "check the raw converter's export" in warnings[0]
     assert str(scan) in warnings[0]
 
@@ -106,7 +122,104 @@ def test_print_scan_also_cleans_nonfinite_pixels_and_warns(tmp_path):
     result = read_tiff(out)
     assert np.isfinite(result.image).all()
     assert len(warnings) == 1
-    assert "3 pixels weren't valid numbers (NaN/inf)" in warnings[0]  # see test_one_nan_pixel... above
+    assert "1 pixel wasn't a valid number (NaN/inf)" in warnings[0]  # see test_one_nan_pixel... above
+
+
+# --- Device / GPU service (R8: bad input isn't a device failure; R7: warnings must travel back
+# through the service without printing) --------------------------------------------------------
+
+
+@pytest.fixture
+def fake_gpu(monkeypatch):
+    """A ComputeDevice whose to_device/to_host are the strict fake (numpy underneath) — both for
+    the in-process device path and for a real gpu_service._serving(...), which runs the identical
+    run_device_job through this same halide.device module."""
+    register_namespace(FakeDeviceArray, fake_xp)
+    monkeypatch.setattr(halide.device, "to_device", _fake_device.to_device)
+    monkeypatch.setattr(halide.device, "to_host", _fake_device.to_host)
+    return ComputeDevice(kind="gpu", name="Fake GPU")
+
+
+def test_over_one_percent_nonfinite_on_device_raises_plainly_no_gpu_wording_no_retry(tmp_path, fake_gpu):
+    # R8: run_device_job must not wrap a ScanColorError as a DeviceJobFailed — that would print
+    # "the GPU failed (...)" and then retry on the CPU, which would just raise the identical error
+    # a second time. It must fail once, plainly, exactly as the CPU-only path does.
+    scan = tmp_path / "broken.tif"
+    _write_negative(scan, seed=8, bad_fraction=0.02)
+    out = tmp_path / "out.tif"
+    warnings = []
+
+    with pytest.raises(ScanColorError) as excinfo:
+        process_scan(scan, out, Stage.FULL, PROFILE, ToneCurveParams(), device=fake_gpu, on_warning=warnings.append)
+
+    assert "aren't valid numbers - this export looks broken" in str(excinfo.value)
+    assert warnings == []  # no "the GPU failed" fallback warning — it never fell back
+    assert not out.exists()
+
+
+def test_over_one_percent_nonfinite_through_service_raises_plainly_no_retry(tmp_path, fake_gpu):
+    # Same R8 requirement, through the GPU service: the client must raise the ScanColorError the
+    # service sends back as-is, not a DeviceJobFailed.
+    scan = tmp_path / "broken.tif"
+    _write_negative(scan, seed=9, bad_fraction=0.02)
+    host, source_profile = _read_scan(scan)
+    request = DevelopRequest(source_profile=source_profile, scan_gain=1.0, density_profile=PROFILE,
+                             stage=Stage.FULL, tone_params=ToneCurveParams())
+
+    from halide.shared_frames import new_frame
+
+    with gpu_service._serving(fake_gpu) as address, ServiceClient(address) as client:
+        with new_frame(host.shape, host.dtype) as frame:
+            frame.array[...] = host
+            with pytest.raises(ScanColorError) as excinfo:
+                client.develop(frame, request, name=str(scan))
+            assert not isinstance(excinfo.value, DeviceJobFailed)
+        assert "aren't valid numbers - this export looks broken" in str(excinfo.value)
+
+
+def test_service_reports_nonfinite_warning_without_printing(tmp_path, capsys, fake_gpu):
+    # R7 (this fix round): the warning must travel back in the reply, not be printed from inside
+    # the spawned/threaded service process — nothing here is a photographer's terminal.
+    scan = tmp_path / "nan.tif"
+    _write_negative(scan, seed=10, bad_slice=(0, 0, 0), bad_value=np.nan)
+    host, source_profile = _read_scan(scan)
+    request = DevelopRequest(source_profile=source_profile, scan_gain=1.0, density_profile=PROFILE,
+                             stage=Stage.FULL, tone_params=ToneCurveParams())
+
+    from halide.shared_frames import new_frame
+
+    with gpu_service._serving(fake_gpu) as address, ServiceClient(address) as client:
+        with new_frame(host.shape, host.dtype) as frame:
+            frame.array[...] = host
+            reply = client.develop(frame, request, name=str(scan))
+
+    assert len(reply.warnings) == 1
+    assert "1 pixel wasn't a valid number (NaN/inf)" in reply.warnings[0]
+    assert str(scan) in reply.warnings[0]
+    out, err = capsys.readouterr()
+    assert out == "" and err == ""  # the service printed nothing
+
+
+def test_process_scan_through_service_re_emits_the_warning_via_on_warning(tmp_path, capsys, fake_gpu):
+    # The full path a batch worker takes (processing.process_scan(..., service=...)): the worker's
+    # own on_warning must receive the message exactly as the in-process paths deliver it, and the
+    # service itself must still print nothing.
+    scan = tmp_path / "nan.tif"
+    _write_negative(scan, seed=11, bad_slice=(2, 2, 2), bad_value=np.nan)
+    out = tmp_path / "out.tif"
+    warnings = []
+
+    with gpu_service._serving(fake_gpu) as address, ServiceClient(address) as client:
+        resolved = process_scan(scan, out, Stage.FULL, PROFILE, ToneCurveParams(), on_warning=warnings.append,
+                                service=client, shm_prefix=None)
+
+    assert resolved is not None
+    assert out.exists()
+    assert len(warnings) == 1
+    assert "1 pixel wasn't a valid number (NaN/inf)" in warnings[0]
+    assert str(scan) in warnings[0]
+    out_text, err_text = capsys.readouterr()
+    assert out_text == "" and err_text == ""
 
 
 # --- Auto calibration (calibration/auto.py) ------------------------------------------------------
