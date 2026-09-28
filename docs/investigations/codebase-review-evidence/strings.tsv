@@ -1,0 +1,253 @@
+file:line	command(s)	kind	text
+src/halide/cli/main.py:43	all	help	Develop scanned color negative film into a positive image.
+src/halide/cli/main.py:45	all	help	Show full Python tracebacks for unexpected errors instead of a short message (must come before the subcommand, e.g. `halide --debug invert ...`; HALIDE_DEBUG=1 works anywhere)
+src/halide/cli/main.py:56	invert	help	Invert a single negative scan
+src/halide/cli/main.py:59	batch	help	Invert a directory of negative scans in parallel
+src/halide/cli/main.py:61-64	print	help	Print a flat positive (from `invert --output flat`, optionally edited in darktable) onto the paper curve
+src/halide/cli/main.py:66-68	export	help	Convert a processed ACEScg TIFF into a delivery-ready sRGB PNG/JPEG
+src/halide/cli/main.py:70-72	contact	help	Make a high-res contact sheet of a processed folder (TIFF or exported PNG/JPEG)
+src/halide/cli/main.py:74-76	check	help	Check a roll's scans were made consistently (camera settings, white balance, edits)
+src/halide/cli/main.py:78	profile	help	Manage saved calibration profiles
+src/halide/cli/main.py:80-82	calibrate	help	Launch the anchor-frame calibration picker GUI
+src/halide/cli/main.py:84-86	gpu	help	Find an NVIDIA GPU and report/add optional GPU support
+src/halide/cli/main.py:128	all (unreachable)	error	unknown command {args.command!r}
+src/halide/cli/console.py:284-307	all (no subcommand)	heading	h a l i d e / develop scanned color negative film (welcome banner)
+src/halide/cli/console.py:294-305	all (no subcommand)	hint	New here? Start with: / halide calibrate in_dir/  ... / halide invert negative.tif positive.tif ... / halide check in_dir/ ... / halide batch in_dir/ out_dir/ ... / halide batch in_dir/ --contact-sheet s.jpg ... / Editing yourself? Develop flat, edit in darktable, then print: ... / Run `halide --help` for the full command list.
+src/halide/cli/console.py:318-324	all (--help)	heading	halide · develop scanned color negative film
+src/halide/cli/console.py:112	all	other	{green ✓} {message}  (success() wrapper)
+src/halide/cli/console.py:116	all	error	{red ✗ Error:} {message}  (error() wrapper — note "Error:" prefixed text)
+src/halide/cli/console.py:120	all	warning	{yellow ⚠ Warning:} {message}  (warning() wrapper)
+src/halide/cli/console.py:544-549	invert/print/export/contact (single-file)	prompt	{path} already exists — overwrite?
+src/halide/cli/console.py:534	confirm() generic	prompt	[Y/n] / [y/N] suffix on any confirm() prompt
+src/halide/cli/console.py:602	all	warning	Cancelled.   (on Ctrl-C, via run_guarded)
+src/halide/cli/console.py:607	all	error	{code}  (SystemExit(str) reprinted via error())
+src/halide/cli/console.py:613	all	error	halide hit an unexpected error: {exc}
+src/halide/cli/console.py:614	all	hint	(re-run with --debug, or set HALIDE_DEBUG=1, for the full traceback)
+src/halide/cli/_calibration_args.py:45	invert/batch/calibrate	help	A saved calibration profile — either a file path or a saved profile's name
+src/halide/cli/_calibration_args.py:47	invert/batch	help	Red channel white-balance multiplier (manual calibration)
+src/halide/cli/_calibration_args.py:48	invert/batch	help	Blue channel white-balance multiplier (manual calibration)
+src/halide/cli/_calibration_args.py:50-51	invert/batch	help	Red channel density-balance scale (manual calibration, default: 1.0)
+src/halide/cli/_calibration_args.py:52-54	invert/batch	help	Blue channel density-balance scale (manual calibration, default: 1.0)
+src/halide/cli/_calibration_args.py:57-61	invert/batch	help	Automatically estimate density balance from the image itself (approximate — prefer a saved --profile from a real calibration when you have one)
+src/halide/cli/_calibration_args.py:65-69	invert	help	Interactively pick shadow/highlight neutral points in a small GUI window, then use that calibration for this run only (combine with --save-profile-as to also keep it for later)
+src/halide/cli/_calibration_args.py:72-75	invert/batch	help	Save the calibration profile used for this run (however it was obtained — manual, loaded, automatic, or picked) under NAME for reuse via --profile NAME next time
+src/halide/cli/_calibration_args.py:77-80	invert/batch	help	Attach a free-text note to the profile saved via --save-profile-as (e.g. how it was generated) — ignored without --save-profile-as; edit later with `halide profile edit`
+src/halide/cli/_calibration_args.py:88-96	invert/batch	help	print (default): a finished print — exposure and paper grade fitted to this negative, then the paper curve. flat: white balance + density balance + invert + one global exposure scale only, a minimal-bias linear positive for editing elsewhere (e.g. darktable, then `halide print`)
+src/halide/cli/_calibration_args.py:99-103	invert/batch/print	help	Print exposure (where the negative sits on the paper curve, in density units). Default: fitted per image so the negative's highlights land on the paper's highlight point. Pass a value to pin it, e.g. to match a look across a whole roll.
+src/halide/cli/_calibration_args.py:106-111	invert/batch/print	help	Paper grade, 0-1 (1.0 = the untouched reference paper; lower = softer). Default: fitted per image so the negative's density range fills the paper's range (capped at 1.0), or a value saved into the resolved --profile's calibration if it has one.
+src/halide/cli/_calibration_args.py:117-123	invert/batch	help	Correct for frames digitized at a different camera exposure (shutter/aperture/ISO, from EXIF) than the profile was calibrated at, by rescaling each frame to the profile's scan exposure before calibration. Exact for a linear scan, but it can't fix a differing raw white balance — scanning every frame with the same manual settings is better (see `halide check`)
+src/halide/cli/_calibration_args.py:126-129	invert/batch	help	With --match-scan-exposure: the scan the profile was calibrated on, for a profile saved without its scan settings (or save the profile again from that frame)
+src/halide/cli/_calibration_args.py:140	invert/batch	error	--scan-reference {reference_frame}: no camera exposure settings (EXIF) found in it
+src/halide/cli/_calibration_args.py:175	invert/print/batch	other	flat output: exposure scale ×{resolved.linear_scale:.4g}
+src/halide/cli/_calibration_args.py:176	invert/print/batch	other	print: grade (--contrast) {resolved.contrast:.3f}, exposure (--exposure) {resolved.exposure:+.3f}
+src/halide/cli/_calibration_args.py:216	invert/batch	prompt	No calibration given for {what}. Which would you like to use?
+src/halide/cli/_calibration_args.py:218	invert/batch	prompt	(showing the {N} newest profiles — `--profile NAME` for the others)
+src/halide/cli/_calibration_args.py:208	invert/batch	prompt	Profile '{stem}'  ({film_stock} · {date})
+src/halide/cli/_calibration_args.py:210	invert	prompt	Pick neutral points in the calibration picker now
+src/halide/cli/_calibration_args.py:211	invert/batch	prompt	Use --auto-density (a quick automatic estimate for each frame)
+src/halide/cli/_calibration_args.py:213	batch	prompt	Use --auto-density-roll (one automatic estimate for the whole roll)
+src/halide/cli/_calibration_args.py:214	invert/batch	prompt	Cancel
+src/halide/cli/_calibration_args.py:221	invert/batch	error	no calibration chosen
+src/halide/cli/_calibration_args.py:256	invert/batch	prompt	No profile named '{args.profile}' — did you mean '{suggestion}'?
+src/halide/cli/_calibration_args.py:245-248	invert/batch	error	--profile, manual overrides (--rm/--bm/--rs/--bs), --auto-density, and --pick are mutually exclusive
+src/halide/cli/_calibration_args.py:287-291	invert/batch	error	density balance requires a calibration source: --profile <name-or-path> (make one by picking neutral points in `halide calibrate ROLL_DIR` and saving it), manual overrides (--rm/--bm/--rs/--bs), --auto-density for a quick approximate guess,{pick_hint} or --invert-only to skip density balance entirely
+src/halide/cli/_calibration_args.py:312-316	invert/batch	error	--save-profile-as needs a single resolved profile to save, but none was computed here (per-frame --auto-density produces a different profile per image, and --invert-only skips density balance entirely — use --auto-density-roll in `batch` for a single shared automatic profile, or a manual/--profile source instead)
+src/halide/cli/_calibration_args.py:323	invert/batch	other	Saved calibration profile as {save_as!r} ({path})
+src/halide/cli/_device_args.py:44	all	help	where to do the arithmetic: auto (GPU if one is usable; default), cpu, or gpu (fail if unusable). Also HALIDE_DEVICE.
+src/halide/cli/_device_args.py:76	invert/batch/print/export/contact/calibrate	warning	GPU not usable, using CPU instead: {device.fallback_reason}
+src/halide/cli/_device_args.py:87	batch/export/print (run sheet)	row	GPU — {device.name}
+src/halide/cli/_device_args.py:88	batch/export/print (run sheet)	row	CPU
+src/halide/cli/_device_args.py:107	invert (once)/run sheet	hint	{name} found; add GPU support with: halide gpu --install
+src/halide/cli/_run_sheet.py:26	batch/print/export	other	{n} frame / {n} frames
+src/halide/cli/_run_sheet.py:31	batch/print/export	row	{roll name} · {n frames} → {destination}
+src/halide/cli/_run_sheet.py:41	batch/print/export (GPU)	progress	starting the GPU service…
+src/halide/cli/_run_sheet.py:53	batch/print/export (GPU)	row	one GPU process shared by all workers
+src/halide/cli/_run_sheet.py:55	batch/print/export (GPU)	row	one GPU context per worker
+src/halide/cli/_run_sheet.py:64-65	batch/print/export (GPU)	warning	GPU service not used: {compute.fallback_reason} — each worker uses the GPU itself instead, which takes more memory per worker
+src/halide/cli/_run_sheet.py:87	batch/print/export	row	{args.workers} (--workers)
+src/halide/cli/_run_sheet.py:96	batch/print/export	row	auto-selected to fit free GPU memory
+src/halide/cli/_run_sheet.py:98	batch/print/export	row	auto-selected from free memory and CPU cores
+src/halide/cli/_run_sheet.py:100	batch/print/export	row	{workers} · {reason} (--workers N overrides)
+src/halide/cli/_run_sheet.py:113	batch (GPU service)	row	auto-selected to fit free shared memory
+src/halide/cli/_contact_sheet.py:19	batch/contact	help	Frames per strip (default: {DEFAULT_COLUMNS})
+src/halide/cli/_contact_sheet.py:24-26	batch/contact	help	Width of each frame on the sheet, in pixels (default: {DEFAULT_FRAME_WIDTH}; a six-across sheet is then about 6000 px wide)
+src/halide/cli/_contact_sheet.py:28	batch/contact	help	Title printed at the top of the sheet (default: the input folder's name)
+src/halide/cli/_contact_sheet.py:81	batch/contact	other	Contact sheet → {sheet_path} ({sheet.width}×{sheet.height} px)
+src/halide/cli/commands/batch_cmd.py:41	batch	help	Directory of input linear TIFF scans
+src/halide/cli/commands/batch_cmd.py:44-48	batch	help	Directory to write output TIFFs into. Optional with --contact-sheet: leave it out to preview settings as a contact sheet without keeping any full-size TIFFs
+src/halide/cli/commands/batch_cmd.py:49-55	batch	help	Also write a high-resolution contact sheet of the roll (.jpg or .png), each frame captioned with its print settings — for comparing settings. Without an output directory this is a preview: frames are developed exactly as a real run would, but only small thumbnails are kept (in a temporary folder, deleted afterwards)
+src/halide/cli/commands/batch_cmd.py:55	batch	help	Suffix to append to output filenames
+src/halide/cli/commands/batch_cmd.py:62-67	batch	help	Estimate one shared density-balance profile from the whole roll, rather than per-frame (--auto-density) — generally more consistent across a roll, at the cost of not adapting to any single frame's content
+src/halide/cli/commands/batch_cmd.py:72-77	batch	help	Number of parallel worker processes (default: auto-selected from available memory and CPU count — full-resolution scans are memory-heavy enough that RAM, not CPU threads, is usually the real limit; pass this to override the auto-selected count)
+src/halide/cli/commands/batch_cmd.py:76	batch	help	Suppress the progress display
+src/halide/cli/commands/batch_cmd.py:89	batch	error	--match-scan-exposure: none of these frames has camera exposure settings (EXIF) to match from
+src/halide/cli/commands/batch_cmd.py:103-109	batch	row	matched to {reference.describe()} ({reference_origin}) · {n}/{n} frames adjusted
+src/halide/cli/commands/batch_cmd.py:109	batch	warning	(unknown_reference_warning text, see below two variants)
+src/halide/cli/commands/batch_cmd.py:111	batch	warning	no camera exposure settings (EXIF) in {names} — left unadjusted
+src/halide/cli/commands/batch_cmd.py:150-153	batch	warning	the profile doesn't record the scan exposure it was calibrated at — if its calibration frame was scanned differently, a constant colour offset remains across the roll (pass --scan-reference FRAME, or save the profile again from that frame)
+src/halide/cli/commands/batch_cmd.py:155-157	batch	warning	manual values don't record which scan they were measured on — if that frame was scanned differently, a constant colour offset remains across the roll (pass --scan-reference FRAME)
+src/halide/cli/commands/batch_cmd.py:191	batch	error	input directory not found: {input_dir}
+src/halide/cli/commands/batch_cmd.py:193	batch	error	give an output directory, --contact-sheet SHEET (a preview), or both
+src/halide/cli/commands/batch_cmd.py:200	batch	error	(check_sheet_path ValueError text, see io/contact_sheet.py)
+src/halide/cli/commands/batch_cmd.py:210	batch	other	No TIFF files found in {input_dir}
+src/halide/cli/commands/batch_cmd.py:240	batch	warning	(assess_roll issue lines — scan consistency, see calibration/scan_consistency.py)
+src/halide/cli/commands/batch_cmd.py:242	batch	hint	details, and how to scan a roll consistently: halide check {input_dir}
+src/halide/cli/commands/batch_cmd.py:244	batch	row	scanned consistently
+src/halide/cli/commands/batch_cmd.py:246	batch	row	not checked — no camera EXIF or darktable history in these files
+src/halide/cli/commands/batch_cmd.py:251	batch	warning	--match-scan-exposure has no effect here: each frame is calibrated from itself
+src/halide/cli/commands/batch_cmd.py:263	batch	row	none — density balance skipped (--invert-only)
+src/halide/cli/commands/batch_cmd.py:271	batch	progress	estimating one profile from all {n frames}…
+src/halide/cli/commands/batch_cmd.py:279	batch	row	auto · one profile for the whole roll, from {n frames}
+src/halide/cli/commands/batch_cmd.py:281	batch	warning	skipped unreadable {name}
+src/halide/cli/commands/batch_cmd.py:283	batch	warning	(warnings raised inside estimate_roll_density_profile, e.g. density-separation warning)
+src/halide/cli/commands/batch_cmd.py:290	batch	row	(calibration text — see _calibration_text: "auto · estimated separately for each frame" / "profile {name}" / "manual · white balance R x{rm} B x{bm}, density scale R {rs} B {bs}")
+src/halide/cli/commands/batch_cmd.py:290	batch	other	(with its saved print settings)
+src/halide/cli/commands/batch_cmd.py:292	batch	row	saved as {name!r} — reuse with --profile {name}
+src/halide/cli/commands/batch_cmd.py:296	batch	row	(output text — "density balance only — not inverted (--density-only)" / "flat positive for editing elsewhere (--output flat)" / "print · grade {g} · exposure {e}")
+src/halide/cli/commands/batch_cmd.py:318	batch	error	--auto-density-roll cannot be combined with --profile/manual overrides/--auto-density
+src/halide/cli/commands/batch_cmd.py:368	batch	warning	{filename}: {r.warning}
+src/halide/cli/commands/batch_cmd.py:373	batch	warning	Cancelled — {n}/{n} frames processed.
+src/halide/cli/commands/batch_cmd.py:375	batch	error	{filename}: {r.error}
+src/halide/cli/commands/calibrate_cmd.py:17	calibrate	help	a roll folder, or one or more TIFF scans, to load on startup (optional)
+src/halide/cli/commands/calibrate_cmd.py:21	calibrate	help	reopen a saved profile (name or path): its neutral points, roll details and roll
+src/halide/cli/commands/calibrate_cmd.py:37-42	calibrate	error	couldn't launch the calibration picker: no display available (DISPLAY/WAYLAND_DISPLAY isn't set) — this needs a real display; if you're on a remote/SSH session, try a local one or forward X11
+src/halide/cli/commands/calibrate_cmd.py:52	calibrate	heading	halide · calibration picker
+src/halide/cli/commands/calibrate_cmd.py:53	calibrate	row	Compute: {device_row}
+src/halide/cli/commands/calibrate_cmd.py:60-62	calibrate	error	couldn't launch the calibration picker window ({exc})
+src/halide/cli/commands/check_cmd.py:20	check	help	A directory of scans (one roll), or individual scan TIFFs
+src/halide/cli/commands/check_cmd.py:31	check	error	not found: {item}
+src/halide/cli/commands/check_cmd.py:45	check	other	No TIFF files found
+src/halide/cli/commands/check_cmd.py:49	check	other	(full_width_rule — top/bottom frame)
+src/halide/cli/commands/check_cmd.py:50	check	heading	Checked {n} scan(s)
+src/halide/cli/commands/check_cmd.py:52	check	heading	Camera exposure when digitizing
+src/halide/cli/commands/check_cmd.py:54	check	row	{setting}  {n} frame(s)  {names}
+src/halide/cli/commands/check_cmd.py:56	check	row	(no EXIF)  {n} frame(s)  {names}
+src/halide/cli/commands/check_cmd.py:58-61	check	warning	{spread:.1f} stops between the brightest and darkest scan — correctable with --match-scan-exposure on invert/batch
+src/halide/cli/commands/check_cmd.py:63	check	other	consistent
+src/halide/cli/commands/check_cmd.py:65	check	heading	Raw white balance (darktable exports)
+src/halide/cli/commands/check_cmd.py:67	check	row	(no darktable history found — can't check)
+src/halide/cli/commands/check_cmd.py:69	check	row	R {r} G {g} B {b}  {n} frame(s)  {names}
+src/halide/cli/commands/check_cmd.py:71-76	check	warning	white balance differs between frames — not correctable after export (it's applied in the camera's own colour space); re-export with one fixed white balance for the roll ("as shot" is only fixed if the camera was set to a fixed white balance when scanning)
+src/halide/cli/commands/check_cmd.py:77	check	other	consistent
+src/halide/cli/commands/check_cmd.py:79	check	heading	Tone/colour processing in the raw converter
+src/halide/cli/commands/check_cmd.py:82	check	warning	{name}: {modules} active — this export isn't linear; disable and re-export
+src/halide/cli/commands/check_cmd.py:84	check	other	none active
+src/halide/cli/commands/check_cmd.py:86	check	row	(no darktable history found — can't check)
+src/halide/cli/commands/check_cmd.py:89	check	hint	(SCANNING_GUIDANCE text, from calibration/scan_consistency.py)
+src/halide/cli/commands/contact_cmd.py:34-36	contact	help	A folder of processed frames (TIFF output of invert/batch/print, or PNG/JPEG from export), or individual files, followed by the sheet to write
+src/halide/cli/commands/contact_cmd.py:38	contact	help	Number of parallel worker processes (default: auto-selected)
+src/halide/cli/commands/contact_cmd.py:39	contact	help	Suppress the progress display
+src/halide/cli/commands/contact_cmd.py:53	contact	error	not found: {item}
+src/halide/cli/commands/contact_cmd.py:66	contact	error	usage: halide contact <folder-or-files...> <sheet.jpg|.png>
+src/halide/cli/commands/contact_cmd.py:71	contact	error	(check_sheet_path ValueError text)
+src/halide/cli/commands/contact_cmd.py:74	contact	other	No processed frames (TIFF/PNG/JPEG) found
+src/halide/cli/commands/contact_cmd.py:90	contact	row	Compute: CPU · developed frames need no GPU
+src/halide/cli/commands/contact_cmd.py:104	contact	warning	(export_memory_budget_warning text)
+src/halide/cli/commands/contact_cmd.py:128	contact	error	{filename}: {r.error}
+src/halide/cli/commands/export_cmd.py:31	export	help	Input ACEScg TIFF, or a directory of them (output of `halide invert`/`halide batch`)
+src/halide/cli/commands/export_cmd.py:35-37	export	help	Output image path (.png, .jpg, or .jpeg) for a single file, or an output directory when `input` is a directory
+src/halide/cli/commands/export_cmd.py:39	export	help	JPEG quality, 1-100 (default: 95; ignored for PNG)
+src/halide/cli/commands/export_cmd.py:45-47	export	help	Output format when `input` is a directory (default: png). Ignored for a single file, where the output path's own extension is used instead.
+src/halide/cli/commands/export_cmd.py:51	export	help	Suffix to append to output filenames when `input` is a directory (default: none)
+src/halide/cli/commands/export_cmd.py:56-58	export	help	Number of parallel worker processes when `input` is a directory (default: auto-selected from available memory and CPU count, same as `halide batch`; pass this to override the auto-selected count)
+src/halide/cli/commands/export_cmd.py:61	export	help	Suppress the progress display when `input` is a directory
+src/halide/cli/commands/export_cmd.py:71	export	error	input file not found: {input_path}
+src/halide/cli/commands/export_cmd.py:79	export	warning	GPU not usable, using CPU instead: {reason}
+src/halide/cli/commands/export_cmd.py:93	export	warning	(export_delivery_image on_warning callback text)
+src/halide/cli/commands/export_cmd.py:97-100	export	other	Exported → {output_path} ({time}, {size}, {device})
+src/halide/cli/commands/export_cmd.py:112	export	other	No TIFF files found in {input_dir}
+src/halide/cli/commands/export_cmd.py:163	export	warning	{filename}: {r.warning}
+src/halide/cli/commands/export_cmd.py:168	export	warning	Cancelled — {n}/{n} frames processed.
+src/halide/cli/commands/export_cmd.py:170	export	error	{filename}: {r.error}
+src/halide/cli/commands/gpu_cmd.py:26	gpu	help	install GPU support (about 1 GB download); asks to confirm unless --yes is given
+src/halide/cli/commands/gpu_cmd.py:31-33	gpu	help	with --install, skip the confirmation prompt (for scripts; still refuses with no usable NVIDIA driver)
+src/halide/cli/commands/gpu_cmd.py:51	gpu	other	{device.name} — GPU support is installed and working.
+src/halide/cli/commands/gpu_cmd.py:52	gpu	other	GPU is in use by default (--device auto).
+src/halide/cli/commands/gpu_cmd.py:56	gpu	other	GPU support is installed, but the card isn't usable right now.
+src/halide/cli/commands/gpu_cmd.py:57	gpu	other	{device.fallback_reason}
+src/halide/cli/commands/gpu_cmd.py:58	gpu	other	halide will use the CPU until this is fixed (or use --device cpu to force it).
+src/halide/cli/commands/gpu_cmd.py:63	gpu	other	No NVIDIA GPU found. halide will run on the CPU.
+src/halide/cli/commands/gpu_cmd.py:68-73	gpu	other	{name} found, but its driver is too old for GPU support (needs CUDA 12 or newer; this one supports CUDA {v}). Update the NVIDIA driver to use it.
+src/halide/cli/commands/gpu_cmd.py:75	gpu	other	{name} found (driver supports CUDA {v}).
+src/halide/cli/commands/gpu_cmd.py:76	gpu	other	GPU support is not installed — add it with: halide gpu --install (about 1 GB download)
+src/halide/cli/commands/gpu_cmd.py:83	gpu --install	other	GPU support is already installed.
+src/halide/cli/commands/gpu_cmd.py:85	gpu --install	other	{device.name} — working, in use by default (--device auto).
+src/halide/cli/commands/gpu_cmd.py:87	gpu --install	other	It isn't usable right now: {device.fallback_reason}
+src/halide/cli/commands/gpu_cmd.py:92	gpu --install	other	No NVIDIA GPU found — nothing to install.
+src/halide/cli/commands/gpu_cmd.py:98-102	gpu --install	other	{name}'s driver is too old for GPU support (needs CUDA 12 or newer; this one supports CUDA {v}). Update the NVIDIA driver, then run `halide gpu --install` again.
+src/halide/cli/commands/gpu_cmd.py:106	gpu --install	other	halide can't install GPU support automatically here — there's no pip in {sys.prefix}.
+src/halide/cli/commands/gpu_cmd.py:107	gpu --install	hint	Run whichever of these matches how halide itself was installed:
+src/halide/cli/commands/gpu_cmd.py:110-112	gpu --install	hint	{python} -m pip install "{package}" / pipx inject halide "{package}" / uv tool install --with "{package}" halide
+src/halide/cli/commands/gpu_cmd.py:117	gpu --install	other	GPU support for halide: {name} (driver supports CUDA {v})
+src/halide/cli/commands/gpu_cmd.py:118-121	gpu --install	other	This installs {package} into halide's Python environment ({prefix}) — about 1 GB, mostly NVIDIA's CUDA libraries. Remove it later with: {python} -m pip uninstall {dist}
+src/halide/cli/commands/gpu_cmd.py:125	gpu --install	other	Not installing — pass --yes to install without asking (no terminal to confirm in).
+src/halide/cli/commands/gpu_cmd.py:126	gpu --install	prompt	Install now? [y/N]
+src/halide/cli/commands/gpu_cmd.py:129	gpu --install	other	Not installed.
+src/halide/cli/commands/gpu_cmd.py:134	gpu --install	other	Install failed — see the pip output above.
+src/halide/cli/commands/gpu_cmd.py:147-148	gpu --install	other	GPU support was installed, but checking it failed (the error is above). Run `halide gpu` to check again.
+src/halide/cli/commands/invert_cmd.py:40	invert	help	Input linear TIFF scan of a negative
+src/halide/cli/commands/invert_cmd.py:41	invert	help	Output TIFF path
+src/halide/cli/commands/invert_cmd.py:56	invert	warning	--match-scan-exposure has no effect here: the calibration comes from this frame itself
+src/halide/cli/commands/invert_cmd.py:62-65	invert	warning	this frame was digitized at {a}, the profile at {b} — its colours will be shifted, visibly so for a stop or more (pass --match-scan-exposure to correct, see `halide check`)
+src/halide/cli/commands/invert_cmd.py:69-73	invert	error	--match-scan-exposure needs the camera exposure the profile was calibrated at, but it isn't recorded in this profile — pass --scan-reference FRAME (the frame you calibrated on), or save the profile again from that frame so it records it
+src/halide/cli/commands/invert_cmd.py:75	invert	error	--match-scan-exposure: {input} has no camera exposure settings (EXIF) to match from
+src/halide/cli/commands/invert_cmd.py:77	invert	other	Matching scan exposure: {a} → {b} (×{gain:.3g})
+src/halide/cli/commands/invert_cmd.py:113	invert	hint	{name} found; add GPU support with: halide gpu --install   (once per machine)
+src/halide/cli/commands/invert_cmd.py:127	invert	error	input file not found: {input_path}
+src/halide/cli/commands/invert_cmd.py:140	invert	warning	GPU not usable, using CPU instead: {reason}
+src/halide/cli/commands/invert_cmd.py:167	invert	error	(ScanColorError text)
+src/halide/cli/commands/invert_cmd.py:170	invert	other	(describe_resolved_tone text — see _calibration_args.py)
+src/halide/cli/commands/invert_cmd.py:174-177	invert	other	Developed → {output_path} ({time}, {size}, {device})
+src/halide/cli/commands/print_cmd.py:41-44	print	help	Flat linear positive TIFF (from `halide invert --output flat`, optionally edited elsewhere and re-exported as linear float TIFF with an embedded profile), or a directory of them
+src/halide/cli/commands/print_cmd.py:45	print	help	Output TIFF path, or an output directory when `input` is a directory
+src/halide/cli/commands/print_cmd.py:49-52	print	help	Use a saved profile's exposure/contrast override (from `halide calibrate`'s Fine-tune controls), if it has one. Its density calibration is ignored — a flat positive already has it applied.
+src/halide/cli/commands/print_cmd.py:53	print	help	Suffix to append to output filenames when `input` is a directory
+src/halide/cli/commands/print_cmd.py:57-59	print	help	Number of parallel worker processes when `input` is a directory (default: auto-selected from available memory and CPU count)
+src/halide/cli/commands/print_cmd.py:60	print	help	Suppress the progress display when `input` is a directory
+src/halide/cli/commands/print_cmd.py:79	print	error	input file not found: {input_path}
+src/halide/cli/commands/print_cmd.py:87	print	warning	GPU not usable, using CPU instead: {reason}
+src/halide/cli/commands/print_cmd.py:104	print	warning	(print_scan on_warning callback text)
+src/halide/cli/commands/print_cmd.py:109-112	print	other	Printed → {output_path} ({time}, {size}, {device})
+src/halide/cli/commands/print_cmd.py:124	print	other	No TIFF files found in {input_dir}
+src/halide/cli/commands/print_cmd.py:171	print	warning	{filename}: {r.warning}
+src/halide/cli/commands/print_cmd.py:176	print	warning	Cancelled — {n}/{n} frames processed.
+src/halide/cli/commands/print_cmd.py:178	print	error	{filename}: {r.error}
+src/halide/cli/commands/profile_cmd.py:37	profile list	help	List saved calibration profiles
+src/halide/cli/commands/profile_cmd.py:39	profile show	help	Show one saved profile's details
+src/halide/cli/commands/profile_cmd.py:40	profile show	help	Profile name or file path
+src/halide/cli/commands/profile_cmd.py:42	profile rename	help	Rename a saved profile
+src/halide/cli/commands/profile_cmd.py:42	profile rename	help	(old_name/new_name positionals have NO help text — inconsistent with `show`)
+src/halide/cli/commands/profile_cmd.py:46	profile delete	help	Delete a saved profile
+src/halide/cli/commands/profile_cmd.py:46	profile delete	help	(name positional has NO help text)
+src/halide/cli/commands/profile_cmd.py:51-56	profile edit	help/description	Edit a saved profile's film stock, process, scanner, or notes / Edit a saved profile's metadata fields (film stock, process, scanner, notes) — the calibration data itself (white balance / density scale) isn't editable here, only what you've recorded about it. With no flags and a real terminal, prompts for each field interactively; otherwise pass one or more flags to set fields directly.
+src/halide/cli/commands/profile_cmd.py:58-61	profile edit	help	Set the film stock (pass '' to clear) / Set the process (pass '' to clear) / Set the scanner (pass '' to clear) / Set the notes (pass '' to clear)
+src/halide/cli/commands/profile_cmd.py:67	profile list	other	No saved profiles in {dir}
+src/halide/cli/commands/profile_cmd.py:78	profile list	other	(framed list: "Saved profiles in {dir}:" + one line per profile with name/detail/source/created)
+src/halide/cli/commands/profile_cmd.py:86	profile show	error	(resolve_profile_path FileNotFoundError text)
+src/halide/cli/commands/profile_cmd.py:88-97	profile show	row	Path: / Name: / White balance: / Density scale: / Film stock: / Process: / Scanner: / Source: / Created: / Notes: (labelled fields; "(not set)" placeholder)
+src/halide/cli/commands/profile_cmd.py:99	profile show	row	Scanned at: {scan.describe()} / (not recorded — pass --scan-reference FRAME with --match-scan-exposure)
+src/halide/cli/commands/profile_cmd.py:114-120	profile show	warning	Roll: {path} / ⚠ not found - moved or deleted? / ⚠ recorded relative to the folder halide calibrate ran in, and not in this one / reopen it in halide calibrate --profile and use Find roll… to record its full path
+src/halide/cli/commands/profile_cmd.py:125	profile show	row	Points: {n} on {n} frame(s) ({n} missing)
+src/halide/cli/commands/profile_cmd.py:132	profile rename	error	(rename_profile FileNotFoundError/FileExistsError text)
+src/halide/cli/commands/profile_cmd.py:133	profile rename	other	Renamed {old!r} to {new!r} ({path})
+src/halide/cli/commands/profile_cmd.py:141	profile delete	error	(delete_profile FileNotFoundError text)
+src/halide/cli/commands/profile_cmd.py:142	profile delete	other	Deleted profile {name!r}
+src/halide/cli/commands/profile_cmd.py:147	profile edit	prompt	Editing profile {name!r} — press Enter to leave a field as-is, or type a single '-' to clear it.
+src/halide/cli/commands/profile_cmd.py:147	profile edit	prompt	{label} [{current or '(not set)'}]:
+src/halide/cli/commands/profile_cmd.py:165	profile edit	error	no saved profile named {name!r} in {dir}
+src/halide/cli/commands/profile_cmd.py:174	profile edit	other	No changes made.
+src/halide/cli/commands/profile_cmd.py:177	profile edit	error	halide profile edit needs either field flags (--film-stock/--process/--scanner/--notes) or an interactive terminal to prompt for changes
+src/halide/cli/commands/profile_cmd.py:183	profile edit	other	Updated profile {name!r} ({path})
+src/halide/cli/completion.py:337	all (first run)	other	# Added by halide for tab completion. Delete this block to remove it (it won't come back).
+src/halide/cli/completion.py:449	all (first run)	other	Tab completion installed for {shell}
+src/halide/cli/completion.py:450	all (first run)	other	  ({note})
+src/halide/cli/completion.py:417	all (first run, fish)	other	added {path} — open a new terminal to use it
+src/halide/cli/completion.py:428	all (first run, zsh/bash)	other	added {n} lines to {rc} — open a new terminal to use it
+src/halide/batch/progress.py:213	invert/batch/export/print (verb)	heading	{Verb} {n} frame(s)...
+src/halide/batch/progress.py:200	invert/batch/export/print	progress	[ {status text} ]
+src/halide/batch/progress.py:178-188	invert/batch/export/print	progress	{VerbPast} {done}/{total}[ — {n} failed][ · {elapsed} elapsed · ~{remaining} remaining]
+src/halide/batch/progress.py:171	invert/batch/export/print	progress	▫ {n} frames above / below   (scroll layout, hidden strip count)
+src/halide/batch/progress.py:250-251	invert/batch/export/print (Ctrl-C)	other	Cancelled — {done}/{total} frames {verb_past}, {n} not started, {n} failed.
+src/halide/batch/progress.py:254-255	invert/batch/export/print (failures)	other	Completed with {n} failure(s) — {done}/{total} frames {verb_past} in {time}:
+src/halide/batch/progress.py:257	invert/batch/export/print (failures)	other	{name}: {error}
+src/halide/batch/progress.py:259-261	invert/batch/export/print (success)	other	BUG: hardcoded "Contact sheet complete" — printed on every successful run regardless of verb, e.g. `halide batch` prints "Contact sheet complete — 1/1 frames developed in 8.3s." with no contact sheet involved (confirmed; see 2.5-findings)

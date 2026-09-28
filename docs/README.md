@@ -30,6 +30,10 @@ themselves; these hold the reasoning, evidence and designs behind them.
 - **`investigations/`**: questions looked into, with the evidence, including what didn't work.
   - `anchor-frame.md`: can halide suggest the best frame to calibrate from? It led to the
     multi-point picker. The `check --suggest-anchor` design in it is still unbuilt.
+  - `codebase-review.md`: the full review of halide before new features (requirements from
+    every session, code audit, CLI and GUI experience): 32 ranked findings, what works, and the
+    decisions left to the user. Evidence (per-task findings, requirements matrix, string
+    inventory) in `codebase-review-evidence/`.
   - `gpu-batch-throughput.md`: why GPU batch is only ~20% faster (the GPU is idle ~90% of the
     time; exiftool and TIFF I/O dominate), and what would speed it up. Acted on in
     `plans/gpu-batch-throughput.md` (built; GPU batch ~1.5x faster).

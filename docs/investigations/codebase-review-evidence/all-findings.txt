@@ -1,0 +1,142 @@
+0-1        | S5             | confirmed | test_gpu_cmd install tests depend on the host environment having pip
+0-2        | S5 (test cover | confirmed | halide check has 22% test coverage
+2.1-1      | S1 accuracy    | confirmed | The Save gate accepts neutral points only 0.1 D apart, and a fit through them can be CC 8-15 off at the ends of the tonal range with nothing warning t
+2.1-2      | S2             | confirmed | One NaN or inf pixel ruins the whole frame: a print crashes with an index error, and a flat output is written as all NaN and reported "✓ Developed"
+2.1-3      | S2             | confirmed | The ICC "is it linear?" check uses an absolute 5e-3 tolerance in linear light, which is far too loose where a negative's values sit (0.004-0.05 in blu
+2.1-4      | S2             | confirmed | A malformed or truncated ICC profile either crashes with "unpack requires a buffer of N bytes" or is silently accepted with a garbage matrix
+2.1-5      | S4             | confirmed | Nothing checks that the profile's primaries add up to the PCS white (D50), so an un-adapted profile is accepted with a colour cast
+2.1-6      | S3             | confirmed | An RGBA or greyscale TIFF fails with a numpy matmul message, not a photographer-readable one
+2.1-7      | S3             | confirmed | The CLI accepts out-of-range print and calibration numbers and reports success
+2.1-8      | S3             | confirmed | `fit_density_balance` rejects only slope ≤ 0, so a near-flat channel gives a density_scale of 50 or 1e15
+2.1-9      | S4             | confirmed | `describe_cast` pairs a CMY dial size with a hue letter, so a two-filter cast reads as the wrong single filter
+2.1-10     | S3             | likely (r | A neutral point from a frame with no scan EXIF is mixed into the fit unnormalised, silently
+2.1-11     | S4             | confirmed | The core functions give silently wrong results on integer arrays (white balance is cast to the image dtype)
+2.1-12     | S4             | confirmed | "Fine-tune" (the drawer's old name) is still in user-facing help and in docstrings
+2.1-13     | S5             | confirmed | Stale docstrings and dead plumbing in core/
+2.1-14     | S5 (today only | confirmed | The `.cube` reader is loose: LUT_1D_SIZE is ignored, per-channel DOMAIN keeps only its first value, and LUT_1D_INPUT_RANGE and empty files give raw er
+2.1-15     | S5             | confirmed | Tests don't cover the hostile and edge cases above
+2.2-1      | S1 accuracy/da | confirmed | Profile names are never validated, so `../`, absolute-looking names, and OS limits reach the filesystem raw
+2.2-2      | S1 accuracy/da | confirmed | `--save-profile-as`/re-saving under an existing name silently overwrites it — no warning, no confirmation
+2.2-3      | S2 bug (irreve | confirmed | `halide profile delete` has zero confirmation — inconsistent with the tool's own overwrite guard elsewhere
+2.2-4      | S2 bug         | confirmed | `list_profiles`'s own docstring promise is false — one unreadable file crashes the whole listing
+2.2-5      | S2 bug         | confirmed | Profile writes aren't atomic; a truncated/corrupt profile then crashes `--profile NAME` with a raw JSON parser message
+2.2-6      | S1 accuracy/da | confirmed | A single NaN (or non-positive) pixel silently produces a NaN density-balance profile in `--auto-density`/`--auto-density-roll`
+2.2-7      | S4 inconsisten | confirmed | `profile show/rename/edit/delete` lack the "did you mean" typo suggestion that `--profile` gets on invert/batch
+2.2-8      | S3 UX friction | confirmed | A profile named with a leading "-" can be saved but can't be referenced by `profile show/rename/delete/edit` without the undocumented `--` separator
+2.2-9      | S3 UX friction | confirmed | `halide check` treats "no EXIF found in any frame" the same as "nothing wrong," and accepts a non-TIFF file passed directly as an input
+2.2-10     | S4 inconsisten | likely (c | `batch`'s "Scans" run-sheet row never surfaces missing-EXIF frames the way `halide check` does
+2.2-11     | S5 polish / co | confirmed | The manual-calibration-given check is copy-pasted four times across three files
+2.2-12     | S4 inconsisten | likely (r | No macOS-native config path, and no protection against case-insensitive-filesystem name collisions
+2.2-13     | IDEA           | likely.   | (idea, low priority): `anchors.recorded_path` can silently mis-attribute a legacy relative path to an unrelated file
+2.3-1      | S1 accuracy/da | confirmed | `batch`/`print` into the same directory as the input, with a matching extension, permanently destroys the original scans — no guard exists anywhere
+2.3-2      | S1 accuracy/da | confirmed | No bulk command checks for pre-existing output files at all — `batch`/`print --bulk`/`export --bulk` silently overwrite prior outputs (or unrelated st
+2.3-3      | S1 accuracy/da | confirmed | `write_tiff` has no atomic write — a failure partway through (disk full, kill -9, power loss) leaves a truncated file at the exact final output path, 
+2.3-4      | S2 bug         | confirmed | A post-write exiftool failure (e.g. disk full) surfaces as an uncaught "unexpected error" even though `write_tiff` already wrote a fully valid, comple
+2.3-5      | S3 UX friction | confirmed | Filesystem/library errors reach the user as raw technical text, and the whole frame is processed before an unwritable output directory is even discove
+2.3-6      | S4 inconsisten | confirmed | `GridProgressRenderer.finish()`'s success message is hardcoded to "Contact sheet complete" for every command that uses it, including plain `batch`, `p
+2.3-7      | S3 UX friction | confirmed | macOS AppleDouble sidecar files (`._IMG_0001.tif`) are not recognized as junk — they're queued as real jobs and reported as failures with raw tifffile
+2.3-8      | S2 bug         | likely (m | `_read_scan` treats any file tagged with halide's own output ICC profile as "already in the working space," so feeding an already-processed positive b
+2.3-9      | S5 polish / co | likely (s | `processing.py` (785 lines) and `orchestrator.py` (1037 lines) each mix two genuinely separable concerns
+2.4-1      | S2 (the mechan | confirmed | An interrupted service request leaves the connection out of step, so the next frame gets the previous frame's reply and its undeveloped negative is wr
+2.4-2      | S2             | confirmed | Closing the terminal (SIGHUP) or a whole-group kill mid-batch leaves shared frames in /dev/shm (RAM) until reboot
+2.4-3      | S3             | confirmed | After the service dies, every remaining frame gets its own identical, technical warning
+2.4-4      | S3             | confirmed | A bad input file is reported as "the GPU failed", then fails again on the CPU
+2.4-5      | S3             | confirmed | The hung-exiftool safety net ends in a one-shot call with no timeout, so a hanging exiftool still hangs the batch
+2.4-6      | S3             | confirmed | A broken CuPy install falls back to the CPU silently, and `halide gpu` prints the word "None" as the reason
+2.4-7      | S3             | likely    | The batch parent creates a CUDA context of its own just to probe the GPU, and holds it for the whole batch; CLAUDE.md says CUDA only exists in the ser
+2.4-8      | S4             | confirmed | Fallback and "service not used" wording differs between paths, and some messages show raw error text
+2.4-9      | S5 (overlaps 2 | confirmed | Ctrl-C in the first second of a batch prints pages of forkserver tracebacks instead of "Cancelled"
+2.4-10     | S5             | likely (n | `halide gpu --install` says how to remove the install, but the command leaves most of the ~1 GB behind; pipx installs lose it on reinstall
+2.4-11     | S5 (latent: th | likely (r | Shared-frame names are 55 characters, over macOS's 31-character POSIX shm limit
+2.4-12     | S5             | confirmed | Small code-quality items in the GPU plumbing
+2.4-13     | IDEA           | confirmed | Missing exiftool is silent; metadata is dropped without a word
+2.5-1      | S1 accuracy/da | confirmed | `batch`/`print`/`export` bulk modes never check for an existing output file, and no command checks output-path == input-path — a source scan can be si
+2.5-2      | S2 bug (destru | confirmed | `--save-profile-as NAME` silently overwrites an existing profile of the same name
+2.5-3      | S2 bug (wrong, | confirmed | The finishing banner always says "Contact sheet complete", even for `invert`/`batch`/`export`/`print`
+2.5-4      | S3 UX friction | confirmed | NO_COLOR and TERM=dumb are not honoured anywhere — ANSI escapes always print, even to a pipe
+2.5-5      | S3 UX friction | confirmed | A failed shell-rc edit is stamped as "done" and never retried, even after the underlying problem is fixed
+2.5-6      | S4 inconsisten | confirmed | Writing a shell's completion script file replaces a symlink with a plain file (breaks chezmoi/home-manager-managed dotfiles)
+2.5-7      | S3 UX friction | confirmed | Raw, low-level exception text reaches the user for common input mistakes
+2.5-8      | S3 UX friction | confirmed | stdout is buffered, stderr is not — the fatal error line appears *before* the output that led to it in any redirected/logged run
+2.5-9      | S3 UX friction | confirmed | Hidden macOS `._*` sidecar files (and other same-suffix junk) aren't filtered out — a clean roll "fails"
+2.5-10     | S5 polish (cod | confirmed | TIFF-directory discovery/filtering logic is duplicated three times, already slightly out of sync
+2.5-11     | S4 inconsisten | confirmed | No `--version` flag anywhere
+2.5-12     | S4 inconsisten | confirmed | `profile rename`/`delete`/`edit` silently reject a file path, unlike `profile show` — and the error message doesn't say why
+2.5-13     | S4 inconsisten | confirmed | `profile edit`'s two invocation modes use two different "clear this field" conventions
+2.5-14     | S5 polish / in | confirmed | Calibration-source mutual exclusivity is enforced by hand, not via argparse — unlike the adjacent stage flags
+2.5-15     | S5 polish      | likely (n | `gpu --install`'s final confirmation prompt doesn't catch EOFError, unlike every other prompt in the codebase
+2.5-16     | S5 polish      | confirmed | `--debug` placed after the subcommand fails with an unhelpful argparse error
+2.5-17     | S5 polish (cod | confirmed | `console.py` (615 lines) mixes several unrelated concerns with little cohesion
+2.5-18     | (informational | confirmed | Exit codes are otherwise consistent — noted as a positive, not a finding
+2.6-1      | S1 accuracy/da | confirmed | Saving a profile with a bad name (or any disk error) fails completely silently in the GUI
+2.6-2      | S2 bug         | confirmed | Rebuilding the contact sheet silently breaks its own staleness tracking after the first rebuild
+2.6-3      | S3 UX friction | likely (r | Rebuilding (or replacing) the contact sheet blocks the main window's UI thread
+2.6-4      | S3 UX friction | likely (r | No cap on concurrent full-resolution frame loads when scrubbing the filmstrip
+2.6-5      | S1 accuracy/da | confirmed | `--save-profile-as` silently overwrites an existing profile; the GUI explicitly guards this
+2.6-6      | S5 polish      | confirmed | Two hard-coded hex colours in `filmstrip.py`, unlike every other colour in the GUI
+2.6-7      | S4 inconsisten | likely (c | No HiDPI (devicePixelRatio) awareness anywhere in the GUI's custom painting
+2.6-8      | S5 polish      | confirmed | A frame that fails to load has no visible reason until you click into it
+2.6-9      | IDEA           | likely    | `main_window.py` (1059 lines) covers UI construction, background-load orchestration, rendering, point editing, proof-sheet lifecycle and save/develop 
+2.7-1      | S5 (confirmati | confirmed | Wheel and sdist build successfully with all assets
+2.7-2      | S5 (confirmati | confirmed | Wheel installation and CLI entry point work from clean venv
+2.7-3      | S5 (confirmati | confirmed | Python version floor (3.11) matches documented GPU fallback
+2.7-4      | S5 (inconsiste | likely (r | Dependencies are unbounded (no version pins or ranges)
+2.7-5      | S5 (confirmati | confirmed | Metadata complete and correct
+2.7-6      | S5 (polish, no | likely (n | py.typed marker not present
+2.7-7      | S5 (confirmati | confirmed | Legacy folder tracked intentionally
+2.7-8      | S5 (confirmati | confirmed | .gitignore properly covers build artifacts and cache
+2.7-9      | S5 (confirmati | confirmed | License files for vendored assets included and shipped
+2.7-10     | S5 (confirmati | confirmed | README install section matches implementation
+4-1        | S3 UX friction | confirmed | Every successful `batch`/`export`/`print` run prints the wrong completion message
+4-2        | S4 inconsisten | confirmed | The same `finish()` also mis-states successes when there are failures
+4-3        | S1 data loss   | confirmed | `invert IN IN` (output path equal to input) silently destroys the source scan when not run in a real terminal
+4-4        | S4 inconsisten | confirmed | `batch` never prompts or warns before overwriting existing outputs, even in a real terminal
+4-5        | S3 friction, r | confirmed | stdout is fully block-buffered when not a tty, so a redirected run can show the error *before* the context that explains it
+4-6        | S4 inconsisten | confirmed | The batch/export/print/contact progress animation has no non-interactive fallback — only `--quiet` (all-or-nothing)
+4-7        | S4 inconsisten | confirmed | halide's own colours ignore `NO_COLOR` and non-tty output; only the stdlib-argparse portion of the same output respects it
+4-8        | S3 friction    | confirmed | `halide` has no `--version`
+4-9        | S3 friction    | confirmed | Subcommand `--help` never shows an example, unlike the bare `halide` banner
+4-10       | S4 inconsisten | confirmed | `profile list`/`show`/`rename`/`delete` have essentially no help text, while `profile edit` has a full paragraph
+4-11       | S5 polish      | confirmed | `calibrate --help`'s `--profile` text is truncated mid-sentence
+4-12       | S5 polish      | confirmed | The bare-`halide` example list is misaligned by 3 columns on its last line
+4-13       | S5 polish (sys | confirmed | `halide check`'s own heading and its rows use different nouns for the same thing
+4-14       | S5 polish, but | confirmed | Literal "(s)" plural suffix never actually pluralizes — reads oddly at n=1
+4-15       | S4 inconsisten | confirmed | Batch's Ctrl-C message and the interactive-prompt's Ctrl-C message use different visual treatments for the same event
+4-16       | S2 bug (crashe | confirmed | Bad-format/wrong-shape inputs crash through the generic exception boundary with raw library errors instead of a plain-language message
+4-17       | S2 bug         | confirmed | A missing/unwritable output folder crashes through the same generic boundary
+4-18       | S4 inconsisten | confirmed | A mixed folder silently drops non-TIFF files with no mention anywhere in the run sheet
+4-19       | S3 friction    | confirmed | `--quiet` on `batch` gives zero output on success, not even a one-line summary
+4-20       | none — documen | confirmed | (nuance, not a bug): a gamma-encoded file whose ICC profile *itself* claims to be linear cannot be caught
+5-1        | IDEA (verifica | confirmed | RSS/timing numbers match CLAUDE.md's recorded figures — no drift found
+5-2        | IDEA (verifica | confirmed | Flat -> print round trip and the +0.6 EV/metadata-stripped case match CLAUDE.md's numbers exactly
+5-3        | IDEA (verifica | confirmed | `check Roll16-Testing`, `batch --auto-density-roll --match-scan-exposure --save-profile-as`, `--contact-sheet` preview, and `profile rename/delete` al
+5-4        | IDEA           | confirmed | Contact sheet output looks like a genuine contact print
+5-5        | S3 UX friction | confirmed | `HALIDE_NO_COMPLETION=1` does not disable "it all" — `detect_shell()`'s psutil probe still runs on every invocation, costing ~20-30 ms unconditionally
+5-6        | IDEA (performa | likely (t | TIFF write/compression dominates a real batch's CPU time; core color math is a small fraction
+5-7        | IDEA (could no | could not | Could not reproduce the intermittent `LIBDEFLATE_BAD_DATA` read failure on IMG_0151.tif
+6-A        | S5 polish / do | confirmed | `_WINDOW_MAX = QSize(1400, 900)` caps the window well under "~55% x 70%" on large screens
+6-B        | S2 bug (matche | confirmed | Confirms 2.6-2 — contact sheet staleness tracking breaks after the first rebuild
+6-C        | S1 bug         | confirmed | Closing the calibrate picker's window never quits the process — a real, severe hang (new; also bears on 2.6-3)
+6-D        | S5 polish (lik | confirmed | A transient but real mis-rendered label — "NEUTRAL POINTS" briefly paints as "JTRAL POINTS" while the "Roll not found" dialog is open
+6-E        | S4 accessibili | confirmed | No visible keyboard-focus indicator anywhere in the picker
+6-F        | S5 polish      | confirmed | Status line text is not wrapped or elided and can run off the window's right edge
+6-G        | S5 polish      | confirmed | "measuring the roll…" is left showing indefinitely once there is no roll to measure
+7.1-1      | S3 UX friction | confirmed | `batch`/`export`/`print`'s success message always says "Contact sheet complete", even for ordinary runs that made no contact sheet
+7.1-2      | S4 inconsisten | confirmed | `docs/README.md` and `docs/plans/gpu-acceleration.md` still say GPU work is "on branch `gpu-acceleration`" — it has been merged to `main`
+7.1-3      | S5 polish      | confirmed | `save_profile`'s docstring points at a file that doesn't exist (`calibration_args.py` instead of `cli/_calibration_args.py`)
+7.1-4      | S4 inconsisten | confirmed | `roll_auto_density_balance`'s docstring describes the *old*, since-replaced per-frame reference ("its own per-channel median"), not the density-local 
+7.1-5      | S5 polish (pre | confirmed | `core/pipeline.py`'s module docstring ("Both the CLI and the GUI call this — neither reimplements the math independently") is no longer true of the CL
+7.1-6      | S3 UX friction | confirmed | README has no application-specific (menu-by-menu) darktable/RawTherapee export walkthrough, only generic bullet points
+7.1-7      | S3 UX friction | confirmed | README has no troubleshooting section beyond one Linux Qt-library `<details>` block
+7.1-8      | IDEA           | likely (a | README doesn't say what a finished output actually looks like
+7.1-9      | S5 polish      | confirmed | Minor: README's profile subcommand order doesn't match `--help`'s
+8x-1       | S4             | likely (c | Contact-sheet and GUI typography depend on system fonts that macOS doesn't have
+8x-2       | S2 (future sil | likely    | No dependency has a version range, and the ICC/sRGB code rebuilds colour-science's internals
+3a-1       | S4             | confirmed | `core/tone_render.py` violates the documented "core/ = no file I/O" rule
+3a-2       | S5             | confirmed | R-050's "manual picking is more reliable" guidance isn't actively surfaced by the CLI
+3a-3       | S5             | confirmed | Stray 126.7 MB output file left in the repo root
+3a-4       | S5             | confirmed | `.coverage` is untracked and not gitignored
+3a-5       | S5             | confirmed | `--pick` being invert-only (R-054) has no regression test
+3b-1       | S5             | confirmed | `/dev/shm` posix semaphores leak across test files, causing spurious teardown errors when run together
+3b-2       | S5 (test-cover | confirmed | Several requirements in E/F/G/H are implemented and code-consistent but have no direct unit-test pin
+3b-3       | IDEA (process  | confirmed | All GUI (section H) requirements are implemented in code but entirely unverified by any automated test — genuinely Needs-GUI-run
