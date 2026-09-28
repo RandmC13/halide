@@ -196,3 +196,25 @@ def test_update_profile_keeps_tone_and_scan_sidecars(tmp_path):
     assert load_profile(path).film_stock == "Kodak Portra 400"
     assert load_tone_override(path).exposure == 0.2
     assert load_scan_reference(path) == scan
+
+
+def test_interrupted_profile_save_keeps_old_profile(tmp_path, monkeypatch):
+    """A save that dies partway through (disk full, kill -9) must not corrupt or truncate a
+    profile that was already there (2.2-5)."""
+    path = tmp_path / "portra400.json"
+    save_profile(PROFILE, path)
+    old_bytes = path.read_bytes()
+
+    import json as json_module
+
+    def _broken_dump(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(json_module, "dump", _broken_dump)
+
+    with pytest.raises(RuntimeError, match="disk full"):
+        save_profile(replace(PROFILE, notes="should not be saved"), path)
+
+    assert path.read_bytes() == old_bytes  # the old profile survives untouched
+    assert load_profile(path).notes is None
+    assert list(tmp_path.iterdir()) == [path]  # no leftover temp file

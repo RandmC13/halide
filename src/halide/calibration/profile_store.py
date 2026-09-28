@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from halide.core.types import DensityProfile, ToneCurveParams
+from halide.io.atomic import atomic_output
 from halide.io.scan_metadata import ScanSettings
 
 
@@ -58,7 +59,10 @@ def save_profile(
         data["anchors"] = anchors
     if roll is not None:
         data["roll"] = roll
-    Path(path).write_text(json.dumps(data, indent=2) + "\n")
+    with atomic_output(Path(path)) as tmp:
+        with tmp.open("w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
 
 
 def load_profile(path: str | Path) -> DensityProfile:
@@ -174,7 +178,8 @@ def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = Non
     # "tone"/"scan" sidecars survive a rename (round-tripping used to silently drop "tone").
     data = json.loads(old_path.read_text())
     data["name"] = new_name
-    new_path.write_text(json.dumps(data, indent=2) + "\n")
+    with atomic_output(new_path) as tmp:
+        tmp.write_text(json.dumps(data, indent=2) + "\n")
     old_path.unlink()
     return new_path
 
@@ -201,7 +206,8 @@ def update_profile(name: str, profiles_dir: Path | None = None, **fields: str | 
     # so optional sidecars ("tone", "scan", ...) survive an edit - round-tripping dropped them.
     data = json.loads(path.read_text())
     data.update(fields)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    with atomic_output(path) as tmp:
+        tmp.write_text(json.dumps(data, indent=2) + "\n")
     return path
 
 

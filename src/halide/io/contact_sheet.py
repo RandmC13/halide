@@ -28,6 +28,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from PIL.PngImagePlugin import PngInfo
 
+from halide.io.atomic import atomic_output
 from halide.io.contact_sheet_defaults import DEFAULT_COLUMNS, DEFAULT_FRAME_WIDTH  # noqa: F401 -- re-exported
 from halide.io.raster import _SRGB_ICC_BYTES, to_srgb_8bit
 
@@ -289,18 +290,21 @@ def render_sheet(
 
 def write_sheet(path: str | Path, sheet: Image.Image, quality: int = 92) -> None:
     """JPEG or PNG by extension, with an sRGB profile embedded (as `halide export` does), and marked
-    as a halide contact sheet (see is_contact_sheet)."""
+    as a halide contact sheet (see is_contact_sheet). Written atomically (halide.io.atomic): a
+    sheet can take tens of seconds to render for a full roll, and a kill or crash partway through
+    the save must not leave a truncated file under the real name."""
     path = Path(path)
     suffix = path.suffix.lower()
-    if suffix in (".jpg", ".jpeg"):
-        sheet.save(path, format="JPEG", quality=quality, icc_profile=_SRGB_ICC_BYTES, subsampling=0,
-                   comment=_SHEET_MARKER.encode())
-    elif suffix == ".png":
-        info = PngInfo()
-        info.add_text(_SHEET_MARKER, "1")
-        sheet.save(path, format="PNG", icc_profile=_SRGB_ICC_BYTES, pnginfo=info)
-    else:
+    if suffix not in (".jpg", ".jpeg", ".png"):
         raise ValueError(f"{path}: unsupported contact sheet format {suffix!r} (use .jpg, .jpeg or .png)")
+    with atomic_output(path) as tmp:
+        if suffix in (".jpg", ".jpeg"):
+            sheet.save(tmp, format="JPEG", quality=quality, icc_profile=_SRGB_ICC_BYTES, subsampling=0,
+                       comment=_SHEET_MARKER.encode())
+        else:
+            info = PngInfo()
+            info.add_text(_SHEET_MARKER, "1")
+            sheet.save(tmp, format="PNG", icc_profile=_SRGB_ICC_BYTES, pnginfo=info)
 
 
 def is_contact_sheet(path: str | Path) -> bool:
