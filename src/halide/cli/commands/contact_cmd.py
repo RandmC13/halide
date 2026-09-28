@@ -17,6 +17,7 @@ from halide.cli._output_policy import (
     resolve_existing,
 )
 from halide.device import ComputeDevice
+from halide.io.roll import Skipped
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
@@ -35,14 +36,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_device_argument(parser)
 
 
-def _collect(inputs: list[str], sheet: Path) -> list[Path]:
+def _collect(inputs: list[str], sheet: Path) -> tuple[list[Path], Skipped]:
     from halide.io.contact_sheet import is_contact_sheet
-    from halide.batch.orchestrator import TIFF_SUFFIXES
+    from halide.io.roll import TIFF_SUFFIXES
 
     files: list[Path] = []
+    skipped = Skipped()
     for item in map(Path, inputs):
         if item.is_dir():
-            files.extend(discover_processed_files(item, sheet))
+            found, left_out = discover_processed_files(item, sheet)
+            files.extend(found)
+            skipped += left_out
         elif item.exists():
             files.append(item)
         else:
@@ -53,7 +57,7 @@ def _collect(inputs: list[str], sheet: Path) -> list[Path]:
     return [
         f for f in files
         if f.resolve() != sheet.resolve() and not (f.suffix.lower() not in TIFF_SUFFIXES and is_contact_sheet(f))
-    ]
+    ], skipped
 
 
 def run(args: argparse.Namespace) -> int:
@@ -66,7 +70,9 @@ def run(args: argparse.Namespace) -> int:
         check_sheet_path(sheet_path)
     except ValueError as exc:
         raise SystemExit(str(exc))
-    files = _collect(args.inputs[:-1], sheet_path)
+    files, skipped = _collect(args.inputs[:-1], sheet_path)
+    if skipped and not args.quiet:
+        print(console.dim(f"Skipped {skipped.describe()}"))
     if not files:
         print("No processed frames (TIFF/PNG/JPEG) found")
         return 1

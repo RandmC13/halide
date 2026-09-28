@@ -10,15 +10,18 @@ import warnings
 from dataclasses import replace
 from pathlib import Path
 
-from halide.batch.orchestrator import BatchJob, default_worker_count, discover_jobs, memory_budget_warning, run_batch
+from halide.io.roll import list_scans
+from halide.batch.orchestrator import BatchJob, default_worker_count, jobs_for_files, memory_budget_warning, run_batch
 from halide.batch.progress import GridProgressRenderer, cancel_notice
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.cli._device_args import add_device_argument, resolve_device_arg
 from halide.cli._output_policy import (
     add_output_policy_arguments,
+    check_input_folder,
     is_interactive,
     policy_from_args,
+    prepare_output_folder,
     resolve_bulk_jobs,
     resolve_existing,
 )
@@ -34,7 +37,7 @@ from halide.cli._calibration_args import (
     resolve_stage,
     resolve_tone_params,
 )
-from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, start_compute
+from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, skipped_row, start_compute
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
 from halide.core.types import Stage
 
@@ -195,8 +198,7 @@ def run(args: argparse.Namespace) -> int:
     stage = resolve_stage(args)
 
     input_dir = Path(args.input_dir)
-    if not input_dir.exists():
-        raise SystemExit(f"input directory not found: {input_dir}")
+    check_input_folder(input_dir)
     if args.output_dir is None and not args.contact_sheet:
         raise SystemExit("give an output directory, --contact-sheet SHEET (a preview), or both")
     sheet_path = Path(args.contact_sheet) if args.contact_sheet else None
@@ -210,12 +212,13 @@ def run(args: argparse.Namespace) -> int:
 
     if args.output_dir is not None:
         output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        jobs = discover_jobs(input_dir, output_dir, suffix=args.suffix)
+        prepare_output_folder(output_dir)
+        files, left_out = list_scans(input_dir)
+        jobs = jobs_for_files(files, output_dir, suffix=args.suffix)
     else:
         output_dir = None
-        jobs = [BatchJob(input_path=job.input_path, output_path=None)
-                for job in discover_jobs(input_dir, input_dir, suffix=args.suffix)]
+        files, left_out = list_scans(input_dir)
+        jobs = [BatchJob(input_path=f, output_path=None) for f in files]
     if not jobs:
         print(f"No TIFF files found in {input_dir}")
         return 1
@@ -245,7 +248,7 @@ def run(args: argparse.Namespace) -> int:
         # already-complete folder, the same way `halide contact <output_dir> <sheet>` would.
         from halide.cli._contact_sheet import discover_processed_files, write_sheet_from_folder
 
-        files = discover_processed_files(output_dir, sheet_path)
+        files, _ = discover_processed_files(output_dir, sheet_path)
         return write_sheet_from_folder(files, sheet_path, args, input_dir.name, quiet=args.quiet)
     if output_dir is None and not build_sheet:
         print(console.success(f"Nothing to do — {sheet_path} already exists (--skip-existing)."))
@@ -256,7 +259,8 @@ def run(args: argparse.Namespace) -> int:
         if thumbnails is not None:
             jobs = [replace(job, thumbnail_path=thumbnails / f"{i:04d}.png") for i, job in enumerate(jobs)]
         return _run(
-            args, stage, input_dir, jobs, output_dir=output_dir, skipped_frames=skipped_frames, build_sheet=build_sheet
+            args, stage, input_dir, jobs, output_dir=output_dir, skipped_frames=skipped_frames, build_sheet=build_sheet,
+            left_out=left_out,
         )
     finally:
         if thumbnails is not None:
@@ -264,7 +268,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], sheet: console.RunSheet,
-             stack: contextlib.ExitStack, skipped_frames: int = 0):
+             stack: contextlib.ExitStack, skipped_frames: int = 0, left_out=None):
     """Everything decided before developing starts — scan checks, scan-exposure matching,
     calibration, print settings, how the GPU is used, worker count — each reported on the run sheet
     as it's decided. On a GPU the shared GPU service starts here and runs until `stack` closes.
@@ -272,6 +276,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     from halide.processing import ScanColorError, estimate_roll_density_profile, read_roll_scan_metadata
 
     roll_row(sheet, input_dir, len(jobs), _destination(args))
+    skipped_row(sheet, left_out)
     if skipped_frames:
         sheet.row("Skipping", f"{frame_count(skipped_frames)} already developed")
 
@@ -287,8 +292,6 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
         sheet.note("Scans", f"details, and how to scan a roll consistently: halide check {input_dir}")
     elif report.exposure_groups or report.white_balance_groups:
         sheet.ok("Scans", "scanned consistently")
-    else:
-        sheet.note("Scans", "not checked — no camera EXIF or darktable history in these files")
 
     scan_reference = None if args.auto_density_roll else resolve_scan_reference(args)
     if args.match_scan_exposure:
@@ -355,7 +358,8 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
 
 
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], *,
-         output_dir: Path | None = None, skipped_frames: int = 0, build_sheet: bool = True) -> int:
+         output_dir: Path | None = None, skipped_frames: int = 0, build_sheet: bool = True,
+         left_out=None) -> int:
     if stage is not Stage.INVERT_ONLY:
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
     manual_given =args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
@@ -369,7 +373,7 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
     with contextlib.ExitStack() as stack:
         with console.RunSheet(quiet=args.quiet) as sheet:
             jobs, density_profile, tone_params, scan_reference, workers, device, compute = _prepare(
-                args, stage, input_dir, jobs, sheet, stack, skipped_frames=skipped_frames
+                args, stage, input_dir, jobs, sheet, stack, skipped_frames=skipped_frames, left_out=left_out
             )
 
         renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="invert")
@@ -433,7 +437,7 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
             from halide.cli._contact_sheet import discover_processed_files, write_sheet_from_folder
 
             sheet_path = Path(args.contact_sheet)
-            files = discover_processed_files(output_dir, sheet_path)
+            files, _ = discover_processed_files(output_dir, sheet_path)
             sheet_code = write_sheet_from_folder(files, sheet_path, args, input_dir.name, quiet=args.quiet)
             if sheet_code == 130:
                 return 130

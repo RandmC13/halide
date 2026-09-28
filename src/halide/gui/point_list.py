@@ -54,8 +54,10 @@ class _Row(QFrame):
         layout.addWidget(number)
 
         frame_text = f"#{view.frame_number}  {view.point.frame.stem}" if view.frame_number else f"{view.point.frame.stem} (missing)"
+        if view.note:
+            frame_text += "  ⚠"
         frame = QLabel(frame_text)
-        frame.setToolTip(str(view.point.frame))
+        frame.setToolTip(f"{view.point.frame}\n{view.note}" if view.note else str(view.point.frame))
         layout.addWidget(frame, stretch=1)
 
         density = QLabel(f"D {view.green_density:.2f}")

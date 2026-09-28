@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 
 from halide.batch.orchestrator import (
-    TIFF_SUFFIXES,
     BatchJob,
     default_export_worker_count,
     export_memory_budget_warning,
@@ -20,13 +19,17 @@ from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 from halide.cli._output_policy import (
     add_output_policy_arguments,
+    check_input_file,
     check_not_input,
+    check_output_parent,
     is_interactive,
     policy_from_args,
+    prepare_output_folder,
     resolve_bulk_jobs,
     resolve_existing,
 )
-from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, start_compute
+from halide.io.roll import list_scans
+from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, skipped_row, start_compute
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
@@ -74,12 +77,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
     from halide import device as halide_device
-    from halide.processing import export_delivery_image
+    from halide.processing import ScanColorError, export_delivery_image
 
-    if not input_path.exists():
-        raise SystemExit(f"input file not found: {input_path}")
+    check_input_file(input_path)
 
     output_path = Path(args.output)
+    check_output_parent(output_path)
     check_not_input([(input_path, output_path)], suggest_suffix=False)
     resolved = resolve_existing(
         [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
@@ -94,14 +97,17 @@ def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
 
     start = time.monotonic()
     label = f"{console.VERB['export']} {input_path.name}... (exposing)"
-    with console.themed_animation(
-        console.ENLARGER_FRAMES, label, min_width=console.ENLARGER_MIN_SIZE[0],
-        min_height=console.ENLARGER_MIN_SIZE[1], interval=0.45,
-    ):
-        warning = export_delivery_image(
-            input_path, args.output, quality=args.quality,
-            device=device, on_warning=lambda msg: print(console.warning(msg)),
-        )
+    try:
+        with console.themed_animation(
+            console.ENLARGER_FRAMES, label, min_width=console.ENLARGER_MIN_SIZE[0],
+            min_height=console.ENLARGER_MIN_SIZE[1], interval=0.45,
+        ):
+            warning = export_delivery_image(
+                input_path, args.output, quality=args.quality,
+                device=device, on_warning=lambda msg: print(console.warning(msg)),
+            )
+    except ScanColorError as exc:  # includes ScanInputError: not a TIFF, not RGB, ...
+        raise SystemExit(str(exc))
     halide_device.release_memory()
     if warning:
         print(console.warning(warning))
@@ -119,9 +125,9 @@ def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
 
 def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
     output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_folder(output_dir)
 
-    files = sorted(f for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() in TIFF_SUFFIXES)
+    files, left_out = list_scans(input_dir)
     if not files:
         print(f"No TIFF files found in {input_dir}")
         return 1
@@ -140,6 +146,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
     with contextlib.ExitStack() as stack:
         with console.RunSheet(quiet=args.quiet) as sheet:
             roll_row(sheet, input_dir, len(jobs), str(output_dir))
+            skipped_row(sheet, left_out)
             if skipped:
                 sheet.row("Skipping", f"{frame_count(skipped)} already developed")
             compute = start_compute(stack, sheet, jobs, device, "export")

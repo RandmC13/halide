@@ -16,7 +16,6 @@ import time
 from pathlib import Path
 
 from halide.batch.orchestrator import (
-    TIFF_SUFFIXES,
     BatchJob,
     default_worker_count,
     memory_budget_warning,
@@ -28,13 +27,17 @@ from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 from halide.cli._output_policy import (
     add_output_policy_arguments,
+    check_input_file,
     check_not_input,
+    check_output_parent,
     is_interactive,
     policy_from_args,
+    prepare_output_folder,
     resolve_bulk_jobs,
     resolve_existing,
 )
-from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, start_compute
+from halide.io.roll import list_scans
+from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, skipped_row, start_compute
 from halide.cli._calibration_args import add_tone_arguments, describe_resolved_tone, resolve_tone_params
 from halide.core.types import ToneCurveParams
 from halide.device import ComputeDevice
@@ -84,10 +87,10 @@ def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCur
     from halide import device as halide_device
     from halide.processing import PrintInputError, ScanColorError, print_scan
 
-    if not input_path.exists():
-        raise SystemExit(f"input file not found: {input_path}")
+    check_input_file(input_path)
 
     output_path = Path(args.output)
+    check_output_parent(output_path)
     check_not_input([(input_path, output_path)], suggest_suffix=False)
     resolved = resolve_existing(
         [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
@@ -131,9 +134,9 @@ def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCur
 
 def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveParams, device: ComputeDevice) -> int:
     output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_folder(output_dir)
 
-    files = sorted(f for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() in TIFF_SUFFIXES)
+    files, left_out = list_scans(input_dir)
     if not files:
         print(f"No TIFF files found in {input_dir}")
         return 1
@@ -148,6 +151,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
     with contextlib.ExitStack() as stack:
         with console.RunSheet(quiet=args.quiet) as sheet:
             roll_row(sheet, input_dir, len(jobs), str(output_dir))
+            skipped_row(sheet, left_out)
             if skipped:
                 sheet.row("Skipping", f"{frame_count(skipped)} already developed")
             compute = start_compute(stack, sheet, jobs, device, "develop")

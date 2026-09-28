@@ -10,7 +10,9 @@ from pathlib import Path
 from halide.cli import console
 from halide.cli._output_policy import (
     add_output_policy_arguments,
+    check_input_file,
     check_not_input,
+    check_output_parent,
     is_interactive,
     policy_from_args,
     resolve_existing,
@@ -131,9 +133,9 @@ def run(args: argparse.Namespace) -> int:
     from halide.processing import ScanColorError, process_scan
 
     input_path = Path(args.input)
-    if not input_path.exists():
-        raise SystemExit(f"input file not found: {input_path}")
+    check_input_file(input_path)
     output_path = Path(args.output)
+    check_output_parent(output_path)
     check_not_input([(input_path, output_path)], suggest_suffix=False)
     resolved = resolve_existing(
         [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
