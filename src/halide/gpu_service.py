@@ -33,6 +33,7 @@ random authkey. Each worker holds one connection (one ServiceClient).
 
 from __future__ import annotations
 
+import functools
 import os
 import queue
 import signal
@@ -105,15 +106,22 @@ class ServiceAddress:
 @dataclass(frozen=True)
 class DevelopReply:
     """processing.develop_request's result: the tone actually used (None for Stage.DENSITY_ONLY)
-    and the density profile actually used (the per-frame auto estimate when none was given)."""
+    and the density profile actually used (the per-frame auto estimate when none was given).
+
+    `warnings`: any messages the job produced (F05's non-finite-pixel notice, so far) — the service
+    runs in its own process, with nothing of its own to print them to usefully, so they travel back
+    here instead and the client's caller re-emits them through its own on_warning/BatchResult path,
+    exactly as the in-process CPU/GPU paths do directly."""
 
     resolved: object  # ResolvedTone | None — typed loosely to keep processing out of this import
     profile: object  # DensityProfile
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class PrintReply:
     resolved: object  # ResolvedTone
+    warnings: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -142,12 +150,16 @@ class ServiceClient:
         """What the service develops on — see ServiceAddress.kind."""
         return self._address.kind
 
-    def develop(self, frame, request) -> DevelopReply:
-        resolved, profile = self._request(("develop", frame.descriptor(), request))
-        return DevelopReply(resolved=resolved, profile=profile)
+    def develop(self, frame, request, name: str | None = None) -> DevelopReply:
+        """`name` (typically the input path) is only for F05's non-finite-pixel warning message —
+        the service has no other way to know it, since `request` carries none of process_scan's own
+        arguments."""
+        (resolved, profile), warnings = self._request(("develop", frame.descriptor(), request, name))
+        return DevelopReply(resolved=resolved, profile=profile, warnings=tuple(warnings))
 
-    def print_(self, frame, request) -> PrintReply:
-        return PrintReply(resolved=self._request(("print", frame.descriptor(), request)))
+    def print_(self, frame, request, name: str | None = None) -> PrintReply:
+        resolved, warnings = self._request(("print", frame.descriptor(), request, name))
+        return PrintReply(resolved=resolved, warnings=tuple(warnings))
 
     def export(self, frame, out, request) -> None:
         """`frame` is only ever read; the service writes `out`. After a failure `out` can't be
@@ -183,6 +195,12 @@ class ServiceClient:
                                     host_touched=True) from exc
         if status == "ok":
             return payload
+        if status == "input_error":
+            # R8: bad input data (e.g. F05's >1% non-finite pixels), not a device/service problem —
+            # `payload` is the original exception (ScanColorError, picklable — a plain message, no
+            # CuPy/device state), raised here exactly as the CPU path would raise it itself: no
+            # DeviceJobFailed, no "GPU failed" wording, no CPU retry from the caller.
+            raise payload
         from halide.processing import DeviceJobFailed
 
         raise DeviceJobFailed(payload)
@@ -339,36 +357,51 @@ class _Server:
 
     def _handle(self, message):
         from halide import processing
-        from halide.processing import DeviceFailure, DeviceJobFailed
+        from halide.processing import DeviceFailure, DeviceJobFailed, ScanColorError
         from halide.shared_frames import attach_frame
 
         try:
             kind = message[0]
             if kind == "develop" or kind == "print":
-                _, descriptor, request = message
+                _, descriptor, request, name = message
                 job = processing.develop_request if kind == "develop" else processing.print_request
                 with attach_frame(*descriptor) as host:
-                    return "ok", self._run(host, job, request)
+                    return "ok", self._run(host, job, request, name)
             if kind == "export":
                 _, descriptor, out_descriptor, request = message
                 with attach_frame(*descriptor) as host, attach_frame(*out_descriptor) as out:
                     self._run_export(host, out, request)
                 return "ok", None
             raise ValueError(f"unknown request {kind!r}")
+        except ScanColorError as exc:
+            # R8: bad input data (e.g. F05's >1% non-finite pixels), not a device/service problem —
+            # sent back as-is (see ServiceClient._request's "input_error" handling) so the worker
+            # raises exactly the error the CPU path would: no DeviceJobFailed wrapping, no "GPU
+            # failed"/service wording, and no CPU retry from the caller.
+            return "input_error", exc
         except DeviceJobFailed as failed:
             return "failed", failed.failure
         except Exception as exc:  # noqa: BLE001 — a bad request fails that request, never the service
             return "failed", DeviceFailure.from_exception(exc)
 
-    def _run(self, host, job, request):
+    def _run(self, host, job, request, name):
+        """Run `job` (develop_request/print_request), collecting any warnings it produces (F05's
+        non-finite-pixel notice, so far) instead of letting them print inside this process — the
+        service has nothing of its own a photographer would see to print them to; the client's
+        caller re-emits them through its own on_warning/BatchResult path. Returns (job's result,
+        warnings)."""
         from halide import processing
 
+        collected: list[str] = []
+        bound_job = functools.partial(job, name=name, on_warning=collected.append)
         if self._device.kind == "gpu":
-            return processing.run_device_job(host, job, request)
+            return processing.run_device_job(host, bound_job, request), collected
         # A "cpu" service works in place on the shared frame itself, so any failure may have
         # left it half-developed.
         try:
-            return job(host, request)
+            return bound_job(host, request), collected
+        except processing.ScanColorError:
+            raise  # R8: bad input data, not a device problem — see _handle
         except BaseException as exc:  # noqa: BLE001 — see _compute_loop
             raise processing.DeviceJobFailed(processing.DeviceFailure.from_exception(exc, host_touched=True)) from exc
 

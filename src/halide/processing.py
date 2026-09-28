@@ -187,27 +187,38 @@ _MAX_NONFINITE_FRACTION = 0.01  # F05: above this, the export itself looks broke
 
 
 def _clean_nonfinite_band(band, xp) -> int:
-    """Count non-finite (NaN/inf) values in `band` and zero them in place — 0 if there are none, so
-    clean input is never touched by `nan_to_num` (bit-identical, F05's hard constraint)."""
-    count = int(xp.count_nonzero(~xp.isfinite(band)))
+    """Count *pixel locations* in `band` with a non-finite value in any channel, and zero every
+    non-finite value in place — 0 if there are none, so clean input is never touched by
+    `nan_to_num` (bit-identical, F05's hard constraint).
+
+    Counts locations, not raw values: one corrupted input value spreads across all 3 channels once
+    the ICC conversion's matrix multiply mixes them, but a photographer reading "N pixels" means N
+    spots on the frame, not N individual R/G/B numbers — so a single bad input pixel is reported as
+    1, not 3, even though all 3 of its output channels get zeroed."""
+    nonfinite = ~xp.isfinite(band)
+    count = int(xp.count_nonzero(xp.any(nonfinite, axis=-1)))
     if count:
         xp.nan_to_num(band, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     return count
 
 
-def _report_nonfinite(name: str, count: int, total: int, on_warning: Callable[[str], None] | None) -> None:
-    """After `_clean_nonfinite_band` has zeroed `count` of `total` values: warn about a few (the
-    reciprocal's MIN_TRANSMITTANCE floor then prints them as the brightest white, and the print
-    fit's percentiles are robust to a handful) — or fail the frame outright above
+def _report_nonfinite(name: str, count: int, total_pixels: int, on_warning: Callable[[str], None] | None) -> None:
+    """After `_clean_nonfinite_band` has zeroed `count` (of `total_pixels`) pixel locations: warn
+    about a few (the reciprocal's MIN_TRANSMITTANCE floor then prints them as the brightest white,
+    and the print fit's percentiles are robust to a handful) — or fail the frame outright above
     `_MAX_NONFINITE_FRACTION`, since that many means the export is broken, not the scan (F05)."""
-    fraction = count / total
+    fraction = count / total_pixels
     if fraction > _MAX_NONFINITE_FRACTION:
         raise ScanColorError(
             f"{name}: {fraction * 100:.1f}% of its pixels aren't valid numbers - this export looks "
             f"broken; re-export it from the raw converter."
         )
-    _warn(on_warning, f"{name}: {count} pixels weren't valid numbers (NaN/inf) and were treated as "
-                      f"clear film. If this is more than a handful, check the raw converter's export.")
+    if count == 1:
+        subject = "1 pixel wasn't a valid number (NaN/inf) and was treated as clear film"
+    else:
+        subject = f"{count} pixels weren't valid numbers (NaN/inf) and were treated as clear film"
+    _warn(on_warning, f"{name}: {subject}. If this is more than a handful, check the raw "
+                      f"converter's export.")
 
 
 def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes: int | None = None,
@@ -238,7 +249,8 @@ def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes
     result = map_in_bands(image, convert, band_bytes=band_bytes)
     total = sum(counts)
     if total:
-        _report_nonfinite(name if name is not None else str(image.shape), total, image.size, on_warning)
+        total_pixels = image.size // image.shape[-1]  # locations, not raw values — see _clean_nonfinite_band
+        _report_nonfinite(name if name is not None else str(image.shape), total, total_pixels, on_warning)
     return result
 
 
@@ -369,18 +381,27 @@ def _shared_frame(input_path, service, shm_prefix: str | None, stack: contextlib
 
 
 def _run_on_service(input_path, frame, service, method: str, request, on_warning):
-    """`service.<method>(frame, request)` — develop or print_ — on a shared frame the scan was
-    decoded into. Returns (reply, buffer, device name): the service writes the result back into the
-    frame, so the buffer is `frame.array`. On any failure — the request failed on the service's
+    """`service.<method>(frame, request, name=...)` — develop or print_ — on a shared frame the scan
+    was decoded into. Returns (reply, buffer, device name): the service writes the result back into
+    the frame, so the buffer is `frame.array`. On any failure — the request failed on the service's
     device (DeviceJobFailed), or the service is gone or stuck (ServiceUnavailable) — (None, the
     buffer the CPU should start over on, "cpu"): fall_back_to_cpu's rules, so a frame the service
-    may have half-written, or may still write into, is re-read into a private buffer."""
+    may have half-written, or may still write into, is re-read into a private buffer.
+
+    A ScanColorError from the service (bad input data — F05, R8) is neither of those: it isn't
+    caught here, so it propagates straight out, exactly as run_device_job's in-process counterpart
+    does — no fallback, no "GPU failed" wording. Any warnings the service collected while running
+    the job (it has nothing of its own to print them to) are re-emitted here through this worker's
+    own `on_warning`, exactly as the in-process paths emit them directly."""
     from halide.gpu_service import ServiceUnavailable
 
     try:
-        return getattr(service, method)(frame, request), frame.array, service.device_kind
+        reply = getattr(service, method)(frame, request, name=str(input_path))
     except (DeviceJobFailed, ServiceUnavailable) as failed:
         return None, fall_back_to_cpu(input_path, frame.array, failed.failure, on_warning), "cpu"
+    for message in reply.warnings:
+        _warn(on_warning, message)
+    return reply, frame.array, service.device_kind
 
 
 @dataclasses.dataclass(frozen=True)
@@ -564,7 +585,12 @@ def run_device_job(host: np.ndarray, job, request):
     `host` is written only once, at the very end (the plan's "out-of-memory never fails a frame",
     §3.3): up to the download a failure leaves it exactly as decoded, ready for the CPU to start
     over on. Host memory stays ~1 frame: `host` is both the upload source and the download target.
-    The one place this runs: the in-process device path (_run_on_device) and the GPU service."""
+    The one place this runs: the in-process device path (_run_on_device) and the GPU service.
+
+    A ScanColorError (F05's "too many non-finite pixels" — or any future input-data check) is *not*
+    a device problem (R8): it propagates unwrapped, not as DeviceJobFailed, so the caller neither
+    prints "the GPU failed" nor retries on the CPU (which would just raise the identical error a
+    second time) — the frame fails once, with the same plain message the CPU path itself gives."""
     frame = None
     downloading = False
     try:
@@ -573,6 +599,10 @@ def run_device_job(host: np.ndarray, job, request):
         downloading = True
         _device.to_host(frame, out=host)
         return result
+    except ScanColorError:
+        del frame
+        _device.release_memory()
+        raise
     except Exception as exc:  # noqa: BLE001 — any GPU problem: reported, then redone on the CPU
         del frame
         _device.release_memory()
