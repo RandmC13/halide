@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import multiprocessing
 import os
 import platform
 import shutil
@@ -105,9 +106,16 @@ class _VramPoller:
         return False
 
 
+# The GPU service can only be told apart from the workers where the worker pool uses forkserver
+# (batch/orchestrator.py::_pool_context: Linux, macOS). There the service is the only process halide
+# starts with the spawn method; on Windows the workers are spawned too, and every one of them would
+# look like the service. So elsewhere the service columns read "unknown" rather than guess.
+_SERVICE_IDENTIFIABLE = "forkserver" in multiprocessing.get_all_start_methods()
+
+
 def _is_gpu_service(cmdline: list[str]) -> bool:
-    """halide's GPU service is the only process halide starts with the spawn method (the forkserver
-    and its workers, and multiprocessing's resource tracker, run other entry points)."""
+    """Whether a child of halide is its GPU service: started by spawn (`spawn_main`), which only
+    identifies it where the pool's workers use forkserver (_SERVICE_IDENTIFIABLE)."""
     return any("spawn_main" in part for part in cmdline)
 
 
@@ -117,9 +125,10 @@ class _HostRssPoller:
     where the platform has it), the largest single process other than the GPU service, the GPU
     service's own peak (RSS and PSS), and the most swap in use. Zero/None if psutil can't read them."""
 
-    def __init__(self, pid: int, interval: float = 0.2) -> None:
+    def __init__(self, pid: int, interval: float = 0.2, identify_service: bool = _SERVICE_IDENTIFIABLE) -> None:
         self.pid = pid
         self.interval = interval
+        self.identify_service = identify_service  # False: nothing is attributed to the service
         self.peak_total = 0
         self.peak_total_pss: int | None = None
         self.peak_process = 0
@@ -151,7 +160,8 @@ class _HostRssPoller:
                 except Exception:  # noqa: BLE001 — not on this platform, or not permitted
                     info = process.memory_info()
                 rss, pss = info.rss, getattr(info, "pss", None)
-                if process.pid not in self.service_pids and _is_gpu_service(process.cmdline()):
+                if (self.identify_service and process.pid not in self.service_pids
+                        and _is_gpu_service(process.cmdline())):
                     self.service_pids.add(process.pid)
             except Exception:  # noqa: BLE001 — exited between listing and reading
                 continue
@@ -214,6 +224,7 @@ def _run(cmd: list[str], device: str, env: dict[str, str] | None = None) -> dict
         "vram_peaks_mib": sorted((v for pid, v in peaks.items() if pid not in service_pids), reverse=True),
         "service_vram_mib": max((v for pid, v in peaks.items() if pid in service_pids), default=None),
         "service_seen": bool(host.service_pids),
+        "service_identifiable": host.identify_service,
         "host_peak_total_mib": host.peak_total // _MIB,
         "host_peak_total_pss_mib": _mib(host.peak_total_pss),
         "host_peak_process_mib": host.peak_process // _MIB,
@@ -412,7 +423,11 @@ def main() -> int:
         print("workers. Host RAM: all of halide's processes together at their peak (RSS, and PSS, which counts")
         print("a shared-memory frame once rather than in both the worker and the service), and the largest")
         print("single process other than the GPU service. Service: the GPU service process's own peak host")
-        print("RSS / PSS and VRAM. Swap: in use at the start / at most during the run.\n")
+        print("RSS / PSS and VRAM. Swap: in use at the start / at most during the run.")
+        if not _SERVICE_IDENTIFIABLE:
+            print("On this platform the workers are spawned like the GPU service, so the service can't be told")
+            print("apart: its columns read \"unknown\", and \"largest\" and GPU procs include it.")
+        print()
         print("| command | device | mode | workers | auto picks | wall s | s/frame | ok | CPU fallbacks "
               "| GPU procs | peak VRAM/proc MiB | host RAM peak MiB (RSS total / PSS total / largest) "
               "| service RSS / PSS MiB | service VRAM MiB | swap MiB |")
@@ -424,14 +439,19 @@ def main() -> int:
             if mode == "service" and r["service_not_used"]:
                 ok += " (service NOT used)"
             swap = f"{r['swap_mib'][0]} / {r['swap_mib'][1]}" if r["swap_mib"] else "-"
-            service = (f"{_or_dash(r['service_rss_mib'])} / {_or_dash(r['service_pss_mib'])}"
-                       if r["service_seen"] else "-")
+            service_vram = _or_dash(r["service_vram_mib"])
+            if r["service_seen"]:
+                service = f"{_or_dash(r['service_rss_mib'])} / {_or_dash(r['service_pss_mib'])}"
+            elif mode == "service" and not r["service_identifiable"]:
+                service = service_vram = "unknown"
+            else:
+                service = "-"
             print(
                 f"| {command} | {device} | {mode} | {workers} | {auto} | {r['seconds']:.1f} | "
                 f"{r['seconds'] / n:.2f} | {ok} | {r['fallbacks']} | {len(peaks) if device == 'gpu' else '-'} | "
                 f"{', '.join(map(str, peaks)) if peaks else '-'} | "
                 f"{r['host_peak_total_mib']} / {_or_dash(r['host_peak_total_pss_mib'])} / {r['host_peak_process_mib']} | "
-                f"{service} | {_or_dash(r['service_vram_mib'])} | {swap} |"
+                f"{service} | {service_vram} | {swap} |"
             )
         for command, device, mode, workers, r, _ in rows:
             if r["service_not_used"] and mode == "service":
