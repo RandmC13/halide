@@ -21,6 +21,9 @@ themselves; these hold the reasoning, evidence and designs behind them.
     CPU-only workers, to make batch faster. Implemented and verified on the user's RTX 3070
     (63/63 `pytest -m gpu`; GPU batch 0.69 -> 0.45 s/frame against the per-worker mode, which is
     now the fallback). Results in the plan's Task B0/B4 sections.
+  - `codebase-review.md`: the plan for a full review of halide (requirements from every earlier
+    session, code audit, CLI and GUI experience) before new features. Report goes to
+    `investigations/codebase-review.md`.
 - **`specs/`**: designs agreed but not built yet.
   - `enlarger-skin.md`: the deferred skeuomorphic "enlarger controller" look for the GUI's
     controls.
