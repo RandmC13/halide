@@ -26,7 +26,14 @@ from halide.batch.progress import GridProgressRenderer
 from halide.calibration.profile_store import load_tone_override, resolve_profile_path
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
-from halide.cli._run_sheet import choose_workers, compute_row, roll_row, start_compute
+from halide.cli._output_policy import (
+    add_output_policy_arguments,
+    check_not_input,
+    is_interactive,
+    policy_from_args,
+    resolve_existing,
+)
+from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, start_compute
 from halide.cli._calibration_args import add_tone_arguments, describe_resolved_tone, resolve_tone_params
 from halide.core.types import ToneCurveParams
 from halide.device import ComputeDevice
@@ -43,6 +50,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "of them",
     )
     parser.add_argument("output", help="Output TIFF path, or an output directory when `input` is a directory")
+    add_output_policy_arguments(parser)
     add_tone_arguments(parser, allow_output_mode=False)
     parser.add_argument(
         "--profile",
@@ -79,8 +87,13 @@ def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCur
         raise SystemExit(f"input file not found: {input_path}")
 
     output_path = Path(args.output)
-    if output_path.exists() and not console.confirm_overwrite(output_path):
-        return 1
+    check_not_input([(input_path, output_path)])
+    resolved = resolve_existing(
+        [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
+    )
+    if not resolved:
+        print(console.success(f"{output_path} already exists — skipped (--skip-existing)."))
+        return 0
 
     fallback_warning = device_fallback_warning(device)
     if fallback_warning:
@@ -125,10 +138,21 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
         return 1
     jobs = [BatchJob(input_path=f, output_path=output_dir / f"{f.stem}{args.suffix}.tif") for f in files]
 
+    pairs = [(job.input_path, job.output_path) for job in jobs]
+    check_not_input(pairs)
+    kept_outputs = {out for _, out in resolve_existing(pairs, policy_from_args(args), interactive=is_interactive())}
+    skipped = len(jobs) - sum(1 for job in jobs if job.output_path in kept_outputs)
+    jobs = [job for job in jobs if job.output_path in kept_outputs]
+    if not jobs:
+        print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
+        return 0
+
     # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
     with contextlib.ExitStack() as stack:
         with console.RunSheet(quiet=args.quiet) as sheet:
             roll_row(sheet, input_dir, len(jobs), str(output_dir))
+            if skipped:
+                sheet.row("Skipping", f"{frame_count(skipped)} already developed")
             compute = start_compute(stack, sheet, jobs, device, "develop")
             compute_row(sheet, device, compute)
             workers = choose_workers(

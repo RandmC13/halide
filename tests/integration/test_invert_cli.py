@@ -167,3 +167,40 @@ def test_rejects_scan_with_no_embedded_icc_profile(tmp_path):
     # --invert-only needs no calibration source, so this isolates the ICC check specifically.
     with pytest.raises(SystemExit, match="no embedded ICC profile"):
         main(["invert", str(path), str(output), "--invert-only"])
+
+
+def test_invert_output_equal_to_input_refused_non_interactive(negative_tiff):
+    # D-1: output == input is a hard error in every mode, before any decoding starts — it must
+    # never depend on --overwrite/interactivity, since this is "use a scan as its own output",
+    # never "overwrite an existing file".
+    before = negative_tiff.read_bytes()
+    with pytest.raises(SystemExit, match="is the scan itself"):
+        main(["invert", str(negative_tiff), str(negative_tiff), "--invert-only", "--overwrite"])
+    assert negative_tiff.read_bytes() == before
+
+
+def test_invert_rerun_non_interactive_refuses_without_overwrite(negative_tiff, tmp_path):
+    output = tmp_path / "positive.tiff"
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only"]) == 0
+    before = output.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        main(["invert", str(negative_tiff), str(output), "--invert-only"])
+    message = str(exc.value.code)
+    assert "--overwrite" in message and "--skip-existing" in message
+    assert output.read_bytes() == before  # never silently overwritten
+
+
+def test_invert_skip_existing_leaves_output_untouched(negative_tiff, tmp_path):
+    output = tmp_path / "positive.tiff"
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only"]) == 0
+    before = output.read_bytes()
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only", "--skip-existing"]) == 0
+    assert output.read_bytes() == before
+
+
+def test_invert_overwrite_replaces_existing_output(negative_tiff, tmp_path):
+    output = tmp_path / "positive.tiff"
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only"]) == 0
+    before = output.read_bytes()
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only", "--overwrite"]) == 0
+    assert output.read_bytes() == before  # same deterministic pipeline, but did re-run (no error)

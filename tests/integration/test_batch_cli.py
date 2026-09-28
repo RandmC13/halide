@@ -166,3 +166,39 @@ def test_batch_cli_run_sheet_names_the_roll_when_run_on_the_current_directory(ro
     out = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", capsys.readouterr().out)
     roll_line = next(line for line in out.splitlines() if line.startswith("  Roll"))
     assert roll_line.split("Roll", 1)[1].split()[0].startswith("in")
+
+
+def test_batch_into_its_own_folder_is_refused_before_any_work(roll_dir):
+    import hashlib
+
+    before = {f.name: hashlib.md5(f.read_bytes()).hexdigest() for f in roll_dir.iterdir()}
+    with pytest.raises(SystemExit) as exc:
+        main(["batch", str(roll_dir), str(roll_dir), "--quiet"])
+    assert "is the scan itself" in str(exc.value.code)
+    after = {f.name: hashlib.md5(f.read_bytes()).hexdigest() for f in roll_dir.iterdir()}
+    assert after == before
+
+
+def test_batch_rerun_non_interactive_refuses_then_skip_existing_develops_only_new(roll_dir, tmp_path):
+    out_dir = tmp_path / "out"
+    assert main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"]) == 0
+    outputs = sorted(out_dir.glob("*.tiff"))
+    assert len(outputs) == 4
+    before = {p: p.read_bytes() for p in outputs}
+
+    # A plain re-run into the same, now-populated folder must refuse, not silently overwrite.
+    with pytest.raises(SystemExit) as exc:
+        main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"])
+    message = str(exc.value.code)
+    assert "--overwrite" in message and "--skip-existing" in message
+    assert {p: p.read_bytes() for p in outputs} == before
+
+    # Add a new, not-yet-developed frame to the roll.
+    _write_negative(roll_dir / "frame_04.tiff", seed=99)
+    assert main(
+        ["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet", "--skip-existing"]
+    ) == 0
+    # The 4 original outputs are untouched; only the new frame was developed.
+    assert {p: p.read_bytes() for p in outputs} == before
+    assert (out_dir / "frame_04.tiff").exists()
+    assert len(list(out_dir.glob("*.tiff"))) == 5
