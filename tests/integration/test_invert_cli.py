@@ -180,7 +180,7 @@ def test_invert_output_equal_to_input_refused_non_interactive(negative_tiff):
     assert "is the scan itself" in message
     # invert has no --suffix flag, unlike batch/bulk print/export — the hint must not offer it.
     assert "--suffix" not in message
-    assert message.endswith("Choose a different output path.")
+    assert message.endswith("Choose a different output path")
     assert negative_tiff.read_bytes() == before
 
 

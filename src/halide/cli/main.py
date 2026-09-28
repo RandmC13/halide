@@ -140,6 +140,13 @@ def run_cli(argv: list[str] | None = None) -> int:
     from halide.cli.completion import maybe_install_completion
     from halide.cli.console import run_guarded
 
+    # A logged run (`halide batch ... > log.txt 2>&1`) must keep its order: stdout is block-buffered
+    # when it isn't a terminal, so the run sheet, progress lines and warnings would otherwise arrive
+    # out of step with stderr's messages.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(line_buffering=True)
+
     code = run_guarded(main, argv)
     maybe_install_completion(build_parser())
     return code

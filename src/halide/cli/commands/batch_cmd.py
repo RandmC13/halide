@@ -12,7 +12,7 @@ from pathlib import Path
 
 from halide.io.roll import list_scans
 from halide.batch.orchestrator import BatchJob, default_worker_count, jobs_for_files, memory_budget_warning, run_batch
-from halide.batch.progress import GridProgressRenderer, cancel_notice
+from halide.batch.progress import cancel_notice, make_renderer
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.cli._device_args import add_device_argument, resolve_device_arg
@@ -37,7 +37,15 @@ from halide.cli._calibration_args import (
     resolve_stage,
     resolve_tone_params,
 )
-from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, skipped_row, start_compute
+from halide.cli._run_sheet import (
+    choose_workers,
+    compute_row,
+    frame_count,
+    print_frame_warnings,
+    roll_row,
+    skipped_row,
+    start_compute,
+)
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
 from halide.core.types import Stage
 
@@ -343,7 +351,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     # before the sheet closes — see CLAUDE.md's choose_calibration_source ordering note. The workers
     # develop on it (run_batch): on a GPU through the shared GPU service, or — if it can't be used —
     # with a CUDA context per worker, whose default count also fits the card's memory.
-    device = resolve_device_arg(args)
+    device = resolve_device_arg(args, isolated=True)  # the parent never computes on the card (2.4-7)
     compute = start_compute(stack, sheet, jobs, device)
     compute_row(sheet, device, compute)
 
@@ -376,7 +384,7 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
                 args, stage, input_dir, jobs, sheet, stack, skipped_frames=skipped_frames, left_out=left_out
             )
 
-        renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="invert")
+        renderer = make_renderer(len(jobs), "invert", quiet=args.quiet)
         job_index = {job: i for i, job in enumerate(jobs)}
 
         def on_start(job):
@@ -414,16 +422,9 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
 
     # Printed even with --quiet, like every run-sheet warning: e.g. a frame the GPU couldn't develop
     # and the CPU redid (same result, within the GPU tolerance, but the user should know).
-    for r in results:
-        if r.warning:
-            print(console.warning(f"{r.job.input_path.name}: {r.warning}"))
+    print_frame_warnings(results)
 
     failures = [r for r in results if r.error]
-    if renderer is None:
-        if cancelled:
-            print(console.warning(f"Cancelled — {len(results)}/{len(jobs)} frames processed."))
-        for r in failures:
-            print(console.error(f"{r.job.input_path.name}: {r.error}"))
 
     if cancelled:
         return 130

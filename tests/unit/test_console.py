@@ -230,3 +230,90 @@ def test_run_sheet_follows_the_rule_sizing_convention(monkeypatch, capsys):
     streamed = _plain(capsys.readouterr().out)
     assert streamed[0] == streamed[-1] == _plain(console.full_width_rule())[0]
     assert [line.split()[0] for line in streamed[1:-1]] == ["Roll", "Calibration"]
+
+
+def _use_color(monkeypatch, *, tty, env=()):
+    for name in ("NO_COLOR", "FORCE_COLOR", "TERM"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env:
+        monkeypatch.setenv(name, value)
+
+    monkeypatch.setattr(console.sys.stdout, "isatty", lambda: tty, raising=False)
+    return console.use_color()
+
+
+def test_use_color_follows_no_color_term_dumb_pipes_and_force_color(monkeypatch):
+    assert _use_color(monkeypatch, tty=True) is True
+    assert _use_color(monkeypatch, tty=False) is False
+    assert _use_color(monkeypatch, tty=True, env=[("NO_COLOR", "1")]) is False
+    assert _use_color(monkeypatch, tty=True, env=[("NO_COLOR", "")]) is False  # any value, even empty
+    assert _use_color(monkeypatch, tty=True, env=[("TERM", "dumb")]) is False
+    assert _use_color(monkeypatch, tty=False, env=[("FORCE_COLOR", "1")]) is True
+    assert _use_color(monkeypatch, tty=True, env=[("NO_COLOR", "1"), ("FORCE_COLOR", "1")]) is True
+
+
+def test_no_colour_output_has_no_escape_codes_from_any_helper(monkeypatch):
+    _use_color(monkeypatch, tty=True, env=[("NO_COLOR", "1")])
+    pieces = [
+        console.success("ok"), console.error("bad"), console.warning("hmm"), console.dim("faint"),
+        console.rule(), console.framed(["a", "b"]), console.help_banner(), console.welcome_screen(),
+        console.source_color("auto"), "".join(console.tank_frames()), "".join(console.random_mini_spinner_frames()),
+        console.cancelled(),
+    ]
+    sheet_lines = console.RunSheet()._lines("Label", "text", icon="x", icon_style=console.Style.RED)
+    assert not any("\033" in piece for piece in pieces + sheet_lines)
+
+
+def test_piped_output_has_no_escape_codes(monkeypatch, capsys):
+    _use_color(monkeypatch, tty=False)
+    with console.RunSheet() as sheet:
+        sheet.warn("Scans", "careful")
+        sheet.ok("Roll", "fine")
+    assert "\033" not in capsys.readouterr().out
+    assert "\033" not in console.success("x")
+
+
+def test_colour_is_still_there_in_a_terminal(monkeypatch):
+    _use_color(monkeypatch, tty=True)
+    assert "\033[92m" in console.success("ok")
+
+
+def test_plural_and_finish_and_cancel_wording():
+    assert console.plural(1, "frame") == "1 frame" and console.plural(0, "frame") == "0 frames"
+    assert console.finish_message("batch", 1, 1, 0, 3.0) == "Developed 1 frame in 3.0s"
+    assert console.finish_message("export", 12, 12, 0, 8.0) == "Exported 12 files in 8.0s"
+    assert console.finish_message("batch", 36, 37, 1, 42.0) == "Developed 36 of 37 frames (1 failed) in 42.0s"
+    assert console.cancelled_message("batch", 2, 6) == "Cancelled - 2 of 6 frames developed; nothing half-written"
+
+
+def test_run_guarded_cancel_uses_the_one_wording(capsys):
+    def main(_argv):
+        raise KeyboardInterrupt
+
+    assert console.run_guarded(main, []) == 130
+    assert "✗ Cancelled - nothing half-written" in capsys.readouterr().err
+
+
+def test_run_cli_makes_stdout_line_buffered(monkeypatch):
+    from halide.cli import main as cli_main
+
+    calls = []
+
+    class Out:
+        def reconfigure(self, **kw):
+            calls.append(kw)
+
+        def isatty(self):
+            return False
+
+        def write(self, _t):
+            return 0
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(cli_main.sys, "stdout", Out())
+    monkeypatch.setattr(cli_main, "main", lambda argv=None: 0)
+    monkeypatch.setenv("HALIDE_NO_COMPLETION", "1")
+    assert cli_main.run_cli([]) == 0
+    assert calls == [{"line_buffering": True}]

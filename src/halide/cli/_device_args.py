@@ -46,13 +46,17 @@ def add_device_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def resolve_device_arg(args: argparse.Namespace) -> ComputeDevice:
+def resolve_device_arg(args: argparse.Namespace, *, isolated: bool = False) -> ComputeDevice:
     """Resolve --device/$HALIDE_DEVICE into the device this run actually uses. A bad value (a
     mistyped $HALIDE_DEVICE — --device itself is constrained by argparse's `choices`) or an
     explicit --device gpu that isn't usable becomes the CLI's usual clean error exit rather than a
-    traceback or a stack of CUDA internals."""
+    traceback or a stack of CUDA internals.
+
+    `isolated`: for a batch's parent process, which only needs to know what card there is — the
+    GPU service or the workers do the computing — the probe runs in a child process, so no CUDA
+    context exists in the parent (see halide.device.resolve_device)."""
     try:
-        return resolve_device(getattr(args, "device", None))
+        return resolve_device(getattr(args, "device", None), **({"isolated": True} if isolated else {}))
     except (ValueError, DeviceUnavailableError) as exc:
         raise SystemExit(str(exc)) from exc
 

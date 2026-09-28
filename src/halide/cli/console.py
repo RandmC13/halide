@@ -28,15 +28,48 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 
-class Style:
-    CYAN = "\033[96m"
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    ORANGE = "\033[38;5;208m"
-    RED = "\033[91m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-    RESET = "\033[0m"
+def use_color() -> bool:
+    """Whether output may carry colour codes. FORCE_COLOR (set, not "0") wins; otherwise no colour
+    when NO_COLOR is set (any value, https://no-color.org), when TERM=dumb, or when stdout isn't a
+    terminal — so a piped or logged run is plain text."""
+    force = os.environ.get("FORCE_COLOR")
+    if force and force != "0":
+        return True
+    if "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb":
+        return False
+    return sys.stdout.isatty()
+
+
+def interactive_output() -> bool:
+    """True when stdout is a terminal that can redraw in place (not piped, not TERM=dumb)."""
+    return sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
+
+
+_COLOR_CODES = {
+    "CYAN": "\033[96m",
+    "GREEN": "\033[92m",
+    "YELLOW": "\033[93m",
+    "ORANGE": "\033[38;5;208m",
+    "RED": "\033[91m",
+    "BOLD": "\033[1m",
+    "DIM": "\033[2m",
+    "RESET": "\033[0m",
+}
+
+
+class _StyleMeta(type):
+    """Colour and weight codes are looked up when used, not when this module loads, so they follow
+    use_color() at that moment (NO_COLOR, a pipe). Cursor movement and line clearing are not colour
+    and stay real: a terminal with NO_COLOR still redraws in place."""
+
+    def __getattr__(cls, name: str) -> str:
+        code = _COLOR_CODES.get(name)
+        if code is None:
+            raise AttributeError(name)
+        return code if use_color() else ""
+
+
+class Style(metaclass=_StyleMeta):
     CLEAR_LINE = "\033[K"
 
     @staticmethod
@@ -61,12 +94,41 @@ VERB = {"invert": "Developing", "export": "Exporting", "batch": "Developing", "p
 VERB_PAST = {"invert": "Developed", "export": "Exported", "batch": "Developed", "print": "Printed", "proof": "Proofed"}
 
 # manual/auto/anchor/colorchecker — see core.types.CalibrationSource.
-SOURCE_COLOR = {
-    "manual": Style.DIM,
-    "auto": Style.YELLOW,
-    "anchor": Style.CYAN,
-    "colorchecker": Style.GREEN,
-}
+_SOURCE_COLOR_NAME = {"manual": "DIM", "auto": "YELLOW", "anchor": "CYAN", "colorchecker": "GREEN"}
+
+
+def source_color(source: str) -> str:
+    return getattr(Style, _SOURCE_COLOR_NAME.get(source, "DIM"))
+
+
+def plural(n: int, noun: str) -> str:
+    """"1 frame", "2 frames" — one place for every count with a noun."""
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+# What each command works on, for its end line ("Developed 36 of 37 frames", "Exported 12 files").
+NOUN = {"invert": "frame", "batch": "frame", "export": "file", "print": "frame", "proof": "frame"}
+
+
+def finish_message(verb: str, ok: int, total: int, failed: int, elapsed: float, noun: str | None = None) -> str:
+    """The one end line every multi-frame command prints: "Developed 37 frames in 42s", or with
+    failures "Developed 36 of 37 frames (1 failed) in 42s". `ok` is the count that really finished
+    without an error. A contact sheet says "Contact sheet complete" only when every frame made it."""
+    noun = noun or NOUN.get(verb, "frame")
+    past = VERB_PAST.get(verb, "Processed")
+    took = f"in {human_time(elapsed)}"
+    if failed:
+        return f"{past} {ok} of {plural(total, noun)} ({failed} failed) {took}"
+    if verb == "proof":
+        return f"Contact sheet complete — {plural(total, noun)} {took}"
+    return f"{past} {plural(total, noun)} {took}"
+
+
+def cancelled_message(verb: str, ok: int, total: int, noun: str | None = None) -> str:
+    """The one Ctrl-C message: everything finished is on disk whole, nothing else was started."""
+    noun = noun or NOUN.get(verb, "frame")
+    past = VERB_PAST.get(verb, "Processed").lower()
+    return f"Cancelled - {ok} of {plural(total, noun)} {past}; nothing half-written"
 
 # A small arsenal of single-line, photography-themed spinner glyph cycles — used as the fallback
 # when a terminal is too small for a full multi-line themed animation (see animation/
@@ -118,6 +180,11 @@ def error(message: str) -> str:
 
 def warning(message: str) -> str:
     return f"{Style.YELLOW}{ICON_WARN} Warning:{Style.RESET} {message}"
+
+
+def cancelled(message: str = "Cancelled - nothing half-written") -> str:
+    """The Ctrl-C line, worded the same everywhere (see cancelled_message)."""
+    return f"{Style.RED}{ICON_FAIL}{Style.RESET} {message}"
 
 
 def dim(message: str) -> str:
@@ -378,7 +445,7 @@ class animation:
         self.interval = interval
         self._min_size = min_size
         self._fallback_frames = list(fallback_frames) if fallback_frames else None
-        self._active = sys.stdout.isatty()
+        self._active = interactive_output()
         self._degraded = False
         if self._min_size is not None and not _terminal_fits(*self._min_size):
             self.frames = self._fallback_frames or random_mini_spinner_frames()
@@ -477,17 +544,20 @@ def themed_animation(
 # that actually needs to move between frames is the lid — on top when upright, on the bottom when
 # inverted — which is both the simplest possible way to draw this and an accurate one, not a
 # simplification: the lid is genuinely the one part of a real tank whose position changes.
-_TANK_LID_UP = f"{Style.DIM} ▄▄▄▄▄ {Style.RESET}"
-_TANK_LID_DOWN = f"{Style.DIM} ▀▀▀▀▀ {Style.RESET}"
-_TANK_TOP = "┌─────┐"
-_TANK_FILL = f"│{Style.ORANGE}▓▓▓▓▓{Style.RESET}│"
-_TANK_BOTTOM = "└─────┘"
-_TANK_BENCH = f"{Style.DIM}{'▔' * 9}{Style.RESET}"
+def tank_frames() -> list[str]:
+    """The tank animation's frames, built when asked so they follow use_color()."""
+    lid_up = f"{Style.DIM} ▄▄▄▄▄ {Style.RESET}"
+    lid_down = f"{Style.DIM} ▀▀▀▀▀ {Style.RESET}"
+    top = "┌─────┐"
+    fill = f"│{Style.ORANGE}▓▓▓▓▓{Style.RESET}│"
+    bottom = "└─────┘"
+    bench = f"{Style.DIM}{'▔' * 9}{Style.RESET}"
+    return [
+        "\n".join([lid_up, top, fill, fill, bottom, bench]),
+        "\n".join([top, fill, fill, bottom, lid_down, bench]),
+    ]
 
-TANK_FRAMES = [
-    "\n".join([_TANK_LID_UP, _TANK_TOP, _TANK_FILL, _TANK_FILL, _TANK_BOTTOM, _TANK_BENCH]),
-    "\n".join([_TANK_TOP, _TANK_FILL, _TANK_FILL, _TANK_BOTTOM, _TANK_LID_DOWN, _TANK_BENCH]),
-]
+
 TANK_MIN_SIZE = (16, 8)  # (columns, lines) — see themed_animation's fallback behavior below this
 
 
@@ -574,6 +644,15 @@ def menu(prompt: str, options: Sequence[tuple[str, str]]) -> str | None:
     return None
 
 
+def _print_err(text: str) -> None:
+    """Print to stderr, without colour codes when stderr itself isn't a terminal (2> file) — the
+    message was styled for stdout's terminal."""
+    force = os.environ.get("FORCE_COLOR")
+    if not sys.stderr.isatty() and not (force and force != "0"):
+        text = _ANSI_ESCAPE.sub("", text)
+    print(text, file=sys.stderr)
+
+
 def run_guarded(main_func: Callable[[list[str] | None], int], argv: list[str] | None = None) -> int:
     """The top-level exception boundary for the installed console script (and `python -m
     halide.cli.main`) — NOT used by main() itself. The integration test suite calls main() directly
@@ -591,17 +670,17 @@ def run_guarded(main_func: Callable[[list[str] | None], int], argv: list[str] | 
         return main_func(argv)
     except KeyboardInterrupt:
         sys.stdout.write("\n")
-        print(warning("Cancelled."), file=sys.stderr)
+        _print_err(cancelled())
         return 130
     except SystemExit as exc:
         code = exc.code
         if isinstance(code, str):
-            print(error(code), file=sys.stderr)
+            _print_err(error(code))
             return 1
         return code if isinstance(code, int) else 0
     except Exception as exc:  # noqa: BLE001 -- last-resort presentation layer, see docstring above
         if debug:
             raise
-        print(error(f"halide hit an unexpected error: {exc}"), file=sys.stderr)
-        print(dim("(re-run with --debug, or set HALIDE_DEBUG=1, for the full traceback)"), file=sys.stderr)
+        _print_err(error(f"halide hit an unexpected error: {exc}"))
+        _print_err(dim("(re-run with --debug, or set HALIDE_DEBUG=1, for the full traceback)"))
         return 1

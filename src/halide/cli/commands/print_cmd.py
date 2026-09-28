@@ -21,7 +21,7 @@ from halide.batch.orchestrator import (
     memory_budget_warning,
     run_print_batch,
 )
-from halide.batch.progress import GridProgressRenderer, cancel_notice
+from halide.batch.progress import cancel_notice, make_renderer
 from halide.calibration.profile_store import load_tone_override, resolve_profile_path
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
@@ -37,7 +37,15 @@ from halide.cli._output_policy import (
     resolve_existing,
 )
 from halide.io.roll import list_scans
-from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, skipped_row, start_compute
+from halide.cli._run_sheet import (
+    choose_workers,
+    compute_row,
+    frame_count,
+    print_frame_warnings,
+    roll_row,
+    skipped_row,
+    start_compute,
+)
 from halide.cli._calibration_args import add_tone_arguments, describe_resolved_tone, resolve_tone_params
 from halide.core.types import ToneCurveParams
 from halide.device import ComputeDevice
@@ -164,7 +172,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
                 compute=compute,
             )
 
-        renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="print")
+        renderer = make_renderer(len(jobs), "print", quiet=args.quiet)
         job_index = {job: i for i, job in enumerate(jobs)}
 
         def on_start(job):
@@ -192,16 +200,9 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
             renderer.cancel(not_started)
         renderer.finish(cancelled=cancelled)
 
-    for r in results:
-        if r.warning:
-            print(console.warning(f"{r.job.input_path.name}: {r.warning}"))
+    print_frame_warnings(results)
 
     failures = [r for r in results if r.error]
-    if renderer is None:
-        if cancelled:
-            print(console.warning(f"Cancelled — {len(results)}/{len(jobs)} frames processed."))
-        for r in failures:
-            print(console.error(f"{r.job.input_path.name}: {r.error}"))
 
     if cancelled:
         return 130
@@ -210,8 +211,8 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
 
 def run(args: argparse.Namespace) -> int:
     tone_params = _resolve_tone(args)
-    device = resolve_device_arg(args)
     input_path = Path(args.input)
+    device = resolve_device_arg(args, isolated=input_path.is_dir())  # a bulk run's parent never computes
     if input_path.is_dir():
         return _run_bulk(args, input_path, tone_params, device)
     return _run_single(args, input_path, tone_params, device)

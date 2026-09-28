@@ -14,7 +14,7 @@ from halide.batch.orchestrator import (
     export_memory_budget_warning,
     run_export_batch,
 )
-from halide.batch.progress import GridProgressRenderer, cancel_notice
+from halide.batch.progress import cancel_notice, make_renderer
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 from halide.cli._output_policy import (
@@ -29,7 +29,15 @@ from halide.cli._output_policy import (
     resolve_existing,
 )
 from halide.io.roll import list_scans
-from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, skipped_row, start_compute
+from halide.cli._run_sheet import (
+    choose_workers,
+    compute_row,
+    frame_count,
+    print_frame_warnings,
+    roll_row,
+    skipped_row,
+    start_compute,
+)
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
@@ -159,7 +167,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
                 compute=compute,
             )
 
-        renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="export")
+        renderer = make_renderer(len(jobs), "export", quiet=args.quiet)
         job_index = {job: i for i, job in enumerate(jobs)}
 
         def on_start(job):
@@ -187,16 +195,9 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
             renderer.cancel(not_started)
         renderer.finish(cancelled=cancelled)
 
-    for r in results:
-        if r.warning:
-            print(console.warning(f"{r.job.input_path.name}: {r.warning}"))
+    print_frame_warnings(results)
 
     failures = [r for r in results if r.error]
-    if renderer is None:
-        if cancelled:
-            print(console.warning(f"Cancelled — {len(results)}/{len(jobs)} frames processed."))
-        for r in failures:
-            print(console.error(f"{r.job.input_path.name}: {r.error}"))
 
     if cancelled:
         return 130
@@ -207,8 +208,8 @@ def run(args: argparse.Namespace) -> int:
     # Resolved here regardless of which mode runs, so --device gpu still fails fast without
     # CuPy/a driver and every command's Compute row behaves the same way (Ruling R7). Both modes
     # export on it: the single file in this process, a directory in the worker pool.
-    device = resolve_device_arg(args)
     input_path = Path(args.input)
+    device = resolve_device_arg(args, isolated=input_path.is_dir())  # a bulk run's parent never computes
     if input_path.is_dir():
         return _run_bulk(args, input_path, device)
     return _run_single(args, input_path, device)

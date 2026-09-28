@@ -167,7 +167,7 @@ def run(args: argparse.Namespace) -> int:
     label = f"{console.VERB['invert']} {input_path.name}..."
     try:
         with console.themed_animation(
-            console.TANK_FRAMES,
+            console.tank_frames(),
             label,
             min_width=console.TANK_MIN_SIZE[0],
             min_height=console.TANK_MIN_SIZE[1],

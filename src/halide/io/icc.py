@@ -193,7 +193,7 @@ def _check_trc_is_linear(data: bytes, tags: dict[str, tuple[int, int]], signatur
     if not np.all(density_error <= _LINEARITY_TOLERANCE):
         raise UnsupportedICCProfileError(
             f"'{signature}' is not a linear tone curve — this profile is gamma-encoded (e.g. for "
-            f"display use). Re-export using your raw processor's linear gamma/tone-curve option."
+            f"display use). Re-export using your raw processor's linear gamma/tone-curve option"
         )
 
 
@@ -212,7 +212,7 @@ def parse_linear_rgb_profile(icc_bytes: bytes) -> LinearRGBProfile:
     lut_tags_present = _LUT_TAG_SIGNATURES & tags.keys()
     if lut_tags_present:
         raise UnsupportedICCProfileError(
-            f"profile contains LUT-based tag(s) {sorted(lut_tags_present)} — only pure "
+            f"profile contains LUT-based {'tag' if len(lut_tags_present) == 1 else 'tags'} {sorted(lut_tags_present)} — only pure "
             f"matrix-shaper profiles (rXYZ/gXYZ/bXYZ + linear TRC) are supported"
         )
 

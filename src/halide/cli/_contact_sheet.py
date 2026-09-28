@@ -68,7 +68,7 @@ def write_contact_sheet(
         records.append(record)
         tiles.append(Tile(name=name, image=image, caption=caption_from_provenance(record)))
 
-    bits = [f"{len(jobs)} frame(s)"]
+    bits = [console.plural(len(jobs), "frame")]
     if settings:
         bits.append(settings)
     elif _common_decision(records):
@@ -115,7 +115,7 @@ def write_sheet_from_folder(
         export_memory_budget_warning,
         run_thumbnail_batch,
     )
-    from halide.batch.progress import GridProgressRenderer, cancel_notice
+    from halide.batch.progress import cancel_notice, make_renderer
 
     if not files:
         print(f"No processed frames (TIFF/PNG/JPEG) found for {sheet_path}")
@@ -135,7 +135,7 @@ def write_sheet_from_folder(
         else:
             workers = default_export_worker_count(jobs)
 
-        renderer = None if quiet else GridProgressRenderer(total=len(jobs), verb="proof")
+        renderer = make_renderer(len(jobs), "proof", quiet=quiet)
         job_index = {job: i for i, job in enumerate(jobs)}
         if renderer:
             renderer.start()
@@ -154,9 +154,6 @@ def write_sheet_from_folder(
         if cancelled:
             return 130
         failures = [r for r in results if r.error]
-        if renderer is None:
-            for r in failures:
-                print(console.error(f"{r.job.input_path.name}: {r.error}"))
         write_contact_sheet(args, jobs, results, sheet_path, default_title)
         return 1 if failures else 0
     finally:
