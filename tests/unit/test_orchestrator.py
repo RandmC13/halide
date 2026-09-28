@@ -675,6 +675,7 @@ def test_memory_budget_warning_counts_gpu_host_memory(tmp_path):
 
 import json  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 import signal  # noqa: E402
 
 import psutil  # noqa: E402
@@ -1122,3 +1123,135 @@ def test_decoded_pixel_bytes_reads_what_read_tiff_decodes(tmp_path):
     tifffile.imwrite(path, np.zeros((2, 8, 8, 3), dtype=np.float32), photometric="rgb")
     shape = read_tiff_shape(path)
     assert orchestrator._decoded_pixel_bytes(path) == int(np.prod(shape)) * 4
+
+
+# --- Exit paths (F12, review 2.4-2 and 2.4-9): stale frames, SIGHUP/SIGTERM, early Ctrl-C --------
+
+import re  # noqa: E402
+import signal  # noqa: E402
+import subprocess  # noqa: E402
+import textwrap  # noqa: E402
+import time  # noqa: E402
+
+from multiprocessing import shared_memory  # noqa: E402
+
+
+def _dead_pid() -> int:
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+@pytest.mark.skipif(sys.platform != "linux" or sys.version_info < (3, 13), reason="/dev/shm sweep, Python 3.13+")
+def test_a_gpu_batch_first_sweeps_frames_a_killed_batch_left_behind(fake_gpu_service, clean_shm):
+    """A whole-group SIGKILL (or the OOM killer taking the parent) leaves its frames in /dev/shm —
+    RAM — with nothing left alive to sweep them. The next GPU batch removes them before it starts."""
+    stale = shared_memory.SharedMemory(create=True, size=4096, name=f"halide-{_dead_pid()}-0badf00d-{time.time_ns()}",
+                                       track=False)
+    try:
+        with batch_compute([], _GPU) as compute:
+            assert compute.mode == "service"
+            assert stale.name not in _shm_entries()
+    finally:
+        stale.close()
+
+
+# The real CLI in a child process, as a terminal runs it. SERVICE_MODE: its GPU is a stand-in (a
+# "cpu" service process behind a "gpu" device), so a batch goes through the shared GPU service and
+# /dev/shm exactly as on a real card.
+_CLI = textwrap.dedent(
+    """\
+    import signal, sys
+    # A background process started by a non-interactive shell (or pytest) may inherit Ctrl-C ignored;
+    # a terminal's foreground job has Python's own handler.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    if sys.argv[1] == "service":
+        import halide.cli._device_args as device_args
+        import halide.device as device
+        from halide.batch import orchestrator
+
+        def fake(requested=None):
+            wanted = device.requested_device(requested)
+            return device.ComputeDevice(kind="cpu") if wanted == "cpu" else device.ComputeDevice(kind="gpu", name="Fake")
+
+        device.resolve_device = device_args.resolve_device = fake
+        orchestrator._SERVICE_KIND = "cpu"
+    from halide.cli.main import run_cli
+    sys.exit(run_cli(sys.argv[2:]))
+    """
+)
+
+
+def _start_cli(tmp_path, mode, frames, shape):
+    roll = tmp_path / "in"
+    roll.mkdir()
+    for i in range(frames):
+        _write_scan(roll / f"f{i:02d}.tif", shape=shape, seed=i + 1)
+    env = dict(os.environ, HALIDE_NO_COMPLETION="1", HALIDE_DEVICE="gpu" if mode == "service" else "cpu")
+    process = subprocess.Popen(
+        [sys.executable, "-c", _CLI, mode, "batch", str(roll), str(tmp_path / "out"),
+         "--rm", "0.9", "--bm", "1.1", "--rs", "1", "--bs", "1", "--workers", "2", "--quiet"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True, env=env,
+    )
+    return process
+
+
+def _group_gone(pgid, seconds=15):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not any(p.info["pid"] != pgid and _pgid(p.info["pid"]) == pgid for p in psutil.process_iter(["pid"])):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _pgid(pid):
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="needs POSIX process groups")
+@pytest.mark.parametrize("delay", [0.3, 0.6, 0.9])
+def test_ctrl_c_early_in_a_batch_prints_cancelled_not_tracebacks(tmp_path, delay):
+    """2.4-9: Ctrl-C in the first second of a batch (a terminal sends it to the whole process group)
+    used to interrupt the forkserver's preload of colour/scipy and print pages of tracebacks."""
+    process = _start_cli(tmp_path, "cpu", frames=6, shape=(300, 450, 3))
+    time.sleep(delay)
+    os.killpg(process.pid, signal.SIGINT)
+    out, err = process.communicate(timeout=60)
+    assert "Traceback" not in err and "Traceback" not in out, err
+    assert "Cancelled" in out + err
+    assert process.returncode == 130
+    assert _group_gone(process.pid)
+
+
+@pytest.mark.skipif(sys.platform != "linux" or sys.version_info < (3, 13), reason="service mode: /dev/shm, Python 3.13+")
+@pytest.mark.parametrize("signum, whole_group", [(signal.SIGHUP, True), (signal.SIGTERM, False), (signal.SIGINT, True)],
+                         ids=["terminal closed", "SIGTERM", "Ctrl-C"])
+def test_a_signalled_gpu_batch_cancels_in_order_and_leaves_nothing_behind(tmp_path, signum, whole_group):
+    """F12 (review 2.4-2): closing the terminal (SIGHUP to the whole group) mid-batch used to kill
+    every process that could clean up, leaving the shared frames in /dev/shm — RAM — until reboot.
+    SIGHUP and SIGTERM now take Ctrl-C's orderly path: the frames in progress finish, the service
+    stops, the shared frames are swept."""
+    process = _start_cli(tmp_path, "service", frames=6, shape=(600, 900, 3))
+    ours = f"halide-{process.pid}-"
+    deadline = time.monotonic() + 60
+    while not any(name.startswith(ours) for name in _shm_entries()):  # a frame is in flight
+        assert process.poll() is None and time.monotonic() < deadline, process.communicate()
+        time.sleep(0.01)
+    if whole_group:
+        os.killpg(process.pid, signum)
+    else:
+        os.kill(process.pid, signum)
+    out, err = process.communicate(timeout=60)
+    assert "Traceback" not in err and "Traceback" not in out, err
+    assert "Cancelled" in out + err
+    assert process.returncode == 130
+    assert _group_gone(process.pid)
+    assert not any(name.startswith(ours) for name in _shm_entries())
+    outputs = sorted(p.name for p in (tmp_path / "out").iterdir())
+    assert not any("partial" in name for name in outputs)  # frames in progress finished, whole
+    counted = int(re.search(r"Cancelled — (\d+)/6", out + err).group(1))
+    assert len(outputs) == counted  # and every frame written is counted

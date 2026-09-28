@@ -95,6 +95,19 @@ def _late_export_in_child(arrived: str) -> None:
     halide.processing.export_request = late
 
 
+def _slow_but_real_develop_in_child(arrived: str) -> None:
+    """Initializer: every develop request signals `arrived`, waits 1.5 s, then develops for real —
+    a slow service that does answer, so an interrupted client still has a reply owed to it."""
+    real = halide.processing.develop_request
+
+    def slow(frame, request, *args, **kwargs):
+        Path(arrived).touch()
+        time.sleep(1.5)
+        return real(frame, request, *args, **kwargs)
+
+    halide.processing.develop_request = slow
+
+
 class _Abort(BaseException):
     """Not an Exception: what a stray SystemExit/KeyboardInterrupt from request code looks like."""
 
@@ -436,6 +449,37 @@ def test_stuck_service_times_out(tmp_path):
             with pytest.raises(ServiceUnavailable):  # the connection is treated as dead
                 _develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
             assert time.monotonic() - start < 0.5
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="needs signal.setitimer")
+def test_an_interrupted_request_makes_the_client_dead_not_out_of_step(tmp_path):
+    """F06 (review 2.4-1): Ctrl-C landing while a request waits for its reply used to leave that
+    reply owed on the connection, so the next request read the *previous* frame's reply and its own
+    frame — still the raw negative — was written out. Any BaseException there now marks the client
+    dead: the next request raises ServiceUnavailable (the caller redevelops on the CPU) instead."""
+    scan_a = _write_scan(tmp_path / "a.tif", seed=1)
+    scan_b = _write_scan(tmp_path / "b.tif", seed=2)
+    arrived = tmp_path / "arrived"
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    with running_service("cpu", initializer=partial(_slow_but_real_develop_in_child, str(arrived))) as address:
+        with ServiceClient(address) as client:
+            previous = signal.signal(signal.SIGALRM, interrupt)
+            try:
+                signal.setitimer(signal.ITIMER_REAL, 0.5)
+                with pytest.raises(KeyboardInterrupt):
+                    _develop_through(client, scan_a, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous)
+            assert arrived.exists()  # A really was in flight inside the service
+            start = time.monotonic()
+            with pytest.raises(ServiceUnavailable) as dead:
+                _develop_through(client, scan_b, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
+            assert time.monotonic() - start < 0.5  # no waiting for A's reply
+            assert not dead.value.failure.host_touched  # B was never sent: its frame is untouched
 
 
 def test_leaving_running_service_stops_it_with_a_request_in_flight(tmp_path):
