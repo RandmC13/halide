@@ -816,6 +816,7 @@ def _run_pool(
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
     shm_prefix: str | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """Process every job in a process pool, in parallel, calling `worker(job, *worker_args)` for
     each. Calls on_start(job) when a job is handed to a worker and on_result(result) when it
@@ -847,7 +848,10 @@ def _run_pool(
     `shm_prefix`: the batch's shared-frame prefix in GPU service mode (BatchCompute.shm_prefix).
     Once the pool has fully shut down — on every way out, a crash or Ctrl+C included — whatever a
     dead worker left in /dev/shm under it is swept (shared_frames.sweep); never before, since
-    every worker shares the prefix."""
+    every worker shares the prefix.
+
+    `on_cancel(message)`: called once after a cancel if frames are still in progress, while they
+    finish (_finish_in_flight) — so the caller can say why the batch hasn't stopped yet."""
     if max_workers < 1:
         raise ValueError(f"max_workers must be at least 1, got {max_workers}")
 
@@ -918,7 +922,7 @@ def _run_pool(
                         # own shutdown(wait=True) then has nothing left to wait for.
                         stopped = list((getattr(executor, "_processes", None) or {}).values())
                         executor.shutdown(wait=False, cancel_futures=True)
-                        _finish_in_flight(in_flight, record, stopped)
+                        _finish_in_flight(in_flight, record, stopped, on_cancel)
                         return results
             except KeyboardInterrupt:
                 return results  # before the pool existed: nothing started, nothing to stop
@@ -937,6 +941,9 @@ def _run_pool(
 # terminated. The workers ignore Ctrl-C (the parent owns cancelling), so each finishes the frame it
 # is on — normally a few seconds; this bounds one that is stuck.
 _INTERRUPT_GRACE = 10.0
+
+# What a caller's `on_cancel` is told while those frames finish (the CLI prints it).
+FINISHING_NOTICE = "Finishing the frames in progress — Ctrl-C again to stop now"
 
 
 def _finished(future, job: BatchJob) -> BatchResult:
@@ -957,11 +964,15 @@ def _crashed_result(job: BatchJob) -> BatchResult:
     )
 
 
-def _finish_in_flight(in_flight: dict, record: Callable[[BatchResult], None], processes: list) -> None:
+def _finish_in_flight(in_flight: dict, record: Callable[[BatchResult], None], processes: list,
+                      on_cancel: Callable[[str], None] | None = None) -> None:
     """After a cancel: record the frames still in progress as they finish, for up to
     _INTERRUPT_GRACE, so "X/N frames processed" counts every frame written. A second Ctrl-C (or
-    SIGHUP/SIGTERM) stops waiting: the workers are terminated at once."""
+    SIGHUP/SIGTERM) stops waiting: the workers are terminated at once. `on_cancel(FINISHING_NOTICE)`
+    is called first when there is anything to wait for, so the wait isn't silent."""
     try:
+        if in_flight and on_cancel:
+            on_cancel(FINISHING_NOTICE)
         done, not_done = wait(in_flight, timeout=_INTERRUPT_GRACE)
     except KeyboardInterrupt:
         _terminate(processes)
@@ -1016,6 +1027,7 @@ def run_batch(
     thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
     device: ComputeDevice | None = None,
     compute: BatchCompute | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """Invert every job in a process pool, in parallel — see _run_pool for the shared failure-
     handling and progress-callback behavior. `max_workers` defaults to default_worker_count(jobs,
@@ -1032,7 +1044,7 @@ def run_batch(
         workers = max_workers if max_workers is not None else _default_count(jobs, compute, default_worker_count)
         return _run_pool(
             jobs, _worker, (stage, density_profile, tone_params, thumbnail_long_edge, *compute.worker_args(workers)),
-            workers, on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix,
+            workers, on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix, on_cancel=on_cancel,
         )
 
 
@@ -1052,6 +1064,7 @@ def run_export_batch(
     on_start: Callable[[BatchJob], None] | None = None,
     device: ComputeDevice | None = None,
     compute: BatchCompute | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """Export every job (ACEScg TIFF -> delivery PNG/JPEG) in a process pool, in parallel — see
     _run_pool for the shared failure-handling and progress-callback behavior. `max_workers`
@@ -1061,7 +1074,7 @@ def run_export_batch(
         workers = max_workers if max_workers is not None else _default_count(jobs, compute, default_export_worker_count)
         return _run_pool(
             jobs, _export_worker, (quality, *compute.worker_args(workers)), workers,
-            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix,
+            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix, on_cancel=on_cancel,
         )
 
 
@@ -1073,6 +1086,7 @@ def run_print_batch(
     on_start: Callable[[BatchJob], None] | None = None,
     device: ComputeDevice | None = None,
     compute: BatchCompute | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """`halide print` every job (flat positive -> print) in a process pool — see _run_pool for the
     shared failure-handling and progress-callback behavior. `max_workers` defaults to
@@ -1083,7 +1097,7 @@ def run_print_batch(
         workers = max_workers if max_workers is not None else _default_count(jobs, compute, default_worker_count)
         return _run_pool(
             jobs, _print_worker, (tone_params, *compute.worker_args(workers)), workers,
-            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix,
+            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix, on_cancel=on_cancel,
         )
 
 
@@ -1093,6 +1107,7 @@ def run_thumbnail_batch(
     max_workers: int | None = None,
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """Contact-sheet thumbnails of already-processed files (`halide contact`), in a process pool.
     Sized with export's constants: reading + colour-converting one full-size file is the same
@@ -1100,4 +1115,5 @@ def run_thumbnail_batch(
     already developed, and what's left — decode, (usually no) colour conversion, a block-average
     down to thumbnail size — would spend longer uploading the frame than computing on it."""
     workers = max_workers if max_workers is not None else default_export_worker_count(jobs)
-    return _run_pool(jobs, _thumbnail_worker, (thumbnail_long_edge,), workers, on_result=on_result, on_start=on_start)
+    return _run_pool(jobs, _thumbnail_worker, (thumbnail_long_edge,), workers, on_result=on_result, on_start=on_start,
+                     on_cancel=on_cancel)

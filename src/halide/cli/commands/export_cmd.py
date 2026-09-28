@@ -15,7 +15,7 @@ from halide.batch.orchestrator import (
     export_memory_budget_warning,
     run_export_batch,
 )
-from halide.batch.progress import GridProgressRenderer
+from halide.batch.progress import GridProgressRenderer, cancel_notice
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 from halide.cli._output_policy import (
@@ -168,6 +168,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
 
         results = run_export_batch(
             jobs, quality=args.quality, max_workers=workers, on_result=on_result, on_start=on_start, device=device,
+            on_cancel=cancel_notice(renderer),
             compute=compute,
         )
 

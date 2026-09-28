@@ -138,3 +138,42 @@ def test_no_line_wider_than_terminal(columns, capsys, monkeypatch):
     _complete(r, range(40))
     r.report(40, BatchResult(job=BatchJob(Path("x.tif"), Path("y.tif")), error="boom"))
     assert all(len(line) < columns for line in _visible_lines(r))
+
+
+def test_a_note_is_part_of_the_frame_and_never_wraps(capsys):
+    """The "finishing the frames in progress" notice after Ctrl-C goes on the sheet itself, so the
+    in-place redraw's line count stays right; trimmed like the status line, never wrapped."""
+    r = GridProgressRenderer(total=3, terminal_size=(30, 40))
+    r.start()
+    before = len(_visible_lines(r))
+    r.note("Finishing the frames in progress — Ctrl-C again to stop now")
+    lines = _visible_lines(r)
+    assert len(lines) == before + 1
+    assert lines[-1].strip().startswith("Finishing the frames")
+    assert all(len(line) < 30 for line in lines)
+    assert r._last_frame_lines == len(lines)
+
+
+class _Tty:
+    def __init__(self, tty):
+        self.tty, self.text = tty, ""
+
+    def isatty(self):
+        return self.tty
+
+    def write(self, text):
+        self.text += text
+
+    def flush(self):
+        pass
+
+
+@pytest.mark.parametrize("tty", [True, False])
+def test_cancel_notice_shows_only_in_a_terminal(monkeypatch, tty):
+    out = _Tty(tty)
+    monkeypatch.setattr(progress.sys, "stdout", out)
+    progress.cancel_notice(None)("Finishing the frames in progress — Ctrl-C again to stop now")  # --quiet
+    assert ("Finishing the frames in progress — Ctrl-C again to stop now" in out.text) is tty
+    r = GridProgressRenderer(total=2, terminal_size=(80, 40))
+    progress.cancel_notice(r)("note")
+    assert (r._note == "note") is tty

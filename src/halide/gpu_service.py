@@ -184,22 +184,25 @@ class ServiceClient:
                 raise ServiceUnavailable(self._dead)
             conn = self._connect()
             try:
-                conn.send(message)
-                # poll, not a bare recv: a live but stuck service must not hang a worker forever.
-                if not conn.poll(self._timeout):
-                    raise TimeoutError(f"no reply within {self._timeout:g} s")
-                status, payload = conn.recv()
+                try:
+                    conn.send(message)
+                    # poll, not a bare recv: a live but stuck service must not hang a worker forever.
+                    if not conn.poll(self._timeout):
+                        raise TimeoutError(f"no reply within {self._timeout:g} s")
+                    status, payload = conn.recv()
+                except BaseException:
+                    # F06: whatever went wrong — the service died or stuck, or Ctrl-C (any
+                    # BaseException) landed while a reply was owed — this connection is out of step:
+                    # the next request would read this one's reply and its own frame would be written
+                    # out undeveloped. Marked dead first, before anything else can be interrupted
+                    # (review round 1); none of this request's shared buffers can be trusted either.
+                    self._dead = "the GPU service stopped responding"
+                    raise
             except (OSError, EOFError, TimeoutError) as exc:
-                # It may have died mid-download, or be stuck and still write later: none of this
-                # request's shared buffers can be trusted any more.
                 raise self._give_up(f"the GPU service stopped responding ({_describe(exc)})",
                                     host_touched=True) from exc
             except BaseException as exc:
-                # F06: anything else here — Ctrl-C (KeyboardInterrupt) during poll/recv, above all —
-                # leaves a reply still owed on this connection, so the next request would read this
-                # one's reply and its own frame would be written out undeveloped. Any doubt means
-                # dead, as for a timeout; the original exception carries on (the caller is
-                # cancelling, not falling back).
+                # The caller is cancelling, not falling back: the original exception carries on.
                 self._give_up(f"a request to the GPU service was interrupted ({_describe(exc)})",
                               host_touched=True)
                 raise

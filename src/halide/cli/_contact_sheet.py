@@ -119,7 +119,7 @@ def write_sheet_from_folder(
         export_memory_budget_warning,
         run_thumbnail_batch,
     )
-    from halide.batch.progress import GridProgressRenderer
+    from halide.batch.progress import GridProgressRenderer, cancel_notice
 
     if not files:
         print(f"No processed frames (TIFF/PNG/JPEG) found for {sheet_path}")
@@ -147,6 +147,7 @@ def write_sheet_from_folder(
             jobs, thumbnail_long_edge=args.frame_width, max_workers=workers,
             on_start=(lambda job: renderer.mark_processing(job_index[job])) if renderer else None,
             on_result=(lambda r: renderer.report(job_index[r.job], r)) if renderer else None,
+            on_cancel=cancel_notice(renderer),
         )
         cancelled = len(results) < len(jobs)
         if renderer:

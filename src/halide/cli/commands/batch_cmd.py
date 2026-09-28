@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from halide.batch.orchestrator import BatchJob, default_worker_count, discover_jobs, memory_budget_warning, run_batch
-from halide.batch.progress import GridProgressRenderer
+from halide.batch.progress import GridProgressRenderer, cancel_notice
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.cli._device_args import add_device_argument, resolve_device_arg
@@ -394,6 +394,7 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
             max_workers=workers,
             on_result=on_result,
             on_start=on_start,
+            on_cancel=cancel_notice(renderer),
             thumbnail_long_edge=args.frame_width,
             device=device,
             compute=compute,
