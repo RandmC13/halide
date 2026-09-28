@@ -101,11 +101,13 @@ class ProofRenderer(QThread):
             # window while the service is still starting has to wait on a slow/hung driver probe
             # (gpu_service.running_service's own startup poll).
             with batch_compute(jobs, self._device, cancel=self.isInterruptionRequested) as compute:
+                # Closed first: nothing more to say. A startup cancelled by closing the window comes
+                # back as a fallback reason too, and "each worker uses the GPU itself" would be wrong.
+                if self.isInterruptionRequested():
+                    return
                 if compute.fallback_reason:  # to the terminal, like calibrate's Compute line
                     print(console.warning(f"GPU service not used ({compute.fallback_reason}) — each worker "
                                           f"uses the GPU itself instead"))
-                if self.isInterruptionRequested():
-                    return
                 if compute.service is not None:
                     workers = service_worker_count(jobs, compute)
                 else:

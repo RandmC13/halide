@@ -456,9 +456,9 @@ def _assert_tiffs_identical_diagnosing_nondeterminism(per_worker_rerun, folder, 
             _assert_tiffs_identical(rerun / f"{name}.tif", folder / "per_worker" / f"{name}.tif")
         except (AssertionError, pytest.fail.Exception):
             pytest.fail(
-                f"{name}: service and per-worker disagree, but per-worker itself wasn't reproducible "
-                f"across two runs on this card — looks like GPU sort/percentile nondeterminism in the "
-                f"per-frame auto calibration, not a service bug. Original failure: {failure}"
+                f"{name}: service and per-worker disagree — inconclusive: per-worker mode isn't "
+                f"reproducible on this card (two runs differed), so the mismatch can't be attributed "
+                f"to the service. Original failure: {failure}"
             )
         pytest.fail(
             f"{name}: service disagrees with per-worker, and per-worker reproduced itself exactly "

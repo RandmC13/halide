@@ -202,11 +202,17 @@ def _die_with_this_process() -> dict:
         if os.getppid() != parent:  # the parent died before the signal was armed
             os._exit(1)
 
-    # `preexec_fn` is documented as unsafe in a process with multiple threads (it can deadlock,
-    # since only the forking thread survives the fork into the child): acceptable here because the
-    # Popen call using it runs from a worker's main thread at session start-up, before that worker
-    # has spawned any other threads of its own, and the function itself only calls prctl (no
-    # allocation, locking, or anything else that could be mid-operation in a forked copy) before exec.
+    # `preexec_fn` is documented as unsafe in a process with threads: only the forking thread
+    # survives the fork, so a lock another thread held at that instant stays held in the child, and
+    # the child deadlocks if it needs it before exec. That process *can* have threads here: a
+    # session starts lazily, after the worker's first frame has developed; in per-worker GPU mode
+    # CUDA's own threads already exist; a restart happens mid-batch, when an earlier session's
+    # reader thread may still be alive. And the ctypes call below is not allocation-free (argument
+    # conversion runs Python code). The risk is accepted because the child does nothing but that one
+    # prctl call and a getppid before exec, which is what CPython's documentation asks of a
+    # preexec_fn ("keep it trivial"): the forking thread holds the GIL through the fork, and CPython
+    # and glibc reset their own allocator locks in the child, so nothing it runs waits on a lock a
+    # vanished thread could hold. There is no other way to set PR_SET_PDEATHSIG from subprocess.
     return {"preexec_fn": preexec}
 
 
