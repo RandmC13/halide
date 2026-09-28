@@ -15,3 +15,6 @@ Roll16-Testing/
 enlarger-controller.png
 filminversion-ab.pdf
 .claude/
+
+# Real-scan outputs of `pytest -m gpu` (tests/gpu/test_gpu_parity.py), deleted after every test
+.gpu-test-scratch/

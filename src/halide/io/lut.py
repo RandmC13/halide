@@ -12,12 +12,30 @@ from pathlib import Path
 
 import numpy as np
 
+from halide.core._xp import array_namespace
+
 
 @dataclass(frozen=True)
 class Cube1D:
     values: np.ndarray  # shape (N,) — every reference curve used here is channel-identical
     domain_min: float
     domain_max: float
+
+    def _table(self, xp, dtype) -> np.ndarray:
+        """`values` in `xp`'s memory and `dtype`, made once per (namespace, dtype) rather than per
+        call — on a GPU that is one upload per curve, not one per band of rows. `self.values`
+        itself stays a host numpy array (fit_print reads it). Cached in the instance's __dict__,
+        not a field, so equality/repr are unchanged; set with object.__setattr__ because the
+        dataclass is frozen."""
+        cache = self.__dict__.get("_tables")
+        if cache is None:
+            cache = {}
+            object.__setattr__(self, "_tables", cache)
+        key = (id(xp), np.dtype(dtype))
+        if key not in cache:
+            host = self.values if self.values.dtype == dtype else self.values.astype(dtype)
+            cache[key] = xp.asarray(host)  # numpy: the same array back, no copy
+        return cache[key]
 
     def lookup(self, x: np.ndarray) -> np.ndarray:
         """Linearly interpolate this LUT at x (any shape). Inputs outside
@@ -30,19 +48,20 @@ class Cube1D:
         carefully stayed in float32. `x`'s own precision already bounds the result's accuracy, so
         this changes nothing about correctness, only which dtype the arithmetic runs in.
         """
-        x = np.asarray(x)
+        xp = array_namespace(x)
+        x = xp.asarray(x)
         size = self.values.shape[0]
-        values = self.values if self.values.dtype == x.dtype else self.values.astype(x.dtype)
+        values = self._table(xp, x.dtype)
 
         t = x - self.domain_min  # fresh array — safe to keep mutating in place from here
         t *= 1.0 / (self.domain_max - self.domain_min)
-        np.clip(t, 0.0, 1.0, out=t)
+        xp.clip(t, 0.0, 1.0, out=t)
         t *= size - 1
-        floor_t = np.floor(t)
-        lo = floor_t.astype(np.int32)
+        floor_t = xp.floor(t)
+        lo = floor_t.astype(xp.int32)
         t -= floor_t  # t now holds the interpolation fraction
         hi = lo + 1
-        np.minimum(hi, size - 1, out=hi)
+        xp.minimum(hi, size - 1, out=hi)
 
         # lo + frac * (hi - lo), algebraically identical to lo*(1-frac) + hi*frac but reuses the
         # two gathered buffers in place instead of allocating separate product/sum temporaries.

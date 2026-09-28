@@ -22,11 +22,14 @@ tested specifically for that step.
 
 from __future__ import annotations
 
+import functools
 import struct
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from halide.core._xp import array_namespace
 
 _LUT_TAG_SIGNATURES = frozenset({"A2B0", "A2B1", "A2B2", "B2A0", "B2A1", "B2A2"})
 _LINEARITY_TOLERANCE = 5e-3
@@ -200,28 +203,51 @@ def parse_linear_rgb_profile(icc_bytes: bytes) -> LinearRGBProfile:
     return LinearRGBProfile(rgb_to_pcs_xyz=matrix)
 
 
+@functools.cache
+def working_space_matrices() -> tuple[np.ndarray, np.ndarray]:
+    """colour-science's own two float64 matrices for XYZ(D50) -> ACEScg: the Bradford chromatic
+    adaptation from D50 (the ICC PCS illuminant) to ACEScg's own white point, then ACEScg's
+    XYZ -> RGB matrix. Built exactly as colour's XYZ_to_RGB builds them internally, so applying
+    them as two matrix multiplies is the same maths colour.XYZ_to_RGB does, minus its per-pixel
+    broadcast (see convert_to_working_space and CLAUDE.md, "D1")."""
+    import colour
+    from colour.adaptation import matrix_chromatic_adaptation_VonKries
+    from colour.models import xy_to_xyY, xyY_to_XYZ
+
+    acescg = colour.RGB_COLOURSPACES["ACEScg"]
+    d50 = colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"]
+    m_cat = matrix_chromatic_adaptation_VonKries(
+        xyY_to_XYZ(xy_to_xyY(d50)), xyY_to_XYZ(xy_to_xyY(acescg.whitepoint)), transform="Bradford"
+    )
+    return np.asarray(m_cat, dtype=np.float64), np.asarray(acescg.matrix_XYZ_to_RGB, dtype=np.float64)
+
+
 def convert_to_working_space(img: np.ndarray, profile: LinearRGBProfile) -> np.ndarray:
     """Convert a linear-RGB image (in the color space described by `profile`) into this project's
-    internal linear ACEScg working space."""
+    internal linear ACEScg working space.
+
+    `img` may be a numpy array or a device (CuPy) array: the same float32-then-float64 matmuls run
+    in its own array library, with the (host, float64) matrices uploaded via `xp.asarray` — on
+    numpy that is a no-op returning the very same arrays, so the CPU result is unchanged."""
+    xp = array_namespace(img)
     # The ICC matrix is parsed as float64 (its source s15Fixed16 tags only carry ~1.5e-5 precision
     # to begin with, so float32 loses nothing real), but multiplying a float32 image by an
     # unmodified float64 matrix silently upcasts the *whole image* to float64 — doubling every
     # array this project's core pipeline allocates from here on. Casting the (tiny) matrix down to
     # match the image keeps the matmul itself in the image's own dtype.
-    matrix = profile.rgb_to_pcs_xyz.astype(img.dtype, copy=False)
-    pcs_xyz = img @ matrix.T
-    # colour-science always computes in float64 internally regardless of input dtype (confirmed
-    # empirically — see the memory-usage investigation), so this call itself has one unavoidable
-    # float64 intermediate; casting its *result* back down here still stops that float64-ness from
-    # propagating through the rest of this project's pipeline (white balance, density balance,
-    # invert, tone render), which is where it would otherwise multiply repeatedly.
-    import colour  # imported here, not at module level: it's most of the CLI's startup time
-
-    working = colour.XYZ_to_RGB(
-        pcs_xyz,
-        colourspace=colour.RGB_COLOURSPACES["ACEScg"],
-        illuminant=colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D50"],
-        chromatic_adaptation_transform="Bradford",
-        apply_cctf_encoding=False,
-    )
-    return np.asarray(working, dtype=img.dtype)
+    matrix = profile.rgb_to_pcs_xyz.astype(img.dtype, copy=False)  # unchanged (see comment above)
+    pcs_xyz = (img @ xp.asarray(matrix.T)).astype(np.float64)  # float64, as colour.XYZ_to_RGB computed internally
+    # Applying colour's own two matrices as one BLAS matmul per band, instead of colour.XYZ_to_RGB's
+    # per-pixel broadcast, is ~5x faster (1.37 s/frame -> 0.28 s/frame, measured on a real scan) for
+    # the same maths: colour-science's XYZ_to_RGB is exactly `vecmul(M_CAT, vecmul(M_XYZ, xyz))`,
+    # where vecmul broadcasts np.matmul per-pixel. BLAS and numpy's broadcast path can round the
+    # last float64 bit differently (both use FMA, just differently). In this project's dev sandbox,
+    # a 60M-value synthetic stress test found 0 float32 values differing (bit-identical), against an
+    # earlier 60M-value stress test (same sandbox, different random sample) that found 1 of 60M off
+    # by 1 ulp — the two runs sampled different values, and which of them happen to land on the rare
+    # last-bit divergence isn't established; don't read this as hardware-dependent. Accepted
+    # tolerance is 2 float32 ulps — see CLAUDE.md, "D1" for the decision and the measured numbers.
+    m_cat, m_xyz_to_acescg = working_space_matrices()
+    working = pcs_xyz @ xp.asarray(m_cat.T)
+    working = working @ xp.asarray(m_xyz_to_acescg.T)
+    return working.astype(img.dtype)

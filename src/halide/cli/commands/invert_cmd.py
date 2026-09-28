@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from pathlib import Path
 
 from halide.cli import console
+from halide.cli._device_args import (
+    add_device_argument,
+    device_fallback_warning,
+    device_row,
+    gpu_hint,
+    resolve_device_arg,
+)
 from halide.cli._calibration_args import (
     add_calibration_arguments,
     add_scan_arguments,
@@ -35,6 +43,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_calibration_arguments(parser, allow_pick=True)
     add_tone_arguments(parser)
     add_scan_arguments(parser)
+    add_device_argument(parser)
 
 
 def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool) -> tuple[float, object]:
@@ -69,7 +78,48 @@ def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool) -> tuple
     return gain, reference
 
 
+def _gpu_hint_stamp() -> Path:
+    # Reuses cli/completion.py's own state-directory helper (Task 6b) rather than picking a new
+    # location — see that module's docstring for why it's under $XDG_DATA_HOME/halide.
+    from halide.cli.completion import _data_dir
+
+    return _data_dir() / "gpu-hint.shown"
+
+
+def _maybe_print_gpu_hint(device) -> None:
+    """`invert` has no run sheet (see cli/_run_sheet.py::compute_row, which shows the same hint on
+    every batch/print/export run), so showing this every single-frame run would nag — the stamp
+    file below makes it once per machine instead. HALIDE_NO_GPU_HINT=1 turns it off entirely.
+
+    The stamp is only written once a hint has actually been shown, i.e. once `gpu_hint` found a
+    real NVIDIA card with no CuPy installed — so on a machine with no NVIDIA card (the common case)
+    nothing is ever written, and `gpu_hint`'s `detect_nvidia_driver()` ctypes probe re-runs on
+    *every* invert, indefinitely. This is deliberate, not an oversight: a card added to the machine
+    later must still get the hint once, which an unconditional "probed already" stamp would
+    silently prevent. It's only acceptable because the probe itself is cheap when there's nothing
+    to find — measured in this sandbox (no libcuda present) at ~0.11 ms median per call in a fresh
+    process (20 samples; see ruling R8 in docs/plans/gpu-acceleration.md) — negligible next to a
+    single-frame develop. If a future platform/driver combination makes `detect_nvidia_driver`
+    meaningfully slower, this trade-off needs revisiting (e.g. stamping the "no card" result too,
+    with a re-probe interval), not silently working around it here."""
+    if os.environ.get("HALIDE_NO_GPU_HINT"):
+        return
+    stamp = _gpu_hint_stamp()
+    if stamp.exists():
+        return
+    hint = gpu_hint(device)
+    if not hint:
+        return
+    print(console.dim(hint))
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError:  # a read-only home must not break a real run
+        pass
+
+
 def run(args: argparse.Namespace) -> int:
+    from halide import device as halide_device
     from halide.processing import ScanColorError, process_scan
 
     input_path = Path(args.input)
@@ -82,6 +132,13 @@ def run(args: argparse.Namespace) -> int:
     else:
         choose_calibration_source(args, "this image")  # sets args.profile etc. before anything reads them
         density_profile, saved_tone = resolve_density_profile(args)
+    # Resolved after the calibration-source prompt above (see CLAUDE.md's choose_calibration_source
+    # ordering note) — a device prompt/error mid-calibration would be a strange place for it.
+    device = resolve_device_arg(args)
+    fallback_warning = device_fallback_warning(device)
+    if fallback_warning:
+        print(console.warning(fallback_warning))
+    _maybe_print_gpu_hint(device)
     manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
     calibrated_here = stage is not Stage.INVERT_ONLY and not args.profile and not manual_given
     gain, scan_reference = _resolve_scan_gain(args, calibrated_here)
@@ -102,9 +159,13 @@ def run(args: argparse.Namespace) -> int:
             min_height=console.TANK_MIN_SIZE[1],
             interval=0.5,
         ):
-            resolved = process_scan(args.input, args.output, stage, density_profile, tone_params, scan_gain=gain)
+            resolved = process_scan(
+                args.input, args.output, stage, density_profile, tone_params, scan_gain=gain,
+                device=device, on_warning=lambda msg: print(console.warning(msg)),
+            )
     except ScanColorError as exc:
         raise SystemExit(str(exc))
+    halide_device.release_memory()
     if resolved is not None:
         print(describe_resolved_tone(resolved))
 
@@ -113,7 +174,7 @@ def run(args: argparse.Namespace) -> int:
     print(
         console.success(
             f"{console.VERB_PAST['invert']} → {output_path} "
-            f"({console.human_time(elapsed)}, {console.human_bytes(size)})"
+            f"({console.human_time(elapsed)}, {console.human_bytes(size)}, {device_row(device)})"
         )
     )
     return 0
