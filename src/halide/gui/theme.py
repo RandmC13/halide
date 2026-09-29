@@ -40,6 +40,8 @@ AGREE_RED = "#ff6b5a"
 FILM_REBATE = "#0c0c0c"
 FILM_SPROCKET = "#2c2620"
 EDGE_PRINT = "#e0a060"
+FILM_LOADING = "#1c1916"  # a filmstrip frame still developing
+FILM_FAILED = "#3a1a18"  # ... and one that failed to load
 
 STYLESHEET = f"""
 QWidget {{
@@ -68,9 +70,12 @@ QLabel[role="warning"] {{
 QPushButton {{
     background-color: {AMBER};
     color: {TEXT};
-    border: none;
+    border: 2px solid transparent;
     border-radius: 6px;
-    padding: 6px 14px;
+    padding: 4px 12px;
+}}
+QPushButton:focus {{
+    border: 2px solid {TEXT};
 }}
 QPushButton:hover {{
     background-color: {AMBER_HOVER};
@@ -90,7 +95,10 @@ QPushButton:checked {{
 QPushButton[role="primary"] {{
     background-color: {RED};
     font-weight: bold;
-    padding: 10px 18px;
+    padding: 8px 16px;
+}}
+QPushButton[role="primary"]:focus {{
+    border: 2px solid {TEXT};
 }}
 QPushButton[role="primary"]:hover {{
     background-color: {RED_HOVER};
@@ -113,6 +121,9 @@ QPushButton[role="segment"] {{
 QPushButton[role="segment"]:hover {{
     color: {TEXT};
 }}
+QPushButton[role="segment"]:focus {{
+    border: 1px solid {AMBER_ACTIVE};
+}}
 QPushButton[role="segment"]:checked {{
     background-color: {AMBER};
     color: {TEXT};
@@ -122,8 +133,14 @@ QPushButton[role="segment"]:checked {{
 QPushButton[role="remove"] {{
     background: transparent;
     color: {TEXT_DIM};
+    border: none;
     padding: 0px 5px;
     border-radius: 3px;
+}}
+QPushButton[role="remove"]:focus {{
+    border: none;
+    color: {TEXT};
+    background-color: {BORDER};
 }}
 QPushButton[role="remove"]:hover {{
     color: {TEXT};
@@ -142,6 +159,9 @@ QLineEdit {{
     border-radius: 4px;
     padding: 4px 6px;
     color: {TEXT};
+}}
+QLineEdit:focus {{
+    border: 1px solid {AMBER_ACTIVE};
 }}
 
 QFrame[role="imageBox"] {{
@@ -168,6 +188,9 @@ QSlider::handle:horizontal {{
     margin: -6px 0;
     border-radius: 7px;
 }}
+QSlider::handle:horizontal:focus {{
+    background: {AMBER_ACTIVE};
+}}
 QSlider::handle:horizontal:hover {{
     background: {AMBER_HOVER};
 }}
@@ -178,6 +201,9 @@ QCheckBox::indicator {{
     border: 1px solid {BORDER};
     border-radius: 3px;
     background: {BACKGROUND_ALT};
+}}
+QCheckBox::indicator:focus {{
+    border: 1px solid {AMBER_ACTIVE};
 }}
 QCheckBox::indicator:checked {{
     background: {AMBER_ACTIVE};

@@ -90,6 +90,7 @@ class Reliability:
 
     worst_cc_at_ends: float  # predicted cast at whichever end of the wedge is worse
     reliable_range: tuple[float, float]  # green density span where the prediction stays <= CC 5
+    reliable_anywhere: bool = True  # False: nowhere on the roll (reliable_range is then just the best spot)
 
     @property
     def is_limited(self) -> bool:
@@ -99,6 +100,11 @@ class Reliability:
         """The picker's note under the step wedge (and the CLI's, on saving a picked profile)."""
         if not self.is_limited:
             return None
+        if not self.reliable_anywhere:
+            return (
+                "Fit not reliable anywhere on the roll - add points spread from the shadows to the "
+                "highlights"
+            )
         low, high = self.reliable_range
         return (
             f"Fit reliable over D {low:.1f}-{high:.1f} only - add a point in the shadows or "
@@ -194,10 +200,12 @@ def fit_reliability(
     within = np.flatnonzero(cc <= AGREEMENT_AMBER_CC)
     if within.size:  # the prediction is convex in D_G, so this is one contiguous span
         reliable = (float(greens[within[0]]), float(greens[within[-1]]))
-    else:  # nowhere on the roll - name the best spot rather than an empty range
+    else:  # nowhere on the roll - keep the best spot, but the note says "nowhere", not a 1-point range
         best = float(greens[int(np.argmin(cc))])
         reliable = (best, best)
-    return Reliability(worst_cc_at_ends=float(max(cc[0], cc[-1])), reliable_range=reliable)
+    return Reliability(
+        worst_cc_at_ends=float(max(cc[0], cc[-1])), reliable_range=reliable, reliable_anywhere=bool(within.size)
+    )
 
 
 def _spread_without(points: Sequence[NeutralPoint], index: int, reference: ScanSettings | None) -> float:

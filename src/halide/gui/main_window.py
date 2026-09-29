@@ -22,8 +22,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -58,8 +58,8 @@ from halide.gui import theme
 from halide.gui.drawers import Accordion, Drawer, PrintControls, RollDetailsForm
 from halide.gui.filmstrip import Filmstrip
 from halide.gui.loaders import FrameLoader, PreviewLoader
-from halide.gui.point_list import CC_EXPLANATION, PointList, agreement_colour
-from halide.gui.proof_window import ProofWindow
+from halide.gui.point_list import CC_EXPLANATION, PointList, agreement_colour, no_wrap
+from halide.gui.proof_window import ProofWindow, wait_for_stopping_renderers
 from halide.gui.render import negative_display, positive_display, print_patch
 from halide.gui.roll import PREVIEW_LONG_EDGE, CalibrationSession, Frame, PointView, quiet_auto_estimate
 from halide.gui.sampling import (
@@ -102,14 +102,20 @@ _CAPTION_POSITIVE = (
 )
 
 
-def _compute_window_size() -> QSize:
-    screen = QGuiApplication.primaryScreen()
-    available = screen.availableGeometry() if screen is not None else None
+def window_size_for(available: QRect | None) -> QSize:
+    """The picker's fixed size for a screen's available area: 55% x 70%, never below _WINDOW_MIN
+    (unless the screen itself is smaller) and capped at _WINDOW_MAX - on large screens the picker
+    stays a comfortable working size rather than filling the screen."""
     if available is None:
         return QSize(_WINDOW_MIN)
     width = min(max(int(available.width() * 0.55), _WINDOW_MIN.width()), _WINDOW_MAX.width(), available.width())
     height = min(max(int(available.height() * 0.70), _WINDOW_MIN.height()), _WINDOW_MAX.height(), available.height())
     return QSize(width, height)
+
+
+def _compute_window_size() -> QSize:
+    screen = QGuiApplication.primaryScreen()
+    return window_size_for(screen.availableGeometry() if screen is not None else None)
 
 
 def _qimage(rgb: np.ndarray) -> QImage:
@@ -119,6 +125,33 @@ def _qimage(rgb: np.ndarray) -> QImage:
     rgb = np.ascontiguousarray(rgb)
     height, width = rgb.shape[:2]
     return QImage(rgb.data, width, height, 3 * width, QImage.Format.Format_RGB888).copy()
+
+
+class ElidedLabel(QLabel):
+    """A one-line label that elides with "…" to the width it's given instead of forcing the window
+    wider, and carries its full text as the tooltip (the status line: long paths and errors)."""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._full = ""
+        self.set_full_text(text)
+
+    def full_text(self) -> str:
+        return self._full
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def _elide(self) -> None:
+        one_line = self._full.replace("\n", " ")
+        self.setText(QFontMetrics(self.font()).elidedText(one_line, Qt.TextElideMode.ElideRight, max(0, self.width())))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._elide()
 
 
 class ImageView(QWidget):
@@ -258,7 +291,15 @@ class Magnifier(QWidget):
         self.setStyleSheet(f"background: {theme.BACKGROUND_ALT}; border: 1px solid {theme.BORDER};")
 
     def show_patch(self, image: QImage, global_pos: QPoint) -> None:
-        self._label.setPixmap(QPixmap.fromImage(image))
+        ratio = self.devicePixelRatioF()
+        if ratio != 1.0:  # a crisp patch at the screen's real resolution, not a stretched one
+            image = image.scaled(
+                round(image.width() * ratio), round(image.height() * ratio),
+                Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation,
+            )
+        pixmap = QPixmap.fromImage(image)
+        pixmap.setDevicePixelRatio(ratio)
+        self._label.setPixmap(pixmap)
         self.adjustSize()
         self.move(global_pos + QPoint(18, 18))
         self.show()
@@ -386,6 +427,11 @@ class MainWindow(QWidget):
         # the whole process ("QThread: Destroyed while thread is still running") if the window is
         # destroyed while any of them runs, so closing waits for them all (closeEvent).
         self._threads: set[QThread] = set()
+        # Bumped whenever a new roll starts; a loader's late signals carry the generation they were
+        # started under and are dropped if it's no longer current (see _start_roll).
+        self._generation = 0
+        self._closing = False
+        self._loading: tuple[Path, int] | None = None  # (frame, generation) of the last full-resolution load started
         self._thumbs_timer = QTimer(self)
         self._thumbs_timer.setSingleShot(True)
         self._thumbs_timer.timeout.connect(self._refresh_filmstrip_thumbnails)
@@ -460,7 +506,7 @@ class MainWindow(QWidget):
         self.caption.setWordWrap(True)
         self.caption.setProperty("role", "dim")
         left.addWidget(self.caption)
-        self.status_label = QLabel("")
+        self.status_label = ElidedLabel("")
         self.status_label.setProperty("role", "dim")
         left.addWidget(self.status_label)
         body.addLayout(left, stretch=1)
@@ -468,6 +514,11 @@ class MainWindow(QWidget):
         # right panel: wedge, points, notice, proof, drawers, primary
         panel = QVBoxLayout()
         panel.setSpacing(6)
+        # No bottom margin, so the Save button's lower edge lines up with the status line on the left
+        # (and the panel gets the 9 px back: with the reliability note showing and a drawer open the
+        # panel is otherwise ~50 px too tall for the smallest window).
+        margins = panel.contentsMargins()
+        panel.setContentsMargins(margins.left(), margins.top(), margins.right(), 0)
         panel_widget = QWidget()
         panel_widget.setFixedWidth(_PANEL_WIDTH)
         panel_widget.setLayout(panel)
@@ -579,6 +630,7 @@ class MainWindow(QWidget):
             f"Loading a different roll starts a new calibration. Clear the {len(self.session.points)} "
             "neutral point(s) picked so far?",
         )
+        self._repaint_all()
         return answer == QMessageBox.StandardButton.Yes
 
     def load_roll(self, folder: Path, keep_points: bool = False) -> None:
@@ -605,6 +657,8 @@ class MainWindow(QWidget):
 
     def _start_roll(self, paths: list[Path], folder: Path | None) -> None:
         self._stop_loaders()
+        self._generation += 1
+        generation = self._generation
         metadata = read_roll_scan_metadata(paths)
         scans = [metadata[str(p)][0] for p in paths]
         self.session.set_roll(paths, scans, folder)
@@ -620,7 +674,7 @@ class MainWindow(QWidget):
         self.display = None
         self.image_view.set_image(None, "Loading…")
         if not self.is_pick_session:
-            self._preview_loader = PreviewLoader(paths, self)
+            self._preview_loader = PreviewLoader(paths, generation, self)
             self._preview_loader.previewReady.connect(self._on_preview_ready)
             self._start_thread(self._preview_loader)
         self._select_frame(0)
@@ -682,6 +736,7 @@ class MainWindow(QWidget):
         find = box.addButton("Find roll…", QMessageBox.ButtonRole.AcceptRole)
         box.setDefaultButton(find)
         box.exec()
+        self._repaint_all()
         if box.clickedButton() is not find:
             self._status(f"Roll not found: {recorded} - its points still count in the fit")
             return
@@ -707,13 +762,13 @@ class MainWindow(QWidget):
             f"Their {count} point(s) still count in the fit, but can't be shown on their frames.",
         )
 
-    def _on_preview_ready(self, index: int, preview, estimate, error) -> None:
-        if index >= len(self.session.frames):
-            return
+    def _on_preview_ready(self, generation: int, index: int, preview, estimate, error) -> None:
+        if generation != self._generation or index >= len(self.session.frames):
+            return  # a late signal from the roll that was replaced
         frame = self.session.frames[index]
         frame.preview, frame.estimate, frame.error = preview, estimate, error
         if error:
-            self.filmstrip.strip.set_pixmap(index, None, failed=True)
+            self.filmstrip.strip.set_pixmap(index, None, failed=True, reason=str(error))
         else:
             self.filmstrip.strip.set_pixmap(index, QPixmap.fromImage(_qimage(self._thumbnail(frame))))
         if index == self._current and self.display is None and preview is not None:
@@ -736,22 +791,43 @@ class MainWindow(QWidget):
         else:
             self.image_view.set_image(None, f"Loading {frame.path.name}…")
         self._status(f"Loading {frame.path.name}…")
-        if self._frame_loader is not None:
-            self._frame_loader.loaded.disconnect()
-        self._frame_loader = FrameLoader(frame.path, self)
-        self._frame_loader.loaded.connect(self._on_frame_loaded)
-        self._start_thread(self._frame_loader)
+        self._load_current_frame()
+
+    def _load_current_frame(self) -> None:
+        """Load the current frame at full resolution - one load in flight, and while the filmstrip is
+        scrubbed only the frame the user finally lands on waits behind it (latest wins): each
+        finished load starts the current frame's if that is a different one."""
+        if self._closing or self._frame_loader is not None or self._current is None:
+            return
+        path = self.session.frames[self._current].path
+        loader = FrameLoader(path, self._generation, self)
+        loader.loaded.connect(self._on_frame_loaded)
+        loader.finished.connect(self._frame_load_finished)
+        self._frame_loader = loader
+        self._loading = (path, self._generation)
+        self._start_thread(loader)
+
+    def _frame_load_finished(self) -> None:
+        # Only one full-resolution load is ever in flight, so this is that one's end.
+        self._frame_loader = None
+        if self._current is None:
+            return
+        if (self.session.frames[self._current].path, self._generation) != self._loading:
+            self._load_current_frame()
 
     def _show_placeholder_preview(self, frame: Frame) -> None:
         """While the full-resolution frame loads, show its small preview (not clickable yet)."""
         self.image_view.markers = []
         self.image_view.set_image(QPixmap.fromImage(_qimage(self._thumbnail(frame))))
 
-    def _on_frame_loaded(self, path: Path, image, error) -> None:
+    def _on_frame_loaded(self, generation: int, path: Path, image, error) -> None:
+        if generation != self._generation:
+            return  # a late signal from the roll that was replaced
         if self._current is None or self.session.frames[self._current].path != path:
             return  # the user has moved on to another frame
         if error:
             self.image_view.set_image(None, f"Couldn't load {path.name}")
+            self.filmstrip.strip.mark_failed(self._current, str(error))
             self._status(f"Error: {error}")
             return
         self.full_image = image
@@ -765,7 +841,7 @@ class MainWindow(QWidget):
         self._stretch = compute_stretch_bounds(self.display)
         self._display_estimate = quiet_auto_estimate(self.display)
         self._auto_mask = _neutral_candidate_mask(self.display, DEFAULT_NEUTRAL_FRACTION)
-        if self.status_label.text().startswith("Loading"):
+        if self.status_label.full_text().startswith("Loading"):
             self._status("")  # don't overwrite anything more useful (e.g. "Reopened …")
         self._refresh_image()
         if self._pending_flash is not None:
@@ -786,9 +862,7 @@ class MainWindow(QWidget):
             self._preview_loader.previewReady.disconnect()
             self._preview_loader = None
         if wait:
-            if self._frame_loader is not None:
-                self._frame_loader.loaded.disconnect()
-                self._frame_loader = None
+            self._frame_loader = None
             for thread in list(self._threads):
                 thread.requestInterruption()
                 thread.wait()
@@ -927,7 +1001,8 @@ class MainWindow(QWidget):
         if profile is None or not self.session.frames:
             return
         if self._proof is not None:
-            self._proof.close()
+            old, self._proof = self._proof, None
+            old.close()  # returns at once: its renderer stops in the background
         reference = self.session.reference
         tone = self.session.print_tone()
         bits = [f"{len(self.session.points)} neutral points"]
@@ -940,11 +1015,15 @@ class MainWindow(QWidget):
             self, title, frames, profile, tone, self.session.details.get("film_stock") or None, " · ".join(bits),
             save_dir=self.session.roll_folder, device=self.device,
         )
-        self._proof.destroyed.connect(self._on_proof_closed)
-        self._proof.show()
+        # `destroyed` arrives late (deferred delete): by then a rebuilt window may already be the
+        # current one, so only forget the window that actually went.
+        proof = self._proof
+        proof.destroyed.connect(lambda *_: self._on_proof_closed(proof))
+        proof.show()
 
-    def _on_proof_closed(self) -> None:
-        self._proof = None
+    def _on_proof_closed(self, window: ProofWindow) -> None:
+        if self._proof is window:
+            self._proof = None
 
     def _proof_is_stale(self) -> None:
         if self._proof is not None:
@@ -973,7 +1052,9 @@ class MainWindow(QWidget):
         wedge = self.session.wedge_range()
         reliability = self.session.reliability(wedge)
         note = reliability.warning() if reliability is not None else None
-        self.wedge.set_state(wedge, ticks, reliability.reliable_range if note else None)
+        shown_range = reliability.reliable_range if note and reliability.reliable_anywhere else None
+        measuring = any(not f.loaded for f in self.session.frames)
+        self.wedge.set_state(wedge, ticks, shown_range, measuring=measuring)
         self.reliability_note.setText(note or "")
         self.reliability_note.setVisible(note is not None)
 
@@ -986,7 +1067,7 @@ class MainWindow(QWidget):
             text, colour = f"› {self._nudge}", theme.TEXT_DIM
         elif worst is not None:
             a = views[worst].agreement
-            text = f"⚠ Point {worst + 1} is furthest from the others ({a.label()}). Was that object really neutral?"
+            text = f"⚠ Point {worst + 1} is furthest from the others ({no_wrap(a.label())}). Was that object really neutral?"
             colour = agreement_colour(views[worst])
         elif len(views) < 2:
             text, colour = "Pick neutral objects of different tones, on any frames.", theme.TEXT_DIM
@@ -1054,7 +1135,9 @@ class MainWindow(QWidget):
             self._points_changed()
 
     def _confirm(self, question: str) -> bool:
-        return QMessageBox.question(self, "Remove points", question) == QMessageBox.StandardButton.Yes
+        answer = QMessageBox.question(self, "Remove points", question)
+        self._repaint_all()
+        return answer == QMessageBox.StandardButton.Yes
 
     def _on_details_changed(self, values: dict) -> None:
         self.session.details = values
@@ -1107,19 +1190,36 @@ class MainWindow(QWidget):
         dialog = SaveProfileDialog(self, self.session.profile_to_save(), self.session.sidecars(), self._profile_name)
         dialog.saved.connect(self._on_saved)
         dialog.exec()
+        self._repaint_all()
 
     def _on_saved(self, name: str, message: str) -> None:
         self._profile_name = name
         self._status(message)
 
+    def _repaint_all(self) -> None:
+        """Repaint every widget. A modal dialog closing over the window can leave stale pixels
+        behind it (a half-drawn section title, seen as "JTRAL POINTS"), so the window redraws
+        itself when it gets the focus back."""
+        self.repaint()
+        for widget in self.findChildren(QWidget):
+            if widget.isVisible():
+                widget.update()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            self._repaint_all()
+
     def _status(self, message: str) -> None:
-        self.status_label.setText(message)
+        self.status_label.set_full_text(message)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self.hide()  # closing feels instant even while a frame finishes loading
+        self._closing = True
         self._stop_loaders(wait=True)
         if self._proof is not None:
             self._proof.close()  # stops its full-quality workers too
+        wait_for_stopping_renderers()
         if self.is_pick_session and not self._pick_result_emitted:
             self._pick_result_emitted = True
             self.pickCompleted.emit(None)
