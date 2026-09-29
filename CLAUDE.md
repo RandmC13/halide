@@ -48,19 +48,22 @@ CLI (installed as the `halide` console script, or run via `.venv/bin/python -m h
 halide invert <negative.tif> <positive.tif> [--profile NAME | --rm/--bm/--rs/--bs | --auto-density | --pick]
                                                [--output print|flat] [--exposure E] [--contrast C]
 halide batch <in_dir> <out_dir> [--auto-density-roll] [--save-profile-as NAME] [--output print|flat]
+                                [--overwrite | --skip-existing]   # existing outputs: ask (tty) / refuse (script) by default
 halide print <flat.tif|dir> <print.tif|dir>    # print stage only, for a flat positive edited elsewhere
 halide check <roll_dir>                        # were the scans made consistently? (headers only)
 halide contact <processed_dir> <sheet.jpg>     # high-res contact sheet of TIFF or exported PNG/JPEG output
 halide batch <in_dir> --contact-sheet s.jpg    # preview: sheet only, no full-size TIFFs kept (add out_dir to keep them)
   (invert/batch also take --match-scan-exposure [--scan-reference FRAME])
 halide export <positive.tif> <delivery.png>   # ACEScg TIFF -> delivery-ready sRGB PNG/JPEG
-halide profile list|show|edit|rename|delete  # edit: film stock/process/scanner/notes
+halide profile list|show|rename|delete|edit  # edit: film stock/process/scanner/notes; delete asks (tty) or needs --yes
+halide --version                              # `halide 0.1.0`; --debug (or HALIDE_DEBUG=1) shows a full traceback
 halide calibrate [roll_dir | scans… | --profile NAME]  # Qt picker: neutral points on any frames of a
                                                 # roll, fitted together; --profile reopens a saved one
 halide gpu [--install]                         # optional NVIDIA GPU support: what halide sees, and
                                                 # add it (`pip install -e ".[cuda13]"` also works)
 ```
-`invert`/`batch`/`print`/`export`/`contact`/`calibrate` all take `--device auto|cpu|gpu`
+`invert`/`print`/`export`/`batch` also take `--overwrite`/`--skip-existing` (see "Decisions and why", output
+safety). `invert`/`batch`/`print`/`export`/`contact`/`calibrate` all take `--device auto|cpu|gpu`
 (also `$HALIDE_DEVICE`; default `auto` — GPU whenever one is usable) — see "Decisions and why",
 GPU acceleration. On a GPU, `batch`/`print`/`export` and the contact sheet window share one GPU
 service process between their workers; `HALIDE_GPU_SERVICE=0` (or `off`) makes each worker use the
@@ -427,7 +430,9 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
       `ExifToolError` (the batch reports it as that frame's failure).
     - A session that dies or hangs (timeout, then killed; its `_exiftool_tmp` file removed) is
       restarted once; if that fails too, the process goes one-shot for the rest of its life, so a
-      broken exiftool never hangs the batch. Arguments exiftool's argument file can't carry
+      broken exiftool never hangs the batch (the one-shot fallback has the same timeout since the review
+      fixes: it is killed, its `_exiftool_tmp` file removed, and it raises `ExifToolError` like the
+      session does; a hung exiftool used to block a one-shot copy forever). Arguments exiftool's argument file can't carry
       verbatim (a line break, leading/trailing white space, a leading `#`) go one-shot.
       `-charset filename=utf8` (needed on Windows) was verified byte-neutral on Linux.
     - The parent-death signal is set in a `preexec_fn`, which Python warns is unsafe with threads
@@ -660,7 +665,17 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
       random token). A forkserver pool shares the parent's resource tracker, so a worker killed
       while holding a frame (OOM killer) leaves its segment until the *parent* exits; `sweep(prefix)`
       unlinks those. It runs only after the pool and the service have both stopped (every worker
-      shares the prefix, so an earlier sweep would unlink live frames).
+      shares the prefix, so an earlier sweep would unlink live frames). A batch that was itself
+      killed (SIGKILL, power loss) can't sweep, so every GPU batch also calls `sweep_stale()` at
+      start: it unlinks halide segments whose owning pid (parsed from the name by `prefix_pid`, the
+      one place that knows the format) is no longer alive. Known limit: processes in separate pid
+      namespaces that share one `/dev/shm` (`docker run --ipc=host`) can't see each other's pids, so
+      one container could unlink a live batch's frames from another; the worker then gets a missing
+      segment and develops that frame on the CPU. Names are `hl` + 6-char base36 pid + a 6-char
+      random token (`os.urandom`) + `-` + a 14-hex frame id = 29 chars, under macOS's 31-char
+      shared-memory name limit (F35), and the token space is wide enough (20,000 prefixes, no repeat in
+      the test) that two batches never share a prefix, since a shared one would let one batch's
+      sweep unlink the other's live frames.
     - The service attaches with `SharedMemory(track=False)` (Python >= 3.13), so its tracker doesn't
       claim the worker's segment. Below 3.13 `attach_frame` refuses and `sweep` does nothing: an
       earlier hand-unregister shim dropped the creator's registration from the shared tracker and
@@ -776,14 +791,16 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     `--match-scan-exposure` makes; the reference is saved as the profile's `scan` sidecar).
     Roll 16 was digitized at 1/25-1/60, and without it mixed-exposure picks fit a wrong profile.
   - Each point's agreement is judged against the fit through the *other* points (leave-one-out),
-    shown as a colour-printing filter value and direction, "CC 8 R" (Kodak CC = density x 100).
+    shown as a colour-printing filter pack, "CC 10Y + 6M" (Kodak CC = density x 100; a pack of at most
+    two of the Y/M/C dials, largest first, the smallest dial dropped as neutral density; the
+    magnitude - the largest minus the smallest channel error - and the bands below are unchanged).
     Against a fit that includes it, a bad point hides its own error (a point truly CC 3.9 off read
     CC 2.6 while good points took the blame).
   - No reading while the others span < 0.1 D (`MIN_DENSITY_SEPARATION`): an extrapolated line
-    accused the trike of "CC 8 M" when the other two points were 0.06 D apart.
+    accused the trike of a CC 8 cast when the other two points were 0.06 D apart.
   - Bands: <= CC 5 calm, 5-10 amber, > 10 red. The "was that object really neutral?" hint fires
-    from amber, not red: on Roll 16 the known-suspect objects read amber (cream wall CC 7.9 R,
-    sunlit cloud edge CC 9.6 Y) while trusted whites stayed within CC 4.8. The user confirmed CC 5
+    from amber, not red: on Roll 16 the known-suspect objects read amber (cream wall CC 7.9,
+    sunlit cloud edge CC 9.6) while trusted whites stayed within CC 4.8. The user confirmed CC 5
     felt right in use (it mostly fired on shadowed neutrals, plausibly tinted by what casts the
     shadow).
   - The hint names one point - the one whose removal leaves the others most consistent, not simply
@@ -966,6 +983,123 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   resolves the device itself — or, in per-worker mode, each GPU worker does). `tests/unit/test_cli_startup.py` fails if building the parser imports any of
   them again (`HEAVY` includes `"cupy"`). Outputs unchanged bit-for-bit (verified on real scans:
   invert, export, batch, contact).
+- **Output safety: a scan is never overwritten, existing outputs are asked about, and every write is
+  atomic** (`cli/_output_policy.py`, `io/atomic.py`; the review's F01/F02/F04, the user's D-1
+  ruling). Found by review: `batch` into last time's folder silently replaced positives, and
+  `invert x.tif x.tif` destroyed the scan. Policy: output == input (`os.path.samefile`) is a hard
+  error whatever the flags; existing outputs are **asked about in a terminal** (one question for
+  the whole roll, not per file), **refused when not in one**, with the refusal naming `--overwrite`
+  (replace them; also replaces a saved profile of the same name) and `--skip-existing` (develop
+  only the missing frames, resuming an interrupted roll). Under `--skip-existing`, `batch
+  --contact-sheet` covers the *whole* roll (built from every output in the folder, as `halide
+  contact` would) and is built even if nothing needed developing - a sheet of only this run's frames
+  would misrepresent the roll. The "is the scan itself" hint mentions `--suffix` only where the
+  command has one (not `invert`). `invert` also refuses a halide positive (provenance in its
+  ImageDescription; the message names `halide print`). Every output (TIFF, PNG/JPEG, contact sheet,
+  profile JSON) is written to a hidden `.<stem>.halide-partial-<pid>` sibling and `os.replace`d into
+  place, unlinked on any `BaseException`: a Ctrl-C or full disk leaves no truncated file under a
+  real name. An exiftool failure *after* a good write is a warning, not a lost frame (the finished
+  TIFF, provenance included, is still moved into place).
+- **Interrupts: Ctrl-C, closed terminal and kill leave nothing behind.** SIGHUP/SIGTERM in the
+  batch parent raise `KeyboardInterrupt` (`interrupts.py`); workers and the GPU service ignore
+  SIGINT/SIGHUP, so Ctrl-C lets the frames already in progress finish (up to 10 s, then they are
+  terminated; a second signal terminates at once) and they are counted in "Cancelled - X/N". Found
+  via a real traceback dump on an early Ctrl-C during forkserver start-up: the forkserver ignores
+  the signals through a launch-time `children_ignore_terminal_signals()` (an ignored signal survives
+  exec), at the cost of losing a Ctrl-C landing in that few-ms window. A request interrupted mid-
+  flight marks the GPU service client dead, so the next request can't read the previous reply.
+- **Non-finite and non-positive pixels are warned about and kept out of calibration, never
+  propagated** (review F05). A raw converter's export can carry NaN/inf. At the working-space
+  boundary they are counted and replaced by `nan_to_num` (treated as clear film) with a warning
+  ("N pixels weren't valid numbers ... treated as clear film"; N counts RGB *values* - one bad raw
+  value spreads to 3 through the ICC matrix); above 1% of values the frame fails ("this export
+  looks broken"). Auto calibration excludes non-finite and non-positive-in-any-channel pixels from
+  the population *before* the density-local binning - one NaN used to poison its bin's median and,
+  through it, the whole solved profile - and a non-positive pixel scores +inf (least neutral), not 0
+  (most neutral). `fit_print` and `estimate_linear_scale` raise on a non-finite statistic as a
+  backstop. This was the one change allowed to move `--auto-density` output on clean input: measured
+  on the four real scans it was bit-for-bit identical, profile included (evidence in the task's
+  report, `.review/approval/task4-auto-density.md`, git-ignored). Known gap: a frame developed by the
+  GPU service cleans NaNs silently (its reply has no warning channel for that yet).
+- **One roll discovery** (`io/roll.py::list_scans`): batch, print, export, check, contact and the
+  picker all list a folder through it, so they agree on which files are frames and in what order.
+  Skipped, with one "Skipped" run-sheet row (a dim line for check/contact) and never a failed frame:
+  names starting with `.` (a roll copied from a Mac carries `._*.tif` AppleDouble files and
+  `.DS_Store`; halide's own partial files too), halide contact sheets, non-TIFF pictures, subfolders.
+  Input mistakes are plain `ScanInputError`s (not a TIFF, a raw file, RGBA, greyscale, wrong channel
+  count, a corrupt strip) with a next step, not library text. `halide check` says "not verifiable"
+  when frames have no camera EXIF rather than a false all-clear.
+- **ICC validation is judged in density and bounds-checks the whole file** (review F08): a TRC is linear if `|log10(curve(t)/t)| <= 0.005` at 200
+  log-spaced t in [0.001, 1] (a relative error would have been meaningless near black); every tag
+  offset and size is bounds-checked; the three colorant columns must sum to the D50 white
+  (0.9642, 1, 0.8249) within 0.002. Measured: the four real scans' profiles, Roll 16's and halide's own ACEScg
+  all sum to within 2e-5 of D50.
+- **The calibration Save gate stays at 0.1 D, and a poor fit is warned about, not refused** (user's D-2
+  ruling; `core/density.py::predicted_cast_error`, `anchors.fit_reliability`). Two points 0.1 D apart
+  fit a line whose ends can be far off, so the picker predicts the cast (the least-squares
+  covariance of the `[1, D_G]` design, times an assumed pick error of 0.005 D, red plus blue added
+  because opposite errors are the cast) at every density of the roll's own range and, when it
+  exceeds CC 5 anywhere, says "Fit reliable over D 0.9-1.3 only - add a point in the shadows or
+  highlights" under the step wedge with an amber bracket (a span under 0.1 D names the spot instead;
+  none at all reads "not reliable anywhere on the roll"). The CLI prints the same text as a warning
+  after a save. Measured against a Monte Carlo that also includes green-channel noise, the
+  prediction runs ~23% high at 0.1 D span (8.8 vs 7.2 CC median) and matches at 0.6 D (1.59 vs
+  1.56): conservative, deliberately. The fit also refuses a per-channel scale outside [0.2, 5]
+  (near-flat channel) with "the neutral points don't pin down the red/blue layer"; the picker treats
+  that like "can't fit yet" (status line, Save disabled), never an exception.
+  `invert --auto-density` has no run sheet so it prints no "automatic estimate" advice (batch's
+  run sheet does, with the pointer to `halide calibrate`).
+- **The picker window is capped at 1400x900 and the 1920x1080 size is pinned** (user's D-3 ruling,
+  `gui/main_window.py::window_size_for`): 55% x 70% of the available screen, floor 900x700, cap
+  1400x900. On the user's 1920x1080 that is 1056x756 (a test pins it, with 2560x1440 -> 1400x900
+  and 1366x768 -> 900x700). Only when the window is at its 700 px minimum does the panel give up its
+  9 px bottom margin and 2 px per gap so the reliability note and open drawers fit under Save
+  (verified in Xvfb at 1366x768). Accepted difference from before on 1080p: the step wedge is 8 px
+  taller (room for the reliability bracket), the window itself is unchanged.
+- **Terminal output follows the terminal** (`console.use_color`, `batch/progress.py`): colour is
+  off for `NO_COLOR` (any value), `TERM=dumb`, or output that isn't a tty; `FORCE_COLOR` wins over
+  all. When output isn't interactive, batch/print/export/contact use `PlainProgressRenderer` - one
+  line per frame ("✓ IMG_0138.tif  grade 0.88 exp +0.39  4.1s"), no cursor movement - instead of
+  the contact-sheet grid, and `--quiet` prints only the end line and failures. stdout is
+  line-buffered so a log's lines come out in order with stderr's. The success count is completed
+  minus failures (it used to count failed frames as developed).
+- **Contact sheet edge print: a vendored font and a DX-style edge code** (user's notes on the
+  sheet, reference photo `contactsheet-barcoderef.jpg`, git-ignored, used only for the barcode -
+  none of its red boxes or other oddities were copied). The half-frame number is `→3A` (arrow left
+  of it) on the *lower* edge only. The old random bars became a real two-track code: a clock track
+  (lower 55% of the code height) and a data track (upper 45%) at twice the clock's resolution, a
+  5-cell start mark over 3 bars and a 3-cell end mark over the last 2, ~40% data cells with at most
+  3 in a row, seeded per frame so a sheet is reproducible (`io/contact_sheet.py::_edge_code`). The
+  cell unit is code height / 5, chosen by eye from height/7 (too fine), /3.5 (too chunky). Not a
+  decodable DX code - it is decoration in the right shape. DejaVu Sans, Bold and Condensed Bold are
+  vendored in `assets/fonts/` with their licence (DejaVu 2.37: Bitstream Vera + public-domain
+  additions), loaded by path (Qt registers them too), so the sheet looks the same on every machine
+  instead of depending on what the system has; Pillow's built-in font remains the fallback. An
+  asset, not a dependency. JPEG sheets differ from the previous release only in the edge print.
+- **The profile folder on macOS is `~/Library/Application Support/halide/profiles`**, unless
+  `XDG_CONFIG_HOME` is set (then that wins on either OS); Linux stays `~/.config/halide/profiles`.
+  The generated tab-completion scripts take the same base at generation time. Profile lookups fall
+  back to a case-insensitive match and a case-only rename goes through a backup name, because macOS's
+  default filesystem is case-insensitive but case-preserving. Names with a slash, leading dash or
+  path separators are refused with a clear message, identically in the CLI and the picker, and a
+  damaged profile file is reported, never a crash (review F03/F24).
+- **Dependency bounds are the oldest version that provides what halide uses, plus an upper bound
+  where a major release would break it** (`pyproject.toml`; review F13): numpy >=2.0,<3, tifffile
+  >=2024.8 (`asarray(out=, buffersize=)`), imagecodecs >=2023.9, colour-science >=0.4.6,<0.5, scipy
+  >=1.11, PySide6 >=6.7,<7, Pillow >=10.1 (`ImageFont.load_default(size=)`), psutil >=5.9, shtab
+  >=1.7. The floors are reasoned from the APIs used, **not tested** - only the newest versions are
+  (the README's "Tested with" line has them). The user's reading: an error report from an old
+  install means bump that floor.
+  Python is >=3.11 and nothing here runs a 3.11 interpreter: `ast.parse(feature_version=...)` does
+  not catch 3.12-only same-quote f-string nesting, so check that with a tokenize scan.
+- **Review-branch process decisions worth remembering.** Evidence for a change that moves output
+  (the auto-density numbers, the edge-code before/after crops) is committed with the work under
+  `.review/approval/` rather than stopping mid-run: each is an isolated, revertible commit and
+  nothing merges without approval. The shared-frame sweep, when the segment name format changes,
+  is updated together with `prefix_pid` and its test. The parent-RSS measurement of the device probe (isolated
+  in a child process for batch and directory print/export) was left for the user's RTX 3070. Open questions for the user: whether the filter pack should show only the Y/M form
+  ("take out 2Y + 1M"), their darkroom convention to choose; and whether CLAUDE.md itself should be
+  shortened.
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 

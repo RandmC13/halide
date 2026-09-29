@@ -106,19 +106,45 @@ halide reads **linear TIFFs with an embedded ICC profile**, the kind a raw devel
 doesn't read raw files directly: your raw developer already handles demosaicing, cropping, lens
 correction and dust removal well.
 
-In darktable or RawTherapee, for every frame of the roll:
+Every frame needs the same treatment, in whichever raw developer you use.
 
-1. Crop to the image, leaving out the film holder and rebate. An opaque edge left in the crop
-   throws off the print fit.
-2. Leave tone and colour modules **off** (filmic, sigmoid, curves, local contrast, and so on). The
-   export has to stay linear.
-3. Export a 16-bit or 32-bit float TIFF in a **linear** wide-gamut profile, such as darktable's
-   *linear Rec2020 RGB*, with the profile embedded.
-4. Keep camera settings and white balance the same across the roll if you can. `halide check`
-   shows you whether you did.
+### Exporting your scans
+
+The menu names below are from memory of recent darktable and RawTherapee releases. I couldn't check
+them against the current manuals, so where a name differs in your version, follow the intent: a
+**TIFF**, **32-bit float** (or 16-bit), in a **linear** profile (gamma 1.0), with the profile
+embedded and no tone or colour edits applied.
+
+**Before exporting, for both programs:** crop to the image, leaving out the film holder and rebate
+(an opaque edge left in the crop throws off the print fit), and turn tone and colour modules
+**off**: filmic, sigmoid, curves, levels, local contrast and so on. Keep the same
+white balance and camera settings across the roll if you can. `halide check` tells you afterwards
+whether you did.
+
+**darktable** (check your version for exact names)
+
+1. In the darkroom, look at the history stack: filmic rgb, sigmoid, base curve, tone curve,
+   rgb curve, local contrast, and colour balance should not be active. Basic exposure, crop, lens
+   correction, denoise and spot removal are fine.
+2. In the darkroom's *output color profile* module, set the profile to *linear Rec2020 RGB*.
+3. In the lighttable's *export* module, set *target storage* to *file on disk* and *format* to
+   *TIFF*. Set *bit depth* to *32 bit (float)* (or 16 bit), *compression* to *uncompressed* or
+   *deflate*, and *profile* to *linear Rec2020 RGB*.
+4. Export. Some darktable versions have written the wrong profile into TIFFs; halide notices
+   (see Troubleshooting).
+
+**RawTherapee** (check your version for exact names)
+
+1. In the *Color Management* tab of the editor, set *Output profile* to *RTv4_Rec2020*, and
+   *Output profile > TRC* to linear (gamma 1.0, slope 0). If your version has no linear TRC option
+   for it, choose a linear Rec2020 profile in *Preferences > Color Management > Output profile*
+   instead.
+2. In the *Exposure* and *Tone Mapping* panels leave curves, tone mapping and local contrast off.
+3. In *Save* (Ctrl+S), choose *TIFF* with *32-bit floating-point* (or 16-bit), and save.
 
 If a file isn't suitable (gamma-encoded, no profile, the wrong kind of profile), halide rejects it
-and explains why.
+and explains why. It will say, for example, "this profile is gamma-encoded (e.g. for display use).
+Re-export using your raw processor's linear gamma/tone-curve option".
 
 ## Quick start
 
@@ -160,10 +186,52 @@ preview.jpg` develops every frame at full quality but keeps only the contact she
 | `halide export IN OUT` | ACEScg TIFF (or folder of them) to sRGB PNG/JPEG |
 | `halide contact DIR SHEET` | Contact sheet of developed frames |
 | `halide check DIR` | Report inconsistent scan settings across a roll |
-| `halide profile list\|show\|edit\|rename\|delete` | Manage saved profiles (stored in `~/.config/halide/profiles/`) |
+| `halide profile list\|show\|rename\|delete\|edit` | Manage saved profiles (see Troubleshooting for where they live) |
 
-Every command has `--help`. Every output TIFF records how it was printed (profile, grade,
-exposure) in its metadata, and `invert` prints it too.
+Every command has `--help`, with examples. `halide --version` prints the version. `batch`, `invert`,
+`print` and `export` never write over a scan. If an output already exists they ask (in a terminal)
+or refuse (in a script); add `--overwrite` to replace it, or `--skip-existing` to develop only
+the frames that are missing (resuming an interrupted roll). Outputs are written whole or not at
+all, so a cancelled run leaves no half-written file.
+
+## What you get
+
+- **Print** (the default): a TIFF printed through the paper curve, with exposure and grade fitted
+  to the frame. Use it for finished pictures.
+- **Flat** (`--output flat`): the film's own recorded contrast, unclipped and linear, for
+  editing in darktable. Edit only exposure, crop, spot removal, lens and denoise. Then
+  `halide print` prints it onto the paper.
+- **Provenance:** every output TIFF records in its metadata how it was made: profile, grade,
+  exposure, scan settings, and whether the CPU or GPU did it. `invert` prints the grade and
+  exposure too.
+- **Contact sheet:** `halide contact` (or `batch --contact-sheet`) makes a sheet styled after a
+  real contact print, each frame captioned with its printing decision, for comparing settings
+  across a roll.
+
+## Troubleshooting
+
+- **"this profile is gamma-encoded", "no embedded profile", or another colour-profile error.** The
+  export wasn't linear, or the profile wasn't embedded. Re-export following "Exporting your scans"
+  above. To see which profile a TIFF really carries, run `exiftool -icc_profile:all file.tif`
+  if you have exiftool.
+- **"is already a halide positive".** You gave `invert` a picture halide already made. To print a
+  flat positive again, use `halide print`.
+- **Developed images have no camera metadata (EXIF).** Install exiftool (see Install). Without it
+  halide works but doesn't copy EXIF. If exiftool is installed but fails on one file, that frame
+  is still developed and you get a warning.
+- **The calibration window won't open (Qt errors).** See the Linux libraries note under Install.
+- **The GPU wasn't used.** Run `halide gpu` to see what halide finds. If a frame doesn't fit on
+  the card, or the GPU fails part-way, halide develops that frame on the CPU and prints a warning;
+  the result is the same picture. `--device cpu` (or `HALIDE_DEVICE=cpu`) skips the GPU entirely.
+  A GPU batch needs Python 3.13 or newer and room in `/dev/shm`; otherwise it falls back to
+  per-worker GPU use, and the run sheet says why.
+- **Where saved profiles live.** Linux: `~/.config/halide/profiles/` (or `$XDG_CONFIG_HOME/halide/
+  profiles/`). macOS: `~/Library/Application Support/halide/profiles/` (unless `XDG_CONFIG_HOME` is
+  set). Each profile is a small JSON file you can back up or copy to another machine.
+- **Plain output for logs.** `NO_COLOR=1`, or piping halide's output to a file, gives plain text
+  lines with no colour or moving progress display.
+
+
 
 ## GPU acceleration (optional)
 

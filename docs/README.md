@@ -11,7 +11,7 @@ themselves; these hold the reasoning, evidence and designs behind them.
   - `multipoint-picker.md`: the calibration picker rebuilt for many neutral points across a roll,
     with every UI decision the user made. Implemented.
   - `gpu-acceleration.md`: where a frame's time goes, and the CuPy-based `--device auto|cpu|gpu`
-    design for running the pipeline on an NVIDIA GPU. Implemented on branch `gpu-acceleration`
+    design for running the pipeline on an NVIDIA GPU. Implemented and merged
     (see `CLAUDE.md`'s "Decisions and why" for what was actually built), verified on the user's
     RTX 3070 (all 46 `pytest -m gpu` tests pass; the benchmark results are in the plan's §7).
     `gpu-acceleration-probe.py` is the one-off measurement script that produced the plan's first
