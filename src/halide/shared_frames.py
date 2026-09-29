@@ -54,7 +54,7 @@ import numpy as np
 
 _NAME_STEM = "hl"  # short on purpose: macOS caps a segment name at 31 characters (F35)
 _PID_DIGITS = 6  # a pid in base 36, zero-padded: 36**6 is over 2 billion, past any real pid_max
-_TOKEN_LENGTH = 4
+_TOKEN_LENGTH = 6  # 36**6 = 2.2 billion; a 4-hex token collided ~1 in 65,536 same-process batches (R21)
 _BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 # `SharedMemory(..., track=False)` only exists from Python 3.13 (gh-82300) — passing it on an older
@@ -108,6 +108,11 @@ def _base36(number: int) -> str:
     return digits.rjust(_PID_DIGITS, "0")
 
 
+def _random_token() -> str:
+    number = int.from_bytes(os.urandom(5), "big") % 36**_TOKEN_LENGTH
+    return "".join(_BASE36[(number // 36**i) % 36] for i in reversed(range(_TOKEN_LENGTH)))
+
+
 def batch_prefix() -> str:
     """A predictable, batch-scoped name prefix for this batch's shared-memory segments — call this
     once in the orchestrator (the pool's own parent process) and pass the result down to every
@@ -118,7 +123,7 @@ def batch_prefix() -> str:
     picker's contact sheet window, rebuilt), and sweeping one must never unlink the other's live
     frames; nor can a leftover from an earlier, killed run whose pid happens to be reused ever
     match."""
-    return f"{_NAME_STEM}{_base36(os.getpid())}{uuid.uuid4().hex[:_TOKEN_LENGTH]}-"
+    return f"{_NAME_STEM}{_base36(os.getpid())}{_random_token()}-"
 
 
 def _standalone_prefix() -> str:
@@ -203,7 +208,7 @@ def new_frame(shape: tuple[int, ...], dtype, *, prefix: str | None = None) -> It
     """
     np_dtype = np.dtype(dtype)
     size = _nbytes(shape, np_dtype)
-    name = f"{prefix or _standalone_prefix()}{uuid.uuid4().hex[:16]}"  # hl+6+4+"-"+16 = 29 <= 30
+    name = f"{prefix or _standalone_prefix()}{uuid.uuid4().hex[:14]}"  # hl+6+6+"-"+14 = 29 <= 30
     try:
         shm = shared_memory.SharedMemory(create=True, size=size, name=name)
     except (OSError, ValueError) as exc:

@@ -1138,7 +1138,7 @@ from pathlib import Path  # noqa: E402
 def _stale_name(pid: int) -> str:
     from halide.shared_frames import _base36
 
-    return f"hl{_base36(pid)}f00d-{time.time_ns():x}"[:30]
+    return f"hl{_base36(pid)}00f00d-{time.time_ns():x}"[:30]
 
 
 def _dead_pid() -> int:
