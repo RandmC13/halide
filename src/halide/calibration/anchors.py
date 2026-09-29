@@ -10,7 +10,11 @@ That's the same one global multiply --match-scan-exposure makes, against the sam
 saved profile records, so a profile fitted here develops the roll correctly with that flag.
 
 Agreement is judged per point against the fit through the *other* points
-(core.density.leave_one_out_residuals) and reported as a colour-printing filter value ("CC 7.9 R").
+(core.density.leave_one_out_residuals) and reported as a colour-printing filter pack ("CC 8Y + 8M"; equal amounts are listed Y, then M, then C).
+
+How far the fit can be trusted is judged separately (fit_reliability): points that agree with each
+other can still all sit in one narrow band of density, and the line through them is then a guess at
+the ends of the roll.
 """
 
 from __future__ import annotations
@@ -25,7 +29,13 @@ import numpy as np
 from halide.calibration.auto import MIN_DENSITY_SEPARATION
 from halide.calibration.scan_consistency import most_common_settings, scan_gain
 from halide.core._constants import MIN_TRANSMITTANCE
-from halide.core.density import describe_cast, fit_density_balance, leave_one_out_residuals, neutral_residuals
+from halide.core.density import (
+    describe_cast,
+    fit_density_balance,
+    leave_one_out_residuals,
+    neutral_residuals,
+    predicted_cast_error,
+)
 from halide.core.types import DensityProfile
 from halide.io.scan_metadata import ScanSettings
 
@@ -48,6 +58,14 @@ DUPLICATE_CHROMA = 0.02
 WEDGE_LOW_PERCENTILE = 0.5
 WEDGE_HIGH_PERCENTILE = 99.5
 
+# The error assumed in each picked point's density, per channel, when predicting how far the fit
+# can be trusted (fit_reliability): CC 0.5 - well below the CC 1-5 real "trusted" whites were
+# measured off neutral on Roll 16, so this sigma is optimistic. The prediction then sums the red and
+# blue layers' errors as if they always opposed (core.density.predicted_cast_error), which is
+# pessimistic; the two partly offset, so treat the result as a guide to where the fit is thin, not a bound.
+ASSUMED_PICK_ERROR = 0.005
+_RELIABILITY_STEPS = 1001  # D_G samples across the wedge when finding the reliable range
+
 
 @dataclass(frozen=True)
 class NeutralPoint:
@@ -60,12 +78,41 @@ class NeutralPoint:
 
 @dataclass(frozen=True)
 class Agreement:
-    cc: float
-    direction: str  # R/G/B excess or C/M/Y (a deficit of R/G/B), see core.density.describe_cast
+    cc: float  # the largest filter in the pack - what the bands are judged on
+    filters: str  # "CC 20Y + 10M" or "neutral", see core.density.describe_cast
     band: str  # "calm" | "amber" | "red"
 
     def label(self) -> str:
-        return f"CC {self.cc:.0f} {self.direction}" if self.cc >= 0.5 else "CC 0"
+        return self.filters
+
+
+@dataclass(frozen=True)
+class Reliability:
+    """How far a fit can be trusted across the roll (fit_reliability)."""
+
+    worst_cc_at_ends: float  # predicted cast at whichever end of the wedge is worse
+    reliable_range: tuple[float, float]  # green density span where the prediction stays <= CC 5
+    reliable_anywhere: bool = True  # False: nowhere on the roll (reliable_range is then just the best spot)
+
+    @property
+    def is_limited(self) -> bool:
+        return self.worst_cc_at_ends > AGREEMENT_AMBER_CC
+
+    def warning(self) -> str | None:
+        """The picker's note under the step wedge (and the CLI's, on saving a picked profile)."""
+        if not self.is_limited:
+            return None
+        if not self.reliable_anywhere:
+            return (
+                "Fit not reliable anywhere on the roll - add points spread from the shadows to the "
+                "highlights"
+            )
+        low, high = self.reliable_range
+        if high - low < 0.1:  # a span this short rounds to "D 1.0-1.0": name the spot instead
+            where = f"only near D {(low + high) / 2:.2f}"
+        else:
+            where = f"over D {low:.1f}-{high:.1f} only"
+        return f"Fit reliable {where} - add a point in the shadows or highlights for the ends of the roll"
 
 
 def reference_scan(settings: Iterable[ScanSettings | None]) -> ScanSettings | None:
@@ -123,9 +170,45 @@ def agreement(points: Sequence[NeutralPoint], reference: ScanSettings | None) ->
         if np.isnan(row).any() or not can_fit(others, reference):
             out.append(None)
             continue
-        cc, direction = describe_cast(row)
-        out.append(Agreement(cc=cc, direction=direction, band=band(cc)))
+        cc, filters = describe_cast(row)
+        out.append(Agreement(cc=cc, filters=filters, band=band(cc)))
     return out
+
+
+def fit_reliability(
+    points: Sequence[NeutralPoint], reference: ScanSettings | None, wedge: tuple[float, float] | None
+) -> Reliability | None:
+    """How far the fit through `points` can be trusted over the roll's density range `wedge`
+    (wedge_range): the cast a true neutral is predicted to print with at the wedge's ends if every
+    pick was off by ASSUMED_PICK_ERROR (core.density.predicted_cast_error), and the span of green
+    density where that stays within the calm agreement band (CC 5).
+
+    Why: the Save gate only asks for MIN_DENSITY_SEPARATION (0.1 D) between points, and three
+    points that close, agreeing perfectly with each other, still leave the line's tilt so loosely
+    pinned that the ends of a typical roll can print CC 8-15 off (codebase review 2.1-1's
+    simulation). Saving stays allowed; this is what the warning reports.
+
+    None when there's nothing to judge: no fit yet (too few points, or one the fit refuses) or no
+    wedge (the roll's previews haven't loaded)."""
+    if wedge is None or not can_fit(points, reference):
+        return None
+    rgbs = [normalised_rgb(p, reference) for p in points]
+    try:
+        profile = fit_density_balance(rgbs)
+    except ValueError:
+        return None
+    low, high = wedge
+    greens = np.linspace(low, high, _RELIABILITY_STEPS)
+    cc = predicted_cast_error(rgbs, profile, greens, ASSUMED_PICK_ERROR)
+    within = np.flatnonzero(cc <= AGREEMENT_AMBER_CC)
+    if within.size:  # the prediction is convex in D_G, so this is one contiguous span
+        reliable = (float(greens[within[0]]), float(greens[within[-1]]))
+    else:  # nowhere on the roll - keep the best spot, but the note says "nowhere", not a 1-point range
+        best = float(greens[int(np.argmin(cc))])
+        reliable = (best, best)
+    return Reliability(
+        worst_cc_at_ends=float(max(cc[0], cc[-1])), reliable_range=reliable, reliable_anywhere=bool(within.size)
+    )
 
 
 def _spread_without(points: Sequence[NeutralPoint], index: int, reference: ScanSettings | None) -> float:
@@ -134,7 +217,10 @@ def _spread_without(points: Sequence[NeutralPoint], index: int, reference: ScanS
     if not can_fit(others, reference):
         return float("inf")
     rgbs = [normalised_rgb(p, reference) for p in others]
-    residuals = neutral_residuals(fit_density_balance(rgbs), rgbs)
+    try:
+        residuals = neutral_residuals(fit_density_balance(rgbs), rgbs)
+    except ValueError:
+        return float("inf")
     return float(np.sqrt(np.mean([describe_cast(r)[0] ** 2 for r in residuals])))
 
 

@@ -312,8 +312,11 @@ def test_auto_density_balance_on_device_warns_and_raises_as_on_cpu(fake_device):
 
 
 def _old_saturation(pixels, reference):
-    """The pre-device `_saturation` body (np.divide with `where=`, which CuPy's ufuncs don't take) —
-    an oracle for the rewrite, including its zero / negative / NaN max-channel handling."""
+    """The pre-F05 `_saturation` body (np.divide with `where=`) — an oracle for everything except
+    its degenerate-pixel handling, which F05 deliberately changed (see the parametrized test
+    below): a non-positive-max/NaN pixel used to score 0 (the most "neutral" a pixel could look),
+    which is exactly the bug — it made such a pixel the *first* one picked as a neutral candidate,
+    not excluded from candidacy at all."""
     normalized = pixels / reference
     max_channel = normalized.max(axis=-1)
     min_channel = normalized.min(axis=-1)
@@ -321,14 +324,21 @@ def _old_saturation(pixels, reference):
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
-def test_saturation_matches_the_old_where_form_including_degenerate_pixels(fake_device, dtype):
+def test_saturation_excludes_degenerate_pixels_but_matches_the_old_form_elsewhere(fake_device, dtype):
+    # F05: a pixel whose normalized max channel isn't positive (black, negative, or NaN) is now
+    # scored +inf — maximally saturated, i.e. excluded by any "keep the least-saturated" threshold
+    # — instead of the old 0, which wrongly looked like the *most* neutral pixel possible.
     rng = np.random.default_rng(5)
     pixels = rng.uniform(0.001, 0.5, size=(500, 3)).astype(dtype)
+    # [0, 0.1, -0.1] (index 3) has one positive normalized channel (G), so it's a legitimate,
+    # non-degenerate saturation value, not one this fix changes — only indices 0-2 (every channel
+    # non-positive, or NaN) trigger the not_positive branch.
     pixels[:4] = [[0, 0, 0], [-0.1, -0.2, -0.05], [np.nan, 0.1, 0.1], [0, 0.1, -0.1]]
     reference = np.median(pixels[4:], axis=0).astype(dtype)
     with np.errstate(invalid="ignore", divide="ignore"):
         old = _old_saturation(pixels, reference)
         new = _saturation(pixels, reference)
         on_device = to_host(_saturation(to_device(pixels), fake_xp.asarray(reference)))
-    assert _same_bits(new, old)
-    assert _same_bits(on_device, old)
+    assert np.all(np.isposinf(new[:3]))
+    assert _same_bits(new[3:], old[3:])
+    assert _same_bits(on_device, new)

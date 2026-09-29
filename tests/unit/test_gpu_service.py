@@ -12,6 +12,7 @@ There is no GPU here, so the service runs in one of three ways:
 Frames are small (/dev/shm is 64 MiB in this sandbox); full-size, real-GPU checks are Task B4.
 """
 
+import contextlib
 import os
 import pickle
 import signal
@@ -93,6 +94,19 @@ def _late_export_in_child(arrived: str) -> None:
         out[...] = 77
 
     halide.processing.export_request = late
+
+
+def _slow_but_real_develop_in_child(arrived: str) -> None:
+    """Initializer: every develop request signals `arrived`, waits 1.5 s, then develops for real —
+    a slow service that does answer, so an interrupted client still has a reply owed to it."""
+    real = halide.processing.develop_request
+
+    def slow(frame, request, *args, **kwargs):
+        Path(arrived).touch()
+        time.sleep(1.5)
+        return real(frame, request, *args, **kwargs)
+
+    halide.processing.develop_request = slow
 
 
 class _Abort(BaseException):
@@ -412,7 +426,11 @@ def test_killed_service_makes_the_next_request_raise_promptly(tmp_path):
             with pytest.raises(ServiceUnavailable) as dead:
                 _develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
             assert time.monotonic() - start < 5
-            assert dead.value.failure.host_touched  # it may have died mid-download: re-read
+            # Whether host_touched is True (the request was sent) or False (the send itself broke)
+            # depends on timing against a really-killed process, so it isn't asserted here: each
+            # branch is pinned deterministically by
+            # test_a_send_that_fails_never_reached_the_service_so_the_frame_is_untouched.
+            assert dead.value.failure is not None
             # Dead for good: no reconnecting, no waiting.
             with pytest.raises(ServiceUnavailable):
                 _develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
@@ -436,6 +454,47 @@ def test_stuck_service_times_out(tmp_path):
             with pytest.raises(ServiceUnavailable):  # the connection is treated as dead
                 _develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
             assert time.monotonic() - start < 0.5
+
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="needs signal.pthread_kill")
+def test_an_interrupted_request_makes_the_client_dead_not_out_of_step(tmp_path):
+    """F06 (review 2.4-1): Ctrl-C landing while a request waits for its reply used to leave that
+    reply owed on the connection, so the next request read the *previous* frame's reply and its own
+    frame — still the raw negative — was written out. Any BaseException there now marks the client
+    dead: the next request raises ServiceUnavailable (the caller redevelops on the CPU) instead."""
+    scan_a = _write_scan(tmp_path / "a.tif", seed=1)
+    scan_b = _write_scan(tmp_path / "b.tif", seed=2)
+    arrived = tmp_path / "arrived"
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    with running_service("cpu", initializer=partial(_slow_but_real_develop_in_child, str(arrived))) as address:
+        with ServiceClient(address) as client:
+            previous = signal.signal(signal.SIGALRM, interrupt)
+
+            def interrupt_once_in_flight():
+                # Fire only once the service has really started on A (its `arrived` marker), not
+                # after a fixed delay that a slow machine could beat.
+                deadline = time.monotonic() + 30
+                while not arrived.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                signal.pthread_kill(threading.main_thread().ident, signal.SIGALRM)
+
+            watcher = threading.Thread(target=interrupt_once_in_flight, daemon=True)
+            try:
+                watcher.start()
+                with pytest.raises(KeyboardInterrupt):
+                    _develop_through(client, scan_a, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
+            finally:
+                watcher.join()
+                signal.signal(signal.SIGALRM, previous)
+            assert arrived.exists()  # A really was in flight inside the service
+            start = time.monotonic()
+            with pytest.raises(ServiceUnavailable) as dead:
+                _develop_through(client, scan_b, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
+            assert time.monotonic() - start < 0.5  # no waiting for A's reply
+            assert not dead.value.failure.host_touched  # B was never sent: its frame is untouched
 
 
 def test_leaving_running_service_stops_it_with_a_request_in_flight(tmp_path):
@@ -618,3 +677,83 @@ def test_gpu_service_keeps_cupy_out_of_the_parent():
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["developed-identically", "False"]
     assert result.stderr == ""
+
+
+class _InterruptedConnection:
+    """A connection whose poll raises `exc`, standing in for Ctrl-C or a dead service mid-request."""
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    def send(self, message):
+        pass
+
+    def poll(self, timeout):
+        raise self._exc
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("exc", [KeyboardInterrupt(), EOFError()], ids=["interrupted", "service died"])
+def test_an_interrupt_inside_the_failure_handling_still_leaves_the_client_dead(monkeypatch, exc):
+    """Review round 1: the client is marked dead before anything else in the failure handling can
+    be interrupted — here a second Ctrl-C lands while the reason is being described."""
+    def interrupted(_exc):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(gpu_service, "_describe", interrupted)
+    client = ServiceClient(gpu_service.ServiceAddress(address="unused", family="AF_UNIX", authkey=b"x", pid=0,
+                                                      kind="cpu"))
+    client._conn = _InterruptedConnection(exc)
+    with pytest.raises(KeyboardInterrupt):
+        client.develop(SimpleFrame(), None)
+    assert client._dead is not None
+    with pytest.raises(ServiceUnavailable):  # never back to the out-of-step connection
+        client.develop(SimpleFrame(), None)
+
+
+class SimpleFrame:
+    def descriptor(self):
+        return ("unused", (1, 1, 3), "<f4")
+
+
+def test_a_send_that_fails_never_reached_the_service_so_the_frame_is_untouched():
+    """A broken pipe on send means the service never saw the request: the caller's shared frame is
+    exactly as decoded, so the CPU fallback needs no re-read of the scan. A failure after the send
+    (a dead or stuck service) still counts as touched."""
+
+    class BrokenOnSend:
+        def send(self, message):
+            raise BrokenPipeError("gone")
+
+        def close(self):
+            pass
+
+    class DiesAfterSend(BrokenOnSend):
+        def send(self, message):
+            pass
+
+        def poll(self, timeout):
+            raise EOFError
+
+    for conn, touched in ((BrokenOnSend(), False), (DiesAfterSend(), True)):
+        client = ServiceClient(None)
+        client._conn = conn
+        with pytest.raises(ServiceUnavailable) as unavailable:
+            client._request(("develop",))
+        assert unavailable.value.failure.host_touched is touched
+        assert client.dead_reason is not None
+
+
+def test_no_shared_frame_is_made_for_a_client_whose_service_is_gone(tmp_path):
+    from halide import processing
+
+    class Gone:
+        dead_reason = "the GPU service stopped responding"
+
+    warnings = []
+    with contextlib.ExitStack() as stack:
+        frame = processing._shared_frame(tmp_path / "a.tif", Gone(), None, stack, warnings.append)
+    assert frame is None
+    assert "no longer available" in warnings[0] and "on the CPU" in warnings[0]

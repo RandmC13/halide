@@ -4,6 +4,7 @@ the rest of the batch."""
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from halide.batch.orchestrator import discover_jobs, run_batch
 from halide.cli.main import main
@@ -131,7 +132,7 @@ def test_batch_cli_empty_directory_errors(tmp_path):
 
 def test_auto_density_roll_conflicts_with_other_sources(roll_dir, tmp_path):
     out_dir = tmp_path / "out"
-    with pytest.raises(SystemExit, match="cannot be combined"):
+    with pytest.raises(SystemExit, match="can't be combined with --auto-density-roll"):
         main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--rm", "2.0", "--quiet"])
 
 
@@ -152,7 +153,11 @@ def test_batch_cli_prints_its_settings_as_one_run_sheet_before_developing(roll_d
     assert list(rows) == ["Roll", "Scans", "Calibration", "Output", "Compute", "Workers"]
     nbsp = "\u00a0"  # RunSheet.SEP's non-breaking space
     assert rows["Roll"].replace(" ", "") == f"in{nbsp}·4frames→{out_dir}"  # the long tmp path wraps
-    assert rows["Calibration"] == f"auto{nbsp}· one profile for the whole roll, from 4 frames"
+    # R-050: the automatic tiers point to the faithful one, on a dimmed line of their own
+    assert rows["Calibration"] == (
+        f"auto{nbsp}· one profile for the whole roll, from 4 frames automatic estimate - for the most "
+        "faithful colour, pick neutral points with `halide calibrate`"
+    )
     assert rows["Output"] == f"print{nbsp}· grade 0.80{nbsp}· exposure fitted per frame"
     assert rows["Workers"] == "1 (--workers)"
 
@@ -166,3 +171,111 @@ def test_batch_cli_run_sheet_names_the_roll_when_run_on_the_current_directory(ro
     out = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", capsys.readouterr().out)
     roll_line = next(line for line in out.splitlines() if line.startswith("  Roll"))
     assert roll_line.split("Roll", 1)[1].split()[0].startswith("in")
+
+
+def test_batch_into_its_own_folder_is_refused_before_any_work(roll_dir):
+    import hashlib
+
+    before = {f.name: hashlib.md5(f.read_bytes()).hexdigest() for f in roll_dir.iterdir()}
+    with pytest.raises(SystemExit) as exc:
+        main(["batch", str(roll_dir), str(roll_dir), "--quiet"])
+    message = str(exc.value.code)
+    assert "is the scan itself" in message
+    assert "--suffix" in message  # batch has --suffix, unlike invert
+    after = {f.name: hashlib.md5(f.read_bytes()).hexdigest() for f in roll_dir.iterdir()}
+    assert after == before
+
+
+def test_batch_rerun_non_interactive_refuses_then_skip_existing_develops_only_new(roll_dir, tmp_path):
+    out_dir = tmp_path / "out"
+    assert main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"]) == 0
+    outputs = sorted(out_dir.glob("*.tiff"))
+    assert len(outputs) == 4
+    before = {p: p.read_bytes() for p in outputs}
+
+    # A plain re-run into the same, now-populated folder must refuse, not silently overwrite.
+    with pytest.raises(SystemExit) as exc:
+        main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"])
+    message = str(exc.value.code)
+    assert "--overwrite" in message and "--skip-existing" in message
+    assert {p: p.read_bytes() for p in outputs} == before
+
+    # Add a new, not-yet-developed frame to the roll.
+    _write_negative(roll_dir / "frame_04.tiff", seed=99)
+    assert main(
+        ["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet", "--skip-existing"]
+    ) == 0
+    # The 4 original outputs are untouched; only the new frame was developed.
+    assert {p: p.read_bytes() for p in outputs} == before
+    assert (out_dir / "frame_04.tiff").exists()
+    assert len(list(out_dir.glob("*.tiff"))) == 5
+
+
+def test_batch_skip_existing_contact_sheet_covers_whole_roll_when_nothing_to_develop(roll_dir, tmp_path):
+    # Controller ruling: --skip-existing must never silently drop the requested contact sheet, and
+    # must build it even when no frame needed developing.
+    out_dir = tmp_path / "out"
+    assert main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"]) == 0
+    assert len(list(out_dir.glob("*.tiff"))) == 4
+
+    reference = tmp_path / "reference.jpg"
+    assert main(["contact", str(out_dir), str(reference), "--frame-width", "60", "--quiet", "--workers", "1"]) == 0
+
+    sheet = tmp_path / "resumed.jpg"
+    assert main(
+        ["batch", str(roll_dir), str(out_dir), "--contact-sheet", str(sheet), "--auto-density-roll",
+         "--quiet", "--workers", "1", "--frame-width", "60", "--skip-existing"]
+    ) == 0
+    assert sheet.exists()
+    with Image.open(reference) as a, Image.open(sheet) as b:
+        assert a.size == b.size  # same 4-frame layout as a direct `halide contact` over the folder
+
+
+def test_batch_skip_existing_contact_sheet_covers_new_and_old_frames(roll_dir, tmp_path):
+    out_dir = tmp_path / "out"
+    assert main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"]) == 0
+    assert len(list(out_dir.glob("*.tiff"))) == 4
+
+    # Add a new, not-yet-developed frame.
+    _write_negative(roll_dir / "frame_04.tiff", seed=99)
+
+    sheet = tmp_path / "resumed.jpg"
+    assert main(
+        ["batch", str(roll_dir), str(out_dir), "--contact-sheet", str(sheet), "--auto-density-roll",
+         "--quiet", "--workers", "1", "--frame-width", "60", "--skip-existing"]
+    ) == 0
+    assert len(list(out_dir.glob("*.tiff"))) == 5
+
+    reference = tmp_path / "reference.jpg"
+    assert main(["contact", str(out_dir), str(reference), "--frame-width", "60", "--quiet", "--workers", "1"]) == 0
+    with Image.open(reference) as a, Image.open(sheet) as b:
+        assert a.size == b.size  # covers all 5 frames, not just the newly-developed one
+
+
+@pytest.mark.parametrize(
+    "source, advised",
+    [(["--auto-density-roll"], True), (["--auto-density"], True), (["--rm", "2.0", "--bm", "1.4"], False)],
+)
+def test_run_sheet_advises_picking_points_after_an_automatic_estimate(roll_dir, tmp_path, capsys, source, advised):
+    assert main(["batch", str(roll_dir), str(tmp_path / "out"), *source, "--workers", "1"]) == 0
+    out = " ".join(capsys.readouterr().out.split())  # a long row wraps with a hanging indent
+    advice = "automatic estimate - for the most faithful colour, pick neutral points with `halide calibrate`"
+    assert (advice in out) is advised
+
+
+def test_auto_density_roll_with_another_source_is_argparses_refusal(roll_dir, tmp_path, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["batch", str(roll_dir), str(tmp_path / "out"), "--auto-density-roll", "--auto-density", "--quiet"])
+    assert exit_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_batch_has_no_pick_option(roll_dir, tmp_path, capsys):
+    """R-054: picking is `invert --pick` only; a roll is calibrated in `halide calibrate`."""
+    with pytest.raises(SystemExit) as refused:
+        main(["batch", str(roll_dir), str(tmp_path / "out"), "--pick"])
+    assert refused.value.code == 2
+    assert "--pick" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["batch", "--help"])
+    assert "--pick" not in capsys.readouterr().out

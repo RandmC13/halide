@@ -123,11 +123,20 @@ def _saturation(pixels: np.ndarray, reference: np.ndarray | None = None) -> np.n
     pixel is colored." `reference=None` falls back to a single frame-wide median (broadcast to
     every pixel) for callers that don't need density-local behavior.
 
-    (max - min) / max where max > 0, else 0 (a black, negative or NaN pixel). Written without
-    `np.divide(..., where=)`, which CuPy's ufuncs don't take: the divisor is set to 1 where max isn't
-    positive and the result zeroed there afterwards. Where max > 0 it is the same one division, so
-    the result is bit-identical to the `where=` form (pinned in tests/unit/test_auto_calibration.py),
-    and dividing by 1 instead of by 0 or NaN raises no floating-point warnings.
+    (max - min) / max where max > 0, else +inf (a black, negative or NaN pixel: F05 — excluded from
+    candidacy outright, never "the most neutral pixel possible," which a 0 would make it look like
+    to any caller that then picks the *lowest*-saturation pixels as neutral candidates). Written
+    without `np.divide(..., where=)`, which CuPy's ufuncs don't take: the divisor is set to 1 where
+    max isn't positive and the result overwritten with +inf there afterwards. Where max > 0 it is
+    the same one division, so the result is bit-identical to the `where=` form there (pinned in
+    tests/unit/test_auto_calibration.py), and dividing by 1 instead of by 0 or NaN raises no
+    floating-point warnings.
+
+    In the normal pipeline, `_neutral_candidate_mask` already excludes these pixels from the
+    population before it ever reaches here (a single one, left in, would poison its whole density
+    bin's reference median with NaN — see that function). This is the defensive fallback for a
+    degenerate `reference` itself (e.g. a bin whose own median comes out non-positive) and for any
+    caller that calls `_saturation` directly on unfiltered data.
     """
     xp = array_namespace(pixels)
     if reference is None:
@@ -139,7 +148,7 @@ def _saturation(pixels: np.ndarray, reference: np.ndarray | None = None) -> np.n
     not_positive = ~(max_channel > 0)  # includes NaN, as `where=max > 0` did
     max_channel[not_positive] = 1
     saturation /= max_channel
-    saturation[not_positive] = 0
+    saturation[not_positive] = float("inf")
     return saturation
 
 
@@ -168,11 +177,31 @@ def _neutral_candidate_mask(image: np.ndarray, neutral_fraction: float) -> np.nd
     the statistical method considers plausible (e.g. an overlay in the GUI calibration picker, to
     cross-check a manual pick against), which a flat array of just the surviving RGB values can't
     show — the location of each candidate pixel is exactly what a flat, reordered array discards.
+
+    A non-finite or non-positive-in-every-channel pixel (NaN/inf from a broken export, or a deeply
+    clipped/negative raw value) is excluded from candidacy before it ever reaches
+    `_density_local_saturation` — F05. Left in, a single such pixel would poison whichever
+    luminance-sorted density bin it sorts into: that bin's per-channel reference becomes
+    `xp.median(...)` of a set that includes it, which is NaN if the pixel is NaN, corrupting every
+    *other* pixel's saturation score in that bin too — not just its own (confirmed: this is exactly
+    how one NaN pixel used to turn a whole `--auto-density` profile into NaN). On an all-valid image
+    this is a no-op — the population `_density_local_saturation` sees is unchanged in value and
+    order, and the all-valid case takes the same path as before (no extra frame-sized copy) to stay
+    within the memory budget banding exists for (tests/unit/test_banding.py).
     """
+    xp = array_namespace(image)
     flat = image.reshape(-1, 3)
-    saturation = _density_local_saturation(flat)
-    threshold = array_namespace(saturation).percentile(saturation, neutral_fraction * 100)
-    return (saturation <= threshold).reshape(image.shape[:2])
+    valid = xp.all(xp.isfinite(flat), axis=-1) & (flat.max(axis=-1) > 0)
+    if bool(xp.all(valid)):
+        saturation = _density_local_saturation(flat)
+        threshold = xp.percentile(saturation, neutral_fraction * 100)
+        return (saturation <= threshold).reshape(image.shape[:2])
+    valid_pixels = flat[valid]
+    saturation = _density_local_saturation(valid_pixels)
+    threshold = xp.percentile(saturation, neutral_fraction * 100)
+    candidate = xp.zeros(len(flat), dtype=bool)
+    candidate[valid] = saturation <= threshold
+    return candidate.reshape(image.shape[:2])
 
 
 def _neutral_candidates(image: np.ndarray, neutral_fraction: float) -> np.ndarray:
@@ -239,8 +268,9 @@ def roll_auto_density_balance(
     typical highlight density are measured across many frames' worth of candidate pixels rather
     than one frame's, at the cost of not adapting to a given frame's individual content.
 
-    Selects neutral candidates *per frame first* (each judged against its own per-channel median),
-    then pools only the resulting candidate pixels before the final shadow/highlight percentiles —
+    Selects neutral candidates *per frame first* (each pixel judged against the per-channel
+    median of the *other pixels of that frame at a similar density* — `_density_local_saturation`,
+    not one frame-wide median), then pools only the resulting candidate pixels before the final shadow/highlight percentiles —
     not the other way around. Concatenating raw pixels from every frame before computing one
     shared median (the original implementation) was a real bug, found via testing on two real
     scans of genuinely different scenes (a warm-toned portrait and a daylight street scene): the

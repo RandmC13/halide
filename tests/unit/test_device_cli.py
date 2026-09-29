@@ -76,7 +76,7 @@ def test_resolve_device_arg_uses_resolve_device(monkeypatch):
 
     seen = []
     monkeypatch.setattr(
-        device_args, "resolve_device", lambda requested: seen.append(requested) or ComputeDevice(kind="cpu")
+        device_args, "resolve_device", lambda requested, isolated=False: seen.append(requested) or ComputeDevice(kind="cpu")
     )
     device = resolve_device_arg(argparse.Namespace(device="cpu"))
     assert device.kind == "cpu"
@@ -186,7 +186,7 @@ def test_invert_reports_gpu_fallback_reason_as_a_warning(negative_tiff, tmp_path
     monkeypatch.setattr(
         device_args,
         "resolve_device",
-        lambda requested: ComputeDevice(kind="cpu", fallback_reason="cudaErrorInsufficientDriver"),
+        lambda requested, isolated=False: ComputeDevice(kind="cpu", fallback_reason="cudaErrorInsufficientDriver"),
     )
     output = tmp_path / "positive.tiff"
     assert main(["invert", str(negative_tiff), str(output), *MANUAL]) == 0
@@ -287,7 +287,7 @@ def test_batch_run_sheet_shows_gpu_fallback_reason(roll_dir, tmp_path, monkeypat
     monkeypatch.setattr(
         device_args,
         "resolve_device",
-        lambda requested: ComputeDevice(kind="cpu", fallback_reason="the driver is too old"),
+        lambda requested, isolated=False: ComputeDevice(kind="cpu", fallback_reason="the driver is too old"),
     )
     out_dir = tmp_path / "out"
     args = ["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--workers", "1"]
@@ -308,7 +308,7 @@ def gpu_resolves(monkeypatch):
     """--device auto finds a (fake) GPU; nothing runs on it — the pool runners are replaced."""
     import halide.cli._device_args as device_args
 
-    monkeypatch.setattr(device_args, "resolve_device", lambda requested: _FAKE_GPU)
+    monkeypatch.setattr(device_args, "resolve_device", lambda requested, isolated=False: _FAKE_GPU)
 
 
 def _recording_runner(calls, warning="out of GPU memory — developed this frame on the CPU instead"):
@@ -380,7 +380,7 @@ def test_batch_warns_when_explicit_workers_look_too_many_for_the_gpu(roll_dir, t
     import halide.cli.commands.batch_cmd as batch_cmd
 
     small = ComputeDevice(kind="gpu", name="Fake GPU", memory_free=1 * 2**30, memory_total=2 * 2**30)
-    monkeypatch.setattr(device_args, "resolve_device", lambda requested: small)
+    monkeypatch.setattr(device_args, "resolve_device", lambda requested, isolated=False: small)
     monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner([], warning=None))
     assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL, "--workers", "8"]) == 0
     out = _strip(capsys.readouterr().out)
@@ -393,7 +393,7 @@ def test_batch_names_gpu_memory_when_it_set_the_worker_count(roll_dir, tmp_path,
 
     # Room for one GPU worker's CUDA context and a small frame, not two: the card sets the count.
     small = ComputeDevice(kind="gpu", name="Fake GPU", memory_free=300 * 2**20, memory_total=2 * 2**30)
-    monkeypatch.setattr(device_args, "resolve_device", lambda requested: small)
+    monkeypatch.setattr(device_args, "resolve_device", lambda requested, isolated=False: small)
     monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner([], warning=None))
     assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL]) == 0
     workers = [line for line in _strip(capsys.readouterr().out).splitlines() if "Workers" in line]
@@ -413,7 +413,7 @@ def _recording_resolve(monkeypatch, device):
     import halide.cli._device_args as device_args
 
     calls = []
-    monkeypatch.setattr(device_args, "resolve_device", lambda requested: calls.append(requested) or device)
+    monkeypatch.setattr(device_args, "resolve_device", lambda requested, isolated=False: calls.append(requested) or device)
     return calls
 
 
@@ -563,4 +563,25 @@ def test_a_real_gpu_batch_through_the_service(roll_dir, tmp_path, monkeypatch, c
         from halide.io.tiff import read_tiff_description
 
         assert json.loads(read_tiff_description(out_dir / name))["halide"]["device"] == "gpu"
-    assert "Warning" not in capsys.readouterr().out
+    # The synthetic scans carry no camera EXIF, so the run's own "not verifiable" warning is
+    # expected (F16); what must be absent is any GPU trouble.
+    out = capsys.readouterr().out
+    assert "GPU" not in out and "CPU" not in out
+
+
+def test_bulk_commands_probe_the_gpu_in_a_child_process_but_single_frames_do_not(roll_dir, tmp_path, monkeypatch):
+    """2.4-7: a batch's parent never computes on the card (the GPU service or the workers do), so
+    its probe must not create a CUDA context in it. A single frame computes in-process and needs it."""
+    import halide.cli._device_args as device_args
+
+    seen = []
+    monkeypatch.setattr(device_args, "resolve_device",
+                        lambda requested, isolated=False: seen.append(isolated) or ComputeDevice(kind="cpu"))
+    main(["batch", str(roll_dir), str(tmp_path / "b"), "--auto-density-roll", "--workers", "1"])
+    main(["export", str(roll_dir), str(tmp_path / "e"), "--workers", "1"])
+    main(["print", str(roll_dir), str(tmp_path / "p"), "--workers", "1"])
+    assert seen == [True, True, True]
+    seen.clear()
+    first = sorted(roll_dir.iterdir())[0]
+    main(["invert", str(first), str(tmp_path / "one.tiff"), *MANUAL])
+    assert seen == [False]

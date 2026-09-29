@@ -1,8 +1,8 @@
-"""The GUI's shared visual identity — the Qt equivalent of `cli/console.py`. A QSS stylesheet plus
+"""The GUI's shared visual identity — the Qt equivalent of `cli/console/`. A QSS stylesheet plus
 a couple of raw color constants for anything that needs to be painted by hand (the magnifier, custom
 widgets) rather than styled declaratively.
 
-Palette matches the CLI's own darkroom/film-photography language (see `cli/console.py`'s `Style`
+Palette matches the CLI's own darkroom/film-photography language (see `cli/console/`'s `Style`
 class and the tank/enlarger animations there): a warm dark charcoal background, an amber accent for
 ordinary controls, and — new in this rewrite — a red accent reserved for exactly one "primary action"
 button per window (Save calibration profile / Develop), a cheap nod to the big red button on the
@@ -40,6 +40,8 @@ AGREE_RED = "#ff6b5a"
 FILM_REBATE = "#0c0c0c"
 FILM_SPROCKET = "#2c2620"
 EDGE_PRINT = "#e0a060"
+FILM_LOADING = "#1c1916"  # a filmstrip frame still developing
+FILM_FAILED = "#3a1a18"  # ... and one that failed to load
 
 STYLESHEET = f"""
 QWidget {{
@@ -72,6 +74,10 @@ QPushButton {{
     border-radius: 6px;
     padding: 6px 14px;
 }}
+QPushButton:focus {{
+    border: 2px solid {TEXT};
+    padding: 4px 12px;  /* the ring's 2 px come out of the padding: the button doesn't change size */
+}}
 QPushButton:hover {{
     background-color: {AMBER_HOVER};
 }}
@@ -91,6 +97,10 @@ QPushButton[role="primary"] {{
     background-color: {RED};
     font-weight: bold;
     padding: 10px 18px;
+}}
+QPushButton[role="primary"]:focus {{
+    border: 2px solid {TEXT};
+    padding: 8px 16px;
 }}
 QPushButton[role="primary"]:hover {{
     background-color: {RED_HOVER};
@@ -113,6 +123,10 @@ QPushButton[role="segment"] {{
 QPushButton[role="segment"]:hover {{
     color: {TEXT};
 }}
+QPushButton[role="segment"]:focus {{
+    border: 1px solid {AMBER_ACTIVE};
+    padding: 4px 14px;
+}}
 QPushButton[role="segment"]:checked {{
     background-color: {AMBER};
     color: {TEXT};
@@ -122,8 +136,15 @@ QPushButton[role="segment"]:checked {{
 QPushButton[role="remove"] {{
     background: transparent;
     color: {TEXT_DIM};
+    border: none;
     padding: 0px 5px;
     border-radius: 3px;
+}}
+QPushButton[role="remove"]:focus {{
+    border: none;
+    padding: 0px 5px;
+    color: {TEXT};
+    background-color: {BORDER};
 }}
 QPushButton[role="remove"]:hover {{
     color: {TEXT};
@@ -142,6 +163,9 @@ QLineEdit {{
     border-radius: 4px;
     padding: 4px 6px;
     color: {TEXT};
+}}
+QLineEdit:focus {{
+    border: 1px solid {AMBER_ACTIVE};
 }}
 
 QFrame[role="imageBox"] {{
@@ -168,6 +192,9 @@ QSlider::handle:horizontal {{
     margin: -6px 0;
     border-radius: 7px;
 }}
+QSlider::handle:horizontal:focus {{
+    background: {AMBER_ACTIVE};
+}}
 QSlider::handle:horizontal:hover {{
     background: {AMBER_HOVER};
 }}
@@ -178,6 +205,9 @@ QCheckBox::indicator {{
     border: 1px solid {BORDER};
     border-radius: 3px;
     background: {BACKGROUND_ALT};
+}}
+QCheckBox::indicator:focus {{
+    border: 1px solid {AMBER_ACTIVE};
 }}
 QCheckBox::indicator:checked {{
     background: {AMBER_ACTIVE};
@@ -245,6 +275,20 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
 """
 
 
+def load_fonts() -> None:
+    """Register the vendored DejaVu fonts so "DejaVu Sans" is the same everywhere; a missing file
+    just leaves the system's own choice."""
+    from importlib.resources import files
+
+    from PySide6.QtGui import QFontDatabase
+
+    for name in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf"):
+        path = files("halide.assets") / "fonts" / name
+        if path.is_file():
+            QFontDatabase.addApplicationFont(str(path))
+
+
 def apply(app) -> None:
     """Apply the stylesheet to a QApplication. Call once, right after construction."""
+    load_fonts()
     app.setStyleSheet(STYLESHEET)

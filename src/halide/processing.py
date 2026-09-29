@@ -9,22 +9,30 @@ import contextlib
 import dataclasses
 import functools
 import json
+import re
+import subprocess
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import numpy as np
+import tifffile
 from PIL import Image
 
 from halide import banding
 from halide import device as _device  # to_device/to_host looked up at call time: tests inject a fake
 from halide.banding import map_in_bands
 from halide.calibration.auto import auto_density_balance, roll_auto_density_balance
+from halide.core._xp import array_namespace
 from halide.core.density import apply_density_balance, apply_white_balance
 from halide.core.pipeline import negative_to_positive
 from halide.core.tone_render import ResolvedTone, apply_tone, resolve_tone
+from halide.io.lut import load_paper_curve
 from halide.core.types import DensityProfile, Stage, ToneCurveParams  # noqa: F401 -- Stage re-exported
 from halide.device import ComputeDevice
+from halide.io.atomic import atomic_output
+from halide.io.exiftool import ExifToolError
+from halide.io.roll import RAW_SUFFIXES
 from halide.io.icc import (
     LinearRGBProfile,
     UnsupportedICCProfileError,
@@ -49,6 +57,11 @@ from halide.io.tiff import (
     write_tiff,
 )
 
+# A failure exiftool reports for the file it was asked to tag (see io/tiff.py::copy_exif_metadata):
+# ExifToolError from its kept-open session, or CalledProcessError if the command had to fall back
+# to a one-shot call. Either way the pixel data is already good — see process_scan/print_scan.
+_EXIF_FAILURE = (ExifToolError, subprocess.CalledProcessError)
+
 IDENTITY_PROFILE = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0))
 
 
@@ -70,6 +83,13 @@ def _acescg_matrix() -> np.ndarray:
 
 class ScanColorError(Exception):
     """Raised when a scan's embedded ICC profile is missing or unsupported."""
+
+
+class ScanInputError(ScanColorError):
+    """Raised when an input file isn't a scan halide can develop: not a TIFF, unreadable, or not
+    RGB (F25), or already a halide positive (F15). A ScanColorError subclass so it travels the same
+    way — unwrapped through the GPU paths, reported per frame by a batch, a plain message from the
+    CLI — because it too is a fact about the input, never a GPU failure to retry on the CPU."""
 
 
 class PrintInputError(Exception):
@@ -115,7 +135,10 @@ def provenance_json(
             record["film_stock"] = profile.film_stock  # for contact sheets' edge print
     if scan_gain != 1.0:
         record["scan_gain"] = float(scan_gain)
-    return json.dumps({_PROVENANCE_KEY: record})
+    # allow_nan=False (F05): a NaN/inf value here would otherwise be written as a bare, non-standard
+    # `NaN`/`Infinity` token — valid to json.dumps by default, but not valid JSON for any other
+    # reader — so this raises a clear ValueError instead of silently writing a broken file.
+    return json.dumps({_PROVENANCE_KEY: record}, allow_nan=False)
 
 
 def read_provenance(description: str | None) -> dict | None:
@@ -139,7 +162,80 @@ def load_working_space_image(path: str | Path) -> np.ndarray:
     buffer (see halide.banding): converting the whole frame at once held ~5 frames of
     colour-science's float64 temporaries (+900 MiB on a real scan)."""
     image, source_profile = _read_scan(path)
-    return _to_working_space(image, source_profile)
+    return _to_working_space(image, source_profile, name=str(path))
+
+
+_EXPORT_HELP = ("halide develops linear TIFFs exported from darktable or RawTherapee - see the README's "
+                "'Exporting your scans'.")
+
+
+def _looks_like(path: Path) -> str:
+    """What a file that isn't a readable TIFF appears to be, from its first bytes and its suffix."""
+    try:
+        with open(path, "rb") as handle:
+            magic = handle.read(8)
+    except OSError:
+        magic = b""
+    if magic[:2] == b"\xff\xd8":
+        return "it looks like a JPEG"
+    if magic[:4] == b"\x89PNG":
+        return "it looks like a PNG"
+    if path.suffix.lower() in RAW_SUFFIXES:
+        return "it looks like a raw file"
+    return "it may be damaged or cut short"
+
+
+def _not_a_tiff(path: Path) -> ScanInputError:
+    return ScanInputError(f"{path.name} isn't a TIFF halide can read ({_looks_like(path)}). "
+                          f"{_EXPORT_HELP}")
+
+
+def _decode_tiff(path: str | Path, out: np.ndarray | None = None):
+    """read_tiff, with anything the decoder raises on a damaged or cut-short file (tifffile's own
+    errors, a libdeflate/zlib failure, a short read) reported as the plain "isn't a TIFF halide can
+    read" message instead of library text. Not a blanket catch: running out of memory is not a bad file."""
+    try:
+        return read_tiff(path, out=out)
+    except (MemoryError, KeyboardInterrupt):
+        raise
+    except Exception:  # noqa: BLE001 -- see docstring: every decoder failure means "unreadable file"
+        raise _not_a_tiff(Path(path)) from None
+
+
+def _check_scan_layout(path: str | Path) -> None:
+    """Fail with a plain message, from the header alone, for anything that isn't a readable RGB TIFF
+    (F25) — before decoding, so a JPEG, a raw file, a greyscale or RGBA export never surfaces as a
+    tifffile/numpy traceback."""
+    path = Path(path)
+    try:
+        shape = read_tiff_shape(path)
+    except FileNotFoundError:
+        raise ScanInputError(f"input file not found: {path}") from None
+    except Exception:  # noqa: BLE001 -- tifffile raises its own types for a non-TIFF; all mean the same
+        raise _not_a_tiff(path) from None
+    channels = shape[-1] if len(shape) >= 3 else 1
+    if channels == 3:
+        return
+    if channels == 4:
+        raise ScanInputError(f"{path.name} has an alpha (transparency) channel; export without it")
+    if channels == 1:
+        raise ScanInputError(f"{path.name} is greyscale; halide needs an RGB scan of a colour negative")
+    raise ScanInputError(f"{path.name} has {channels} channels; halide needs RGB")
+
+
+def _reject_positive(path: str | Path) -> None:
+    """F15: a file halide itself already wrote (it carries halide's provenance) isn't a negative —
+    developing it again would invert a positive. Header only; a file that can't be read is left for
+    _read_scan to report properly."""
+    path = Path(path)
+    try:
+        record = read_provenance(read_tiff_description(path))
+    except Exception:  # noqa: BLE001 -- reported by the real read, just after
+        return
+    if record is None:
+        return
+    raise ScanInputError(f"{path.name} is already a halide positive. To re-print it use "
+                         f"`halide print`; to develop again, point halide at the original scan")
 
 
 def _read_scan(
@@ -154,9 +250,10 @@ def _read_scan(
     service path (halide/gpu_service.py, halide/shared_frames.py) to decode straight into a
     shared-memory frame instead of this process's own heap. Callers that don't pass `out` see no
     change in behavior."""
-    scan = read_tiff(path, out=out)
+    _check_scan_layout(path)
+    scan = _decode_tiff(path, out)
     if scan.icc_profile is None:
-        raise ScanColorError(f"{path}: no embedded ICC profile found; cannot verify color space")
+        raise ScanColorError(f"{path}: no embedded ICC profile found; cannot verify colour space")
     if scan.icc_profile == output_profile_bytes():
         # Tagged with halide's own ACEScg output profile (e.g. a flat positive coming back for
         # `halide print`): already in the working space by definition. Converting anyway isn't a
@@ -166,16 +263,82 @@ def _read_scan(
     try:
         source_profile = parse_linear_rgb_profile(scan.icc_profile)
     except UnsupportedICCProfileError as exc:
-        raise ScanColorError(f"{path}: unsupported color profile — {exc}") from exc
+        # icc.py's damaged / not-D50 messages are whole sentences; the rest are terse facts.
+        lead = "" if str(exc).startswith("the embedded colour profile") else "unusable colour profile — "
+        raise ScanColorError(f"{path}: {lead}{exc}") from exc
     # copies only if tifffile handed back read-only data (never the case when `out` was given)
     return np.require(scan.image, requirements="W"), source_profile
 
 
-def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes: int | None = None):
-    """Convert `image` (host or device array) in place, band by band; a no-op for None."""
+_MAX_NONFINITE_FRACTION = 0.01  # F05: above this, the export itself looks broken, not just noisy
+
+
+def _clean_nonfinite_band(band, xp) -> int:
+    """Count *pixel locations* in `band` with a non-finite value in any channel, and zero every
+    non-finite value in place — 0 if there are none, so clean input is never touched by
+    `nan_to_num` (bit-identical, F05's hard constraint).
+
+    Counts locations, not raw values: one corrupted input value spreads across all 3 channels once
+    the ICC conversion's matrix multiply mixes them, but a photographer reading "N pixels" means N
+    spots on the frame, not N individual R/G/B numbers — so a single bad input pixel is reported as
+    1, not 3, even though all 3 of its output channels get zeroed."""
+    nonfinite = ~xp.isfinite(band)
+    count = int(xp.count_nonzero(xp.any(nonfinite, axis=-1)))
+    if count:
+        xp.nan_to_num(band, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+    return count
+
+
+def _report_nonfinite(name: str, count: int, total_pixels: int, on_warning: Callable[[str], None] | None) -> None:
+    """After `_clean_nonfinite_band` has zeroed `count` (of `total_pixels`) pixel locations: warn
+    about a few (the reciprocal's MIN_TRANSMITTANCE floor then prints them as the brightest white,
+    and the print fit's percentiles are robust to a handful) — or fail the frame outright above
+    `_MAX_NONFINITE_FRACTION`, since that many means the export is broken, not the scan (F05)."""
+    fraction = count / total_pixels
+    if fraction > _MAX_NONFINITE_FRACTION:
+        raise ScanColorError(
+            f"{name}: {fraction * 100:.1f}% of its pixels aren't valid numbers - this export looks "
+            f"broken; re-export it from the raw converter"
+        )
+    if count == 1:
+        subject = "1 pixel wasn't a valid number (NaN/inf) and was treated as clear film"
+    else:
+        subject = f"{count} pixels weren't valid numbers (NaN/inf) and were treated as clear film"
+    _warn(on_warning, f"{name}: {subject}. If this is more than a handful, check the raw "
+                      f"converter's export")
+
+
+def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes: int | None = None,
+                      *, name: str | None = None, on_warning: Callable[[str], None] | None = None):
+    """Convert `image` (host or device array) in place, band by band; a no-op for None.
+
+    Also where non-finite (NaN/inf) pixels are handled (F05): a raw converter's export can contain
+    a few, e.g. from a highlight-recovery artifact. Counted and zeroed per band — only on a band
+    that actually has any, so clean input costs nothing extra and stays bit-identical — before they
+    can poison invert()'s reciprocal, the print fit's percentiles, or the JSON provenance with NaN.
+    `name`/`on_warning` are None for callers with no live warning channel (thumbnails, previews,
+    the roll density pre-pass): cleaning still happens, just without a message naming the file."""
     if source_profile is None:
         return image
-    return map_in_bands(image, lambda band: convert_to_working_space(band, source_profile), band_bytes=band_bytes)
+    xp = array_namespace(image)
+    counts: list[int] = []
+
+    def convert(band):
+        # A NaN/inf input propagates through the profile matmul (e.g. inf * -coef + inf = NaN) and
+        # numpy warns about it ("invalid value encountered in matmul") every time — noise once this
+        # is an intentionally handled case, not a bug, so it's suppressed here rather than left to
+        # print on every real occurrence; np.errstate is thread-local/scoped, not a global change.
+        with np.errstate(invalid="ignore"):
+            converted = convert_to_working_space(band, source_profile)
+        counts.append(_clean_nonfinite_band(converted, xp))
+        return converted
+
+    result = map_in_bands(image, convert, band_bytes=band_bytes)
+    total = sum(counts)
+    if total:
+        total_pixels = image.size // image.shape[-1]  # locations, not raw values — see _clean_nonfinite_band
+        _report_nonfinite(name if name is not None else str(image.shape), total, total_pixels, on_warning)
+    return result
 
 
 def process_scan(
@@ -220,41 +383,57 @@ def process_scan(
 
     Returns the tone values actually used (None for Stage.DENSITY_ONLY, which has no tone stage).
     """
-    with contextlib.ExitStack() as shared:
-        # One full-frame host buffer for the whole run: decoded, developed (or downloaded into) and
-        # written in place — a shared-memory one when a GPU service develops it.
-        frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
-        image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
-        request = DevelopRequest(source_profile=source_profile, scan_gain=scan_gain, density_profile=density_profile,
-                                 stage=stage, tone_params=tone_params)
+    _reject_positive(input_path)  # F15: before anything is written
+    output_path = Path(output_path) if output_path is not None else None
+    # Written under a hidden temp name beside the real one and only moved into place once every
+    # step below (the TIFF write, then exiftool, then the provenance description) has run — a
+    # killed or failed write never leaves a truncated file under the real output name (F04).
+    atomic_ctx = atomic_output(output_path) if output_path is not None else contextlib.nullcontext(None)
+    exif_warning = None
+    with atomic_ctx as tmp_path:
+        with contextlib.ExitStack() as shared:
+            # One full-frame host buffer for the whole run: decoded, developed (or downloaded into)
+            # and written in place — a shared-memory one when a GPU service develops it.
+            frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
+            image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
+            request = DevelopRequest(source_profile=source_profile, scan_gain=scan_gain, density_profile=density_profile,
+                                     stage=stage, tone_params=tone_params)
 
-        if frame is not None:
-            reply, image, used_device = _run_on_service(input_path, frame, service, "develop", request, on_warning)
-            developed = None if reply is None else (reply.resolved, reply.profile)
-        else:
-            developed, image = _run_on_device(input_path, image, device, develop_request, request, on_warning)
-            used_device = "gpu" if developed is not None else "cpu"
-        if developed is None:
-            developed = develop_request(image, request)
-        resolved, profile = developed
+            if frame is not None:
+                reply, image, used_device = _run_on_service(input_path, frame, service, "develop", request, on_warning)
+                developed = None if reply is None else (reply.resolved, reply.profile)
+            else:
+                developed, image = _run_on_device(input_path, image, device, develop_request, request, on_warning)
+                used_device = "gpu" if developed is not None else "cpu"
+            if developed is None:
+                developed = develop_request(image, request, name=str(input_path), on_warning=on_warning)
+            resolved, profile = developed
 
-        record = provenance_json(resolved, profile, scan_gain, used_device) if resolved is not None else None
-        if output_path is not None:
-            write_tiff(output_path, image, icc_profile=output_profile_bytes())
-        if thumbnail_path is not None:
-            save_thumbnail(thumbnail_path, thumbnail_from_linear(image, thumbnail_long_edge),
-                           read_provenance(record))
-        # Free the frame before exiftool (a separate process, kept running between frames on Linux —
-        # halide.io.exiftool) rewrites the output, so its peak while writing never coincides with a
-        # developed frame — see the per-worker memory estimate in batch/orchestrator.py. A shared
-        # frame is unlinked on leaving this block.
-        del image, frame
-    if output_path is not None:
-        # Output is always ACEScg, a different profile than the source — exiftool must not clobber
-        # the ACEScg tag we just wrote with the source's own ICC bytes.
-        copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
-        if record is not None:
-            set_description(output_path, record)
+            record = provenance_json(resolved, profile, scan_gain, used_device) if resolved is not None else None
+            if tmp_path is not None:
+                write_tiff(tmp_path, image, icc_profile=output_profile_bytes())
+            if thumbnail_path is not None:
+                save_thumbnail(thumbnail_path, thumbnail_from_linear(image, thumbnail_long_edge),
+                               read_provenance(record))
+            # Free the frame before exiftool (a separate process, kept running between frames on Linux —
+            # halide.io.exiftool) rewrites the output, so its peak while writing never coincides with a
+            # developed frame — see the per-worker memory estimate in batch/orchestrator.py. A shared
+            # frame is unlinked on leaving this block.
+            del image, frame
+        if tmp_path is not None:
+            # Output is always ACEScg, a different profile than the source — exiftool must not clobber
+            # the ACEScg tag we just wrote with the source's own ICC bytes. Run on the temp path, like
+            # the TIFF write itself, so the atomic replace below only ever exposes a complete file.
+            try:
+                copy_exif_metadata(str(input_path), str(tmp_path), drop_icc=True)
+            except _EXIF_FAILURE as exc:
+                # The pixels are already fully developed and written — a missing camera-metadata
+                # copy is a warning, not a failed frame (2.3-4).
+                exif_warning = f"{input_path}: developed, but its camera metadata couldn't be copied ({exc})"
+            if record is not None:
+                set_description(tmp_path, record)
+    if exif_warning is not None:
+        _warn(on_warning, exif_warning)
     return resolved
 
 
@@ -270,6 +449,13 @@ def _shared_frame(input_path, service, shm_prefix: str | None, stack: contextlib
     never lost. A header that can't be read returns None silently, so the decode that follows
     fails with the same error the CPU path gives."""
     if service is None:
+        return None
+    dead_reason = getattr(service, "dead_reason", None)
+    if dead_reason is not None:
+        # The service is gone for good: no point making a shared frame nobody will develop.
+        action = "exported this file" if extra_uint8 else "developed this frame"
+        _warn(on_warning, f"{input_path}: the GPU service is no longer available ({dead_reason}) — {action} "
+                          f"on the CPU instead")
         return None
     from halide.shared_frames import SharedMemoryUnavailable, new_frame
 
@@ -290,18 +476,27 @@ def _shared_frame(input_path, service, shm_prefix: str | None, stack: contextlib
 
 
 def _run_on_service(input_path, frame, service, method: str, request, on_warning):
-    """`service.<method>(frame, request)` — develop or print_ — on a shared frame the scan was
-    decoded into. Returns (reply, buffer, device name): the service writes the result back into the
-    frame, so the buffer is `frame.array`. On any failure — the request failed on the service's
+    """`service.<method>(frame, request, name=...)` — develop or print_ — on a shared frame the scan
+    was decoded into. Returns (reply, buffer, device name): the service writes the result back into
+    the frame, so the buffer is `frame.array`. On any failure — the request failed on the service's
     device (DeviceJobFailed), or the service is gone or stuck (ServiceUnavailable) — (None, the
     buffer the CPU should start over on, "cpu"): fall_back_to_cpu's rules, so a frame the service
-    may have half-written, or may still write into, is re-read into a private buffer."""
+    may have half-written, or may still write into, is re-read into a private buffer.
+
+    A ScanColorError from the service (bad input data — F05, R8) is neither of those: it isn't
+    caught here, so it propagates straight out, exactly as run_device_job's in-process counterpart
+    does — no fallback, no "GPU failed" wording. Any warnings the service collected while running
+    the job (it has nothing of its own to print them to) are re-emitted here through this worker's
+    own `on_warning`, exactly as the in-process paths emit them directly."""
     from halide.gpu_service import ServiceUnavailable
 
     try:
-        return getattr(service, method)(frame, request), frame.array, service.device_kind
+        reply = getattr(service, method)(frame, request, name=str(input_path))
     except (DeviceJobFailed, ServiceUnavailable) as failed:
         return None, fall_back_to_cpu(input_path, frame.array, failed.failure, on_warning), "cpu"
+    for message in reply.warnings:
+        _warn(on_warning, message)
+    return reply, frame.array, service.device_kind
 
 
 @dataclasses.dataclass(frozen=True)
@@ -336,14 +531,20 @@ class ExportRequest:
     shape and a future export option has somewhere to go."""
 
 
-def develop_request(frame, request: DevelopRequest, band_bytes: int | None = None
+def develop_request(frame, request: DevelopRequest, band_bytes: int | None = None, *,
+                    name: str | None = None, on_warning: Callable[[str], None] | None = None
                     ) -> tuple[ResolvedTone | None, DensityProfile]:
     """All of process_scan's arithmetic, in place on `frame` — the decoded, not yet converted scan,
     as a host (numpy) array or a device (CuPy) array. One implementation for the CPU, the
     in-process GPU path and the GPU service: core/ picks the array library from the array
     (core/_xp.py), so the GPU runs exactly the CPU's steps in the CPU's order, and the CPU path is
-    the code it always was. Returns (tone used, profile used)."""
-    _to_working_space(frame, request.source_profile, band_bytes)
+    the code it always was. Returns (tone used, profile used).
+
+    `name`/`on_warning`: see _to_working_space (F05's non-finite handling). The GPU service calls
+    this with neither (it runs in its own process, with no live callback to report through), so a
+    frame developed that way cleans non-finite pixels silently rather than warning about them — a
+    known, narrow gap, no worse than the pre-existing one for auto-density's own warnings.warn."""
+    _to_working_space(frame, request.source_profile, band_bytes, name=name, on_warning=on_warning)
     if request.scan_gain != 1.0:
         # A scalar of the frame's own dtype: the multiply stays in float32, and a scalar (unlike a
         # 0-d numpy array) is accepted as an operand by a device array too.
@@ -366,15 +567,17 @@ def develop_request(frame, request: DevelopRequest, band_bytes: int | None = Non
     return _develop_in_place(frame, profile, request.tone_params, band_bytes), profile
 
 
-def print_request(frame, request: PrintRequest, band_bytes: int | None = None) -> ResolvedTone:
+def print_request(frame, request: PrintRequest, band_bytes: int | None = None, *,
+                  name: str | None = None, on_warning: Callable[[str], None] | None = None) -> ResolvedTone:
     """print_scan's whole print stage in place on `frame` (host or device array) — see
     develop_request."""
-    _to_working_space(frame, request.source_profile, band_bytes)
+    _to_working_space(frame, request.source_profile, band_bytes, name=name, on_warning=on_warning)
     if request.scale is not None:
         frame /= frame.dtype.type(request.scale)  # a scalar of the frame's dtype: see develop_request
     print_params = request.print_params
-    resolved = _tone_on_host(resolve_tone(frame, print_params))
-    map_in_bands(frame, lambda band: apply_tone(band, resolved, print_params.curve_path), band_bytes=band_bytes)
+    curve = load_paper_curve(print_params.curve_path)
+    resolved = _tone_on_host(resolve_tone(frame, print_params, curve))
+    map_in_bands(frame, lambda band: apply_tone(band, resolved, curve), band_bytes=band_bytes)
     return resolved
 
 
@@ -400,8 +603,9 @@ def _develop_in_place(
     full buffer between the two banded passes, exactly where develop() runs it. Bit-identical to
     develop() (pinned by tests/unit/test_banding.py), at ~1 frame of memory instead of ~9."""
     map_in_bands(image, lambda band: negative_to_positive(band, profile), band_bytes=band_bytes)
-    resolved = _tone_on_host(resolve_tone(image, tone_params))
-    map_in_bands(image, lambda band: apply_tone(band, resolved, tone_params.curve_path), band_bytes=band_bytes)
+    curve = load_paper_curve(tone_params.curve_path)
+    resolved = _tone_on_host(resolve_tone(image, tone_params, curve))
+    map_in_bands(image, lambda band: apply_tone(band, resolved, curve), band_bytes=band_bytes)
     return resolved
 
 
@@ -454,11 +658,32 @@ class DeviceFailure:
         if self.out_of_memory:
             return f"{input_path}: out of GPU memory — {action} on the CPU instead"
         if self.type_name == "ServiceUnavailable":
-            # A batch's shared GPU service is gone (gpu_service.ServiceUnavailable): its own message
-            # already says so in words ("the GPU service stopped responding (...)").
-            return f"{input_path}: {self.message} — {action} on the CPU instead"
+            # A batch's shared GPU service is gone (gpu_service.ServiceUnavailable). Worded so the
+            # CLI can say it once for the whole run instead of once per frame (service_stopped).
+            return f"{input_path}: the GPU service stopped ({_service_reason(self.message)}) — {action} on the CPU instead"
         detail = f"{self.type_name}: {self.message}" if self.message else self.type_name
         return f"{input_path}: the GPU failed ({detail}) — {action} on the CPU instead"
+
+
+def _service_reason(message: str) -> str:
+    """The reason a GPU service stopped, in words: gpu_service's own message minus its "the GPU
+    service" lead-in ("stopped responding (EOFError)" -> "no reply: EOFError")."""
+    text = message.removeprefix("the GPU service ")
+    for lead, replacement in (("stopped responding (", "no reply: "), ("can't be reached (", "couldn't connect: ")):
+        if text.startswith(lead) and text.endswith(")"):
+            return replacement + text[len(lead):-1]
+    return text
+
+
+_SERVICE_STOPPED = re.compile(r"the GPU service stopped \((.*?)\) — ")
+
+
+def service_stopped(warning: str) -> str | None:
+    """The reason, if `warning` (a frame's fallback warning) says the GPU service stopped — so a
+    batch reports that once ("The GPU service stopped (...); developing the remaining frames on
+    the CPU.") instead of on every frame after it."""
+    found = _SERVICE_STOPPED.search(warning)
+    return found.group(1) if found else None
 
 
 class DeviceJobFailed(Exception):
@@ -478,7 +703,12 @@ def run_device_job(host: np.ndarray, job, request):
     `host` is written only once, at the very end (the plan's "out-of-memory never fails a frame",
     §3.3): up to the download a failure leaves it exactly as decoded, ready for the CPU to start
     over on. Host memory stays ~1 frame: `host` is both the upload source and the download target.
-    The one place this runs: the in-process device path (_run_on_device) and the GPU service."""
+    The one place this runs: the in-process device path (_run_on_device) and the GPU service.
+
+    A ScanColorError (F05's "too many non-finite pixels" — or any future input-data check) is *not*
+    a device problem (R8): it propagates unwrapped, not as DeviceJobFailed, so the caller neither
+    prints "the GPU failed" nor retries on the CPU (which would just raise the identical error a
+    second time) — the frame fails once, with the same plain message the CPU path itself gives."""
     frame = None
     downloading = False
     try:
@@ -487,6 +717,10 @@ def run_device_job(host: np.ndarray, job, request):
         downloading = True
         _device.to_host(frame, out=host)
         return result
+    except ScanColorError:
+        del frame
+        _device.release_memory()
+        raise
     except Exception as exc:  # noqa: BLE001 — any GPU problem: reported, then redone on the CPU
         del frame
         _device.release_memory()
@@ -533,15 +767,18 @@ def export_fallback(input_path, acescg_image: np.ndarray, failure: DeviceFailure
 
 def _run_on_device(input_path, host: np.ndarray, device: ComputeDevice | None, job, request, on_warning):
     """Run `job(frame, request, band_bytes)` on a GPU copy of `host` and download the result into
-    `host` (see run_device_job).
+    `host` (see run_device_job). `job` is bound with `name`/`on_warning` first (F05's non-finite
+    handling) — this runs in-process (unlike the GPU service), so the caller's own warning channel
+    is still reachable here.
 
     Returns (job's result, host), or (None, host) when there's no GPU to use or it failed — then
     `host` is the decoded, unconverted scan, ready for the CPU to start over on (read again from
     disk if the failure came during the download; see fall_back_to_cpu)."""
     if device is None or device.kind != "gpu":
         return None, host
+    bound_job = functools.partial(job, name=str(input_path), on_warning=on_warning)
     try:
-        return run_device_job(host, job, request), host
+        return run_device_job(host, bound_job, request), host
     except DeviceJobFailed as failed:
         return None, fall_back_to_cpu(input_path, host, failed.failure, on_warning)
 
@@ -570,8 +807,12 @@ def thumbnail_existing_output(
     along for the caption."""
     path = Path(input_path)
     if path.suffix.lower() in _DISPLAY_SUFFIXES:
-        with Image.open(path) as image:
-            save_thumbnail(thumbnail_path, thumbnail_from_display(image, thumbnail_long_edge), None)
+        try:
+            with Image.open(path) as image:
+                save_thumbnail(thumbnail_path, thumbnail_from_display(image, thumbnail_long_edge), None)
+        except OSError:
+            raise ScanInputError(f"{path.name} isn't an image halide can read (it may be damaged or cut short). "
+                                 "Export it again") from None
         return
     record = read_provenance(read_tiff_description(path))
     image = load_working_space_image(path)
@@ -611,38 +852,49 @@ def print_scan(
             f"{input_path} is already a halide print (it has the tone curve applied) — `halide print` "
             f"expects a flat positive from `halide invert --output flat`"
         )
-    with contextlib.ExitStack() as shared:
-        frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
-        image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
+    output_path = Path(output_path)
+    exif_warning = None
+    # Same atomic-write contract as process_scan (F04): everything below runs on a hidden temp
+    # path, moved over the real name only once it's all done.
+    with atomic_output(output_path) as tmp_path:
+        with contextlib.ExitStack() as shared:
+            frame = _shared_frame(input_path, service, shm_prefix, shared, on_warning)
+            image, source_profile = _read_scan(input_path, out=None if frame is None else frame.array)
 
-        warning = None
-        exposure = tone_params.exposure
-        scale = provenance.get("linear_scale") if provenance is not None else None
-        if not (isinstance(scale, (int, float)) and scale > 0):
-            scale = None
-            if exposure is not None:
-                warning = (
-                    f"{input_path} has no halide flat-output metadata (normal after editing elsewhere), so a "
-                    f"pinned exposure of {exposure:+.3f} can't be reproduced on it — fitting exposure instead"
-                )
-                exposure = None
-        print_params = ToneCurveParams(
-            mode="paper", exposure=exposure, contrast=tone_params.contrast, curve_path=tone_params.curve_path
-        )
+            warning = None
+            exposure = tone_params.exposure
+            scale = provenance.get("linear_scale") if provenance is not None else None
+            if not (isinstance(scale, (int, float)) and scale > 0):
+                scale = None
+                if exposure is not None:
+                    warning = (
+                        f"{input_path} has no halide flat-output metadata (normal after editing elsewhere), so a "
+                        f"pinned exposure of {exposure:+.3f} can't be reproduced on it — fitting exposure instead"
+                    )
+                    exposure = None
+            print_params = ToneCurveParams(
+                mode="paper", exposure=exposure, contrast=tone_params.contrast, curve_path=tone_params.curve_path
+            )
 
-        request = PrintRequest(source_profile=source_profile, scale=scale, print_params=print_params)
-        if frame is not None:
-            reply, image, used_device = _run_on_service(input_path, frame, service, "print_", request, on_warning)
-            resolved = None if reply is None else reply.resolved
-        else:
-            resolved, image = _run_on_device(input_path, image, device, print_request, request, on_warning)
-            used_device = "gpu" if resolved is not None else "cpu"
-        if resolved is None:
-            resolved = print_request(image, request)
-        write_tiff(output_path, image, icc_profile=output_profile_bytes())
-        del image, frame  # before exiftool runs — see process_scan
-    copy_exif_metadata(str(input_path), str(output_path), drop_icc=True)
-    set_description(output_path, provenance_json(resolved, None, device=used_device))
+            request = PrintRequest(source_profile=source_profile, scale=scale, print_params=print_params)
+            if frame is not None:
+                reply, image, used_device = _run_on_service(input_path, frame, service, "print_", request, on_warning)
+                resolved = None if reply is None else reply.resolved
+            else:
+                resolved, image = _run_on_device(input_path, image, device, print_request, request, on_warning)
+                used_device = "gpu" if resolved is not None else "cpu"
+            if resolved is None:
+                resolved = print_request(image, request, name=str(input_path), on_warning=on_warning)
+            write_tiff(tmp_path, image, icc_profile=output_profile_bytes())
+            del image, frame  # before exiftool runs — see process_scan
+        try:
+            copy_exif_metadata(str(input_path), str(tmp_path), drop_icc=True)
+        except _EXIF_FAILURE as exc:
+            # The print itself is already fully written — see process_scan's own exif handling.
+            exif_warning = f"{input_path}: printed, but its camera metadata couldn't be copied ({exc})"
+        set_description(tmp_path, provenance_json(resolved, None, device=used_device))
+    if exif_warning is not None:
+        _warn(on_warning, exif_warning)
     return resolved, warning
 
 
@@ -673,12 +925,13 @@ def export_delivery_image(
     shared-memory buffer into another. After any failure its output buffer is never used (see
     export_fallback): the CPU converts into a buffer of this process's own.
     """
+    output_path = Path(output_path)
     with contextlib.ExitStack() as shared:
         frames = _shared_frame(input_path, service, shm_prefix, shared, on_warning, extra_uint8=True)
-        scan = read_tiff(input_path, out=None if frames is None else frames[0].array)
+        scan = _decode_tiff(input_path, None if frames is None else frames[0].array)
         warning = None
         if scan.icc_profile is None:
-            warning = f"{input_path} has no embedded ICC profile; assuming it is ACEScg."
+            warning = f"{input_path} has no embedded ICC profile; assuming it is ACEScg"
         else:
             try:
                 profile = parse_linear_rgb_profile(scan.icc_profile)
@@ -686,19 +939,22 @@ def export_delivery_image(
                     warning = (
                         f"{input_path}'s embedded profile does not look like ACEScg — `halide export` "
                         f"expects the output of `halide invert`/`halide batch`. Proceeding anyway, but "
-                        f"colors may be wrong."
+                        f"colours may be wrong"
                     )
             except UnsupportedICCProfileError as exc:
-                warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway."
+                warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway"
 
         if frames is not None:
             srgb_8bit = _export_on_service(input_path, frames, service, on_warning)
         else:
             srgb_8bit = _export_srgb_on_device(input_path, scan.image, device, on_warning)
-        if srgb_8bit is not None:
-            write_srgb_8bit_image(output_path, srgb_8bit, quality=quality)
-        else:
-            write_delivery_image(output_path, scan.image, quality=quality)
+        # Written under a hidden temp name beside the real one, moved into place only once the
+        # PNG/JPEG is fully encoded (F04) — see process_scan's own atomic_output for why.
+        with atomic_output(output_path) as tmp_path:
+            if srgb_8bit is not None:
+                write_srgb_8bit_image(tmp_path, srgb_8bit, quality=quality)
+            else:
+                write_delivery_image(tmp_path, scan.image, quality=quality)
         del scan, frames, srgb_8bit
     return warning
 

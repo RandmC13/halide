@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: **built on branch `gpu-acceleration` and verified on the user's RTX 3070 (2026-09-27).**
+Status: **built (merged) and verified on the user's RTX 3070 (2026-09-27).**
 Subagent-driven, against base `dff3cb2`. On the user's machine all 46 `pytest -m gpu` tests pass —
 every GPU path against the CPU path within D2, on synthetic images and the four real scans,
 including both `--auto-density` checks and export. The benchmark (§7) showed the GPU ~20% faster

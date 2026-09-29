@@ -80,6 +80,7 @@ class PointView:
     frame_number: int | None  # None: the frame isn't in the loaded roll ("frame missing")
     green_density: float  # at the reference scan exposure
     agreement: Agreement | None
+    note: str | None = None  # e.g. the frame had no scan EXIF, so its point wasn't normalised (F16)
 
 
 @dataclass
@@ -206,6 +207,24 @@ class CalibrationSession:
         except ValueError:
             return None
 
+    def fit_problem(self) -> str | None:
+        """Why the points can't be fitted although they span enough density (e.g. a colour layer
+        the points don't pin down), in plain words for the status line - else None."""
+        if not self.can_fit():
+            return None
+        try:
+            anchors.fit(self.points, self.reference)
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    def reliability(self, wedge: tuple[float, float] | None = None) -> anchors.Reliability | None:
+        """How far the live fit can be trusted over the roll's density range (`wedge`, if the
+        caller already has wedge_range()) - None until there's a fit (fit_problem's refusals
+        included) and the roll's previews have been measured."""
+        wedge = self.wedge_range() if wedge is None else wedge
+        return anchors.fit_reliability(self.points, self.reference, wedge)
+
     def views(self) -> list[PointView]:
         reference = self.reference
         agreements = anchors.agreement(self.points, reference)
@@ -217,6 +236,10 @@ class CalibrationSession:
                 frame_number=numbers.get(p.frame),
                 green_density=anchors.green_density(anchors.normalised_rgb(p, reference)),
                 agreement=agreements[i],
+                # A point from a frame with no scan EXIF can't be matched to the roll's exposure
+                # (2.1-10): it counts as it was sampled. Only worth saying when the roll has one.
+                note=(f"point {i + 1}: frame has no scan exposure data, used unnormalised"
+                      if p.scan is None and reference is not None else None),
             )
             for i, p in enumerate(self.points)
         ]

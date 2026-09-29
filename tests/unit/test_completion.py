@@ -49,8 +49,8 @@ def test_script_is_valid_shell_code(shell, tmp_path):
 
 def test_values_are_completed_not_just_flag_names():
     zsh = completion.zsh_script(build_parser())
-    assert ":Input linear TIFF scan of a negative:_files -g '*.(#i)tif(|f)'" in zsh
-    assert ":Directory of input linear TIFF scans:_files -/" in zsh
+    assert ":Linear TIFF scan of one negative:_files -g '*.(#i)tif(|f)'" in zsh
+    assert ":Folder of linear TIFF scans (one roll):_files -/" in zsh
     assert ":profile:_halide_profiles" in zsh
     assert ":output_mode:(print flat)" in zsh
 
@@ -181,6 +181,72 @@ def test_failures_never_break_a_run(home, monkeypatch, capsys):
     def boom(*args, **kwargs):
         raise PermissionError("read-only home")
 
-    monkeypatch.setattr(completion, "ensure_completion", boom)
+    monkeypatch.setattr(completion, "wanted", lambda: True)
+    monkeypatch.setattr(completion, "detect_shell", lambda: "zsh")
+    attempts = []
+    monkeypatch.setattr(completion, "_install", lambda *a, **k: attempts.append(a) or boom())  # the real call
     completion.maybe_install_completion(build_parser())  # must not raise
+    assert len(attempts) == 1  # it did try, and the failure was swallowed
     assert capsys.readouterr().err == ""
+
+
+def test_opt_out_skips_shell_detection_and_psutil(home, monkeypatch):
+    import sys
+    import types
+
+    monkeypatch.setenv("HALIDE_NO_COMPLETION", "1")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    touched = []
+    fake_psutil = types.ModuleType("psutil")
+    fake_psutil.Process = lambda *a, **k: touched.append("psutil.Process") or (_ for _ in ()).throw(OSError)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)  # real detect_shell would use this
+    real_detect = completion.detect_shell
+    monkeypatch.setattr(completion, "detect_shell", lambda: touched.append("detect_shell") or real_detect())
+    completion.maybe_install_completion(build_parser())
+    assert touched == []
+
+
+def test_failed_rc_edit_is_retried_next_run(home, monkeypatch):
+    rc = home / ".bashrc"
+    real_open = type(rc).open
+
+    def broken(self, *args, **kwargs):
+        if self == rc and args and args[0] == "a":
+            raise PermissionError("read-only")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(rc), "open", broken)
+    with pytest.raises(PermissionError):
+        install("bash")
+    assert not completion.shell_setup("bash").stamp.exists()
+    monkeypatch.setattr(type(rc), "open", real_open)
+    assert "added" in install("bash")
+    assert completion.RC_BEGIN in rc.read_text()
+    assert completion.shell_setup("bash").stamp.exists()
+
+
+def test_symlinked_completion_file_is_written_through(home):
+    target = home / "config" / "fish" / "completions" / "halide.fish"
+    real = home / "dotfiles" / "halide.fish"
+    real.parent.mkdir(parents=True)
+    real.write_text(completion._HEADER + "old\n")
+    target.parent.mkdir(parents=True)
+    target.symlink_to(real)
+    install("fish")
+    assert target.is_symlink()
+    assert real.read_text() == completion.fish_script(build_parser())
+
+
+def test_generated_scripts_list_profiles_from_application_support_on_macos(monkeypatch):
+    """The scripts must look where default_profiles_dir() saves profiles: on macOS that's
+    ~/Library/Application Support, not ~/.config."""
+    from halide.cli.main import build_parser
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    for script in (completion.zsh_script(build_parser()), completion.bash_script(build_parser()),
+                   completion.fish_script(build_parser())):
+        assert "$HOME/Library/Application Support" in script
+        assert "$HOME/.config" not in script.replace("~/.config/fish", "")
+    monkeypatch.setattr("sys.platform", "linux")
+    assert "$HOME/.config" in completion.bash_script(build_parser())

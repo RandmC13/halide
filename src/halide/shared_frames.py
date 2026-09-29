@@ -14,7 +14,7 @@ Two roles, two functions, deliberately not symmetric:
   it, and unlinks it again once the `with` block exits, normally or via exception. It does NOT pass
   `track=False`, on purpose: Python's own `multiprocessing.resource_tracker`, which is watching this
   process by default, is exactly the mechanism that removes the segment if this process dies (e.g.
-  the OOM killer) before its own `finally` can run — see Review Focus item 5 in the plan.
+  the OOM killer) before its own `finally` can run.
 - `attach_frame` (the service side): opens an existing segment by name and never unlinks it — the
   creator owns that lifecycle, and the service is just borrowing the bytes for as long as the `with`
   block runs. It attaches with `track=False`, so the *service's own* resource tracker doesn't also
@@ -28,16 +28,15 @@ Two roles, two functions, deliberately not symmetric:
   orchestrator never starts the shared GPU service below 3.13 either
   (`batch/orchestrator.py::_service_python_supported`): those interpreters use per-worker GPU mode.
 
-Review Focus item 5, under the *real* batch topology (found during review, not the first pass):
-a batch's worker pool is a forkserver (or spawn) pool, and every process spawned from it shares the
+Why the orchestrator sweeps: a batch's worker pool is a forkserver (or spawn) pool, and every process spawned from it shares the
 *parent's* resource_tracker (its registration pipe is inherited at pool start) — not a fresh one per
 worker. So when a worker is SIGKILLed while it holds a frame, the segment isn't cleaned up the
 instant that worker dies; it survives until *every* process sharing that pipe exits, i.e. until the
 whole batch's own parent process exits — reproduced directly (see tests/unit/test_shared_frames.py).
 That's too late for a long-running `halide batch`. `batch_prefix()`/`sweep()` below exist so the
 *orchestrator* (the parent, still alive) can proactively find and remove a dead worker's segment as
-soon as the pool notices the worker is gone, without waiting for its own process to exit — B3 wires
-this into `batch/orchestrator.py`; this module only provides the primitive.
+soon as the pool notices the worker is gone, without waiting for its own process to exit — the
+orchestrator (`batch/orchestrator.py`) calls it; this module only provides the primitive.
 """
 
 from __future__ import annotations
@@ -52,7 +51,10 @@ from typing import Iterator
 
 import numpy as np
 
-_NAME_STEM = "halide"
+_NAME_STEM = "hl"  # short on purpose: macOS caps a segment name at 31 characters (F35)
+_PID_DIGITS = 6  # a pid in base 36, zero-padded: 36**6 is over 2 billion, past any real pid_max
+_TOKEN_LENGTH = 6  # 36**6 = 2.2 billion; a 4-hex token collided ~1 in 65,536 same-process batches (R21)
+_BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 # `SharedMemory(..., track=False)` only exists from Python 3.13 (gh-82300) — passing it on an older
 # interpreter raises TypeError. Without it there is no correct way to attach to another process's
@@ -97,6 +99,19 @@ class SharedFrame:
         return (self.name, self.shape, self.dtype)
 
 
+def _base36(number: int) -> str:
+    digits = ""
+    while number:
+        number, rest = divmod(number, 36)
+        digits = _BASE36[rest] + digits
+    return digits.rjust(_PID_DIGITS, "0")
+
+
+def _random_token() -> str:
+    number = int.from_bytes(os.urandom(5), "big") % 36**_TOKEN_LENGTH
+    return "".join(_BASE36[(number // 36**i) % 36] for i in reversed(range(_TOKEN_LENGTH)))
+
+
 def batch_prefix() -> str:
     """A predictable, batch-scoped name prefix for this batch's shared-memory segments — call this
     once in the orchestrator (the pool's own parent process) and pass the result down to every
@@ -107,14 +122,7 @@ def batch_prefix() -> str:
     picker's contact sheet window, rebuilt), and sweeping one must never unlink the other's live
     frames; nor can a leftover from an earlier, killed run whose pid happens to be reused ever
     match."""
-    return f"{_NAME_STEM}-{os.getpid()}-{uuid.uuid4().hex[:8]}-"
-
-
-def _standalone_prefix() -> str:
-    """`new_frame`'s default prefix when no orchestrator-provided one is given — direct/non-batch
-    use, or a unit test. Keyed on this process's own pid, the one that creates (and unlinks) the
-    segment: its parent may be anything — a shell — and names nothing useful."""
-    return f"{_NAME_STEM}-{os.getpid()}-"
+    return f"{_NAME_STEM}{_base36(os.getpid())}{_random_token()}-"
 
 
 def _nbytes(shape: tuple[int, ...], dtype: np.dtype) -> int:
@@ -174,11 +182,10 @@ def new_frame(shape: tuple[int, ...], dtype, *, prefix: str | None = None) -> It
 
     `prefix`, if given (see `batch_prefix()`), becomes the start of the segment's name — the rest is
     a random per-frame suffix, so two frames from the same batch never collide. Defaults to
-    `_standalone_prefix()` for direct/non-batch callers.
+    `batch_prefix()` for direct/non-batch callers.
 
     Also raises `SharedMemoryUnavailable` if the segment *is* created but there isn't really room
-    for it — found by testing this against this project's own dev sandbox's 64 MiB `/dev/shm`
-    (Review Focus item 4's own example of a small container): on tmpfs, `SharedMemory(create=True,
+    for it — seen on a small `/dev/shm` (64 MiB in a default Docker container): on tmpfs, `SharedMemory(create=True,
     size=...)` only calls `ftruncate`, which happily reports success for a size bigger than the
     filesystem's actual free space (tmpfs allocates backing pages lazily, on first write) — so the
     constructor never raises, and the failure instead shows up as an **uncatchable SIGBUS** the
@@ -192,7 +199,7 @@ def new_frame(shape: tuple[int, ...], dtype, *, prefix: str | None = None) -> It
     """
     np_dtype = np.dtype(dtype)
     size = _nbytes(shape, np_dtype)
-    name = f"{prefix or _standalone_prefix()}{uuid.uuid4().hex}"
+    name = f"{prefix or batch_prefix()}{uuid.uuid4().hex[:14]}"  # hl+6+6+"-"+14 = 29 <= 30
     try:
         shm = shared_memory.SharedMemory(create=True, size=size, name=name)
     except (OSError, ValueError) as exc:
@@ -209,7 +216,7 @@ def new_frame(shape: tuple[int, ...], dtype, *, prefix: str | None = None) -> It
         # np.frombuffer, not np.ndarray(..., buffer=shm.buf): the latter copies out the raw pointer
         # and drops the buffer-protocol export once construction finishes, so a caller who keeps
         # the returned array alive past this `with` block (as `attach_frame`'s whole purpose implies
-        # some other process will, briefly, once B2 lands) ends up holding a *dangling* pointer once
+        # the GPU service does, briefly) ends up holding a *dangling* pointer once
         # `shm.close()` below actually unmaps the memory — a real, reproduced segfault
         # (tests/unit/test_shared_frames.py). `frombuffer` keeps a live export instead, which turns
         # that same mistake into a catchable `BufferError` from `close()` (below) rather than memory
@@ -274,7 +281,7 @@ def sweep(prefix: str) -> int:
     down** — every worker of a batch shares one prefix, so a sweep while any of them is still
     running would unlink frames they are still using (the GPU service would then fail to attach
     to them). What it catches is a worker that died holding a frame (SIGKILL, the OOM killer):
-    Review Focus item 5, under the real pool topology — a forkserver/spawn worker pool shares the
+    A forkserver/spawn worker pool shares the
     *parent's* resource_tracker, so such a segment would otherwise survive until the whole parent
     process exits, not the instant that one worker dies (reproduced directly; see
     tests/unit/test_shared_frames.py). Returns how many segments were removed.
@@ -305,22 +312,63 @@ def sweep(prefix: str) -> int:
         entries = os.listdir(_SHM_DIR)
     except OSError:
         return 0
-    removed = 0
+    return sum(_remove(entry) for entry in entries if entry.startswith(prefix))
+
+
+def prefix_pid(name: str) -> int | None:
+    """The pid a halide segment name (or prefix) was made by — `hl<pid base36><token>-…`, both
+    `batch_prefix()`'s format — or None for anything else. One place
+    to parse the name, so a change to the prefix format changes it here alone."""
+    head = len(_NAME_STEM) + _PID_DIGITS
+    if not name.startswith(_NAME_STEM) or len(name) <= head + _TOKEN_LENGTH or name[head + _TOKEN_LENGTH] != "-":
+        return None
+    digits = name[len(_NAME_STEM):head]
+    if not all(c in _BASE36 for c in digits):
+        return None
+    return int(digits, 36)
+
+
+def sweep_stale() -> int:
+    """Unlink every halide segment whose creating process is no longer running (F12): what a
+    batch killed outright (a whole-group SIGKILL, the OOM killer taking the parent) left behind —
+    nothing that died could run its own `sweep`, and the shared resource tracker died with it.
+    Without this such a segment holds RAM (/dev/shm is tmpfs) until reboot, and shrinks every
+    later batch's /dev/shm cap. Run at the start of every GPU batch, before that cap is measured.
+    A live process's segments are never touched (a batch running beside this one, a test); a pid
+    that has been reused by an unrelated process just keeps its leftover until a later run.
+    Returns how many segments were removed. Same platform and Python limits as `sweep`."""
+    if sys.platform != "linux" or not _UNTRACKED_ATTACH_SUPPORTED:
+        return 0
+    try:
+        entries = os.listdir(_SHM_DIR)
+    except OSError:
+        return 0
+    import psutil
+
+    stale = []
     for entry in entries:
-        if not entry.startswith(prefix):
-            continue
-        try:
-            leftover = shared_memory.SharedMemory(name=entry, create=False, track=False)
-        except FileNotFoundError:
-            continue
-        # This handle never called .buf (no numpy export was ever taken against it), so a plain
-        # close() is always safe here — unlike new_frame/attach_frame's own cleanup.
-        try:
-            leftover.unlink()
-        except FileNotFoundError:
-            leftover.close()  # removed by someone else between the open and here: theirs to track
-            continue
-        _unregister(f"/{entry}")
-        leftover.close()
-        removed += 1
-    return removed
+        pid = prefix_pid(entry)
+        if pid is not None and not psutil.pid_exists(pid):
+            stale.append(entry)
+    return sum(_remove(entry) for entry in stale)
+
+
+def _remove(entry: str) -> bool:
+    """Unlink the segment `entry` (a name in /dev/shm) on behalf of a process that's gone; whether
+    this call removed it. Best effort, never raises for one entry: a segment it can't open or
+    unlink — already gone, or another user's (0600, PermissionError) — is skipped, since a cleanup
+    must never fail the batch it runs in front of."""
+    try:
+        leftover = shared_memory.SharedMemory(name=entry, create=False, track=False)
+    except (OSError, ValueError):
+        return False
+    # This handle never called .buf (no numpy export was ever taken against it), so a plain
+    # close() is always safe here — unlike new_frame/attach_frame's own cleanup.
+    try:
+        leftover.unlink()
+    except OSError:
+        leftover.close()  # removed by someone else meanwhile (theirs to track), or not ours to remove
+        return False
+    _unregister(f"/{entry}")
+    leftover.close()
+    return True

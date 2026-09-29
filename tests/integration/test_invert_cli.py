@@ -104,7 +104,7 @@ def test_missing_calibration_source_error_mentions_calibrate_and_pick(negative_t
 
 def test_pick_uses_the_interactively_chosen_profile(negative_tiff, tmp_path, monkeypatch):
     picked = DensityProfile(white_balance=(1.5, 1.0, 0.7), density_scale=(1.1, 1.0, 0.9), source="anchor")
-    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: (picked, None))
+    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: (picked, None, None))
 
     output = tmp_path / "positive.tiff"
     exit_code = main(["invert", str(negative_tiff), str(output), "--pick"])
@@ -123,18 +123,21 @@ def test_pick_cancelled_without_choosing_errors(negative_tiff, tmp_path, monkeyp
         main(["invert", str(negative_tiff), str(output), "--pick"])
 
 
-def test_pick_conflicts_with_other_calibration_sources(negative_tiff, tmp_path, monkeypatch):
+def test_pick_conflicts_with_other_calibration_sources(negative_tiff, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: None)
     output = tmp_path / "positive.tiff"
-    with pytest.raises(SystemExit, match="mutually exclusive"):
+    # argparse itself refuses this (exit 2), so it also shows in the usage line
+    with pytest.raises(SystemExit) as exit_info:
         main(["invert", str(negative_tiff), str(output), "--pick", "--auto-density"])
+    assert exit_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
 
 
 def test_profile_and_manual_override_conflict_errors(negative_tiff, tmp_path):
     profile_path = tmp_path / "profile.json"
     save_profile(DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0)), profile_path)
     output = tmp_path / "positive.tiff"
-    with pytest.raises(SystemExit, match="mutually exclusive"):
+    with pytest.raises(SystemExit, match="can't be combined with --profile"):
         main(["invert", str(negative_tiff), str(output), "--profile", str(profile_path), "--rm", "2.0"])
 
 
@@ -167,3 +170,50 @@ def test_rejects_scan_with_no_embedded_icc_profile(tmp_path):
     # --invert-only needs no calibration source, so this isolates the ICC check specifically.
     with pytest.raises(SystemExit, match="no embedded ICC profile"):
         main(["invert", str(path), str(output), "--invert-only"])
+
+
+def test_invert_output_equal_to_input_refused_non_interactive(negative_tiff):
+    # D-1: output == input is a hard error in every mode, before any decoding starts — it must
+    # never depend on --overwrite/interactivity, since this is "use a scan as its own output",
+    # never "overwrite an existing file".
+    before = negative_tiff.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        main(["invert", str(negative_tiff), str(negative_tiff), "--invert-only", "--overwrite"])
+    message = str(exc.value.code)
+    assert "is the scan itself" in message
+    # invert has no --suffix flag, unlike batch/bulk print/export — the hint must not offer it.
+    assert "--suffix" not in message
+    assert message.endswith("Choose a different output path")
+    assert negative_tiff.read_bytes() == before
+
+
+def test_invert_rerun_non_interactive_refuses_without_overwrite(negative_tiff, tmp_path):
+    output = tmp_path / "positive.tiff"
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only"]) == 0
+    before = output.read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        main(["invert", str(negative_tiff), str(output), "--invert-only"])
+    message = str(exc.value.code)
+    assert "--overwrite" in message and "--skip-existing" in message
+    assert output.read_bytes() == before  # never silently overwritten
+
+
+def test_invert_skip_existing_leaves_output_untouched(negative_tiff, tmp_path):
+    output = tmp_path / "positive.tiff"
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only"]) == 0
+    before = output.read_bytes()
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only", "--skip-existing"]) == 0
+    assert output.read_bytes() == before
+
+
+def test_invert_overwrite_replaces_existing_output(negative_tiff, tmp_path):
+    output = tmp_path / "positive.tiff"
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only"]) == 0
+    before = output.read_bytes()
+    assert main(["invert", str(negative_tiff), str(output), "--invert-only", "--overwrite"]) == 0
+    assert output.read_bytes() == before  # same deterministic pipeline, but did re-run (no error)
+
+
+def test_manual_override_clashes_with_auto_density_by_hand_check(negative_tiff, tmp_path):
+    with pytest.raises(SystemExit, match="can't be combined with --auto-density"):
+        main(["invert", str(negative_tiff), str(tmp_path / "p.tiff"), "--auto-density", "--rm", "2.0"])

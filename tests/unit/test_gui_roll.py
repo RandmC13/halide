@@ -106,7 +106,7 @@ def test_views_carry_frame_numbers_density_and_agreement(tmp_path):
     views = session.views()
     assert [v.frame_number for v in views] == [1, 2, 3, 2]
     assert views[1].green_density == pytest.approx(1.2)
-    assert views[3].agreement.direction == "R"
+    assert views[3].agreement.filters.startswith("CC ") and views[3].agreement.filters.endswith("Y + 7M")  # warm
     assert session.worst() == 3
     assert session.point_counts() == {paths[0]: 1, paths[1]: 2, paths[2]: 1}
 
@@ -266,3 +266,47 @@ def test_an_older_relative_profile_opened_from_another_folder_isnt_given_a_guess
     found = reopened.sidecars()
     assert found["roll"] == str(roll)
     assert [a["frame"] for a in found["anchors"]] == [str(p) for p in paths]
+
+
+def test_a_fit_the_points_dont_pin_down_is_reported_not_raised(tmp_path):
+    # Points spread widely in green but with red nearly flat: can_fit passes the 0.1 D gate, yet
+    # the fit refuses (red scale ~50). The picker must treat that as "can't fit yet".
+    session, paths = _session(tmp_path)
+    for i, g in enumerate((0.3, 0.7, 1.1)):
+        rgb = (10 ** -(0.5 + 0.02 * g), 10 ** -g, 10 ** -(0.05 + g / 0.78))
+        session.add_point(NeutralPoint(frame=paths[i], x=10 * i, y=50, rgb=rgb, scan=AT_1_30))
+    assert session.can_fit()
+    assert session.profile() is None
+    assert "red layer" in session.fit_problem()
+    assert "further apart in density" in session.fit_problem()
+    session.views()  # agreement / worst() must not raise either
+    assert session.worst() is None or isinstance(session.worst(), int)
+    with pytest.raises(ValueError):
+        session.profile_to_save()
+
+
+def test_no_fit_problem_for_good_points(tmp_path):
+    session, paths = _session(tmp_path)
+    session.add_point(_pt(paths[0], 0.4))
+    session.add_point(_pt(paths[1], 1.2, x=5))
+    assert session.fit_problem() is None
+    assert session.profile() is not None
+
+
+def test_reliability_follows_the_fit_and_the_rolls_range(tmp_path):
+    session, paths = _session(tmp_path)
+    for i, g in enumerate((0.95, 1.0, 1.05)):  # agree perfectly, but only 0.1 D apart
+        session.add_point(_pt(paths[i], g))
+    assert session.can_fit()
+    assert session.reliability() is None  # previews not measured yet: no roll range to judge against
+
+    for frame in session.frames:  # a roll spanning D 0.4-1.6 in green
+        green = np.linspace(0.4, 1.6, 400)
+        frame.preview = np.stack([10.0 ** -green] * 3, axis=-1)[None, :, :].astype(np.float32)
+    reliability = session.reliability()
+    assert reliability.is_limited
+    assert reliability.warning().startswith("Fit reliable over D 0.")
+
+    session.add_point(_pt(paths[0], 0.5, x=300))
+    session.add_point(_pt(paths[2], 1.55, x=300))
+    assert session.reliability().warning() is None

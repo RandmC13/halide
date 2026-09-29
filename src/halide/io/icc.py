@@ -32,7 +32,11 @@ import numpy as np
 from halide.core._xp import array_namespace
 
 _LUT_TAG_SIGNATURES = frozenset({"A2B0", "A2B1", "A2B2", "B2A0", "B2A1", "B2A2"})
-_LINEARITY_TOLERANCE = 5e-3
+_LINEARITY_TOLERANCE = 5e-3  # in density (log10 units): 0.005 D, judged over t in [0.001, 1] (F08)
+_LINEARITY_RANGE = (1e-3, 1.0)
+# ICC stores the colorants already adapted to the D50 PCS, so they must sum to its white (F08).
+_D50_PCS_WHITE = np.array([0.9642, 1.0, 0.8249])
+_WHITE_POINT_TOLERANCE = 2e-3
 
 # The output working-space profile: Elle Stone's community-authored linear ACEScg ICC profile
 # (CC BY-SA 3.0, see src/halide/assets/icc_profiles/LICENSE-elles_icc_profiles.txt), the exact profile the
@@ -47,7 +51,7 @@ OUTPUT_PROFILE_PATH = (
 
 def output_profile_bytes() -> bytes:
     """The ICC profile bytes to embed on any output written from the internal ACEScg working
-    space (i.e. anything that has been through core.pipeline.run_pipeline)."""
+    space (i.e. anything that has been through a developed positive)."""
     return OUTPUT_PROFILE_PATH.read_bytes()
 
 
@@ -76,18 +80,34 @@ def _read_header(data: bytes) -> tuple[bytes, bytes]:
 
 def _read_tag_table(data: bytes) -> dict[str, tuple[int, int]]:
     (n_tags,) = struct.unpack(">I", data[128:132])
+    if 132 + n_tags * 12 > len(data):
+        raise UnsupportedICCProfileError(_damaged("tag table"))
     tags: dict[str, tuple[int, int]] = {}
     for i in range(n_tags):
         offset = 132 + i * 12
         sig, tag_offset, tag_size = struct.unpack(">4sII", data[offset : offset + 12])
-        tags[sig.decode("latin1")] = (tag_offset, tag_size)
+        name = sig.decode("latin1")
+        if tag_offset + tag_size > len(data):
+            raise UnsupportedICCProfileError(_damaged(f"'{name}' tag"))
+        tags[name] = (tag_offset, tag_size)
     return tags
+
+
+def _damaged(what: str) -> str:
+    return f"the embedded colour profile is damaged ({what} runs past the end); re-export the scan"
+
+
+def _require_room(signature: str, size: int, needed: int) -> None:
+    """A tag's own contents must fit inside the size its table entry declares."""
+    if needed > size:
+        raise UnsupportedICCProfileError(_damaged(f"'{signature}' tag"))
 
 
 def _read_xyz_tag(data: bytes, tags: dict[str, tuple[int, int]], signature: str) -> np.ndarray:
     if signature not in tags:
         raise UnsupportedICCProfileError(f"missing required '{signature}' tag")
     offset, size = tags[signature]
+    _require_room(signature, size, 20)
     tag_type = data[offset : offset + 4]
     if tag_type != b"XYZ ":
         raise UnsupportedICCProfileError(f"'{signature}' tag is type {tag_type!r}, expected XYZType")
@@ -140,11 +160,13 @@ def _check_trc_is_linear(data: bytes, tags: dict[str, tuple[int, int]], signatur
     if signature not in tags:
         raise UnsupportedICCProfileError(f"missing required '{signature}' tag")
     offset, size = tags[signature]
+    _require_room(signature, size, 12)
     tag_type = data[offset : offset + 4]
-    sample_points = np.linspace(0.0, 1.0, num=11)
+    sample_points = np.geomspace(*_LINEARITY_RANGE, num=200)
 
     if tag_type == b"curv":
         (count,) = struct.unpack(">I", data[offset + 8 : offset + 12])
+        _require_room(signature, size, 12 + 2 * count)
         table = np.array(
             struct.unpack(f">{count}H", data[offset + 12 : offset + 12 + 2 * count]),
             dtype=np.float64,
@@ -157,6 +179,7 @@ def _check_trc_is_linear(data: bytes, tags: dict[str, tuple[int, int]], signatur
             raise UnsupportedICCProfileError(
                 f"'{signature}': unsupported parametricCurveType functionType {function_type}"
             )
+        _require_room(signature, size, 12 + 4 * n_params)
         raw = struct.unpack(
             f">{n_params}i", data[offset + 12 : offset + 12 + 4 * n_params]
         )
@@ -165,10 +188,12 @@ def _check_trc_is_linear(data: bytes, tags: dict[str, tuple[int, int]], signatur
     else:
         raise UnsupportedICCProfileError(f"'{signature}' tag is type {tag_type!r}, expected curv/para")
 
-    if not np.allclose(response, sample_points, atol=_LINEARITY_TOLERANCE):
+    with np.errstate(divide="ignore", invalid="ignore"):
+        density_error = np.abs(np.log10(response / sample_points))
+    if not np.all(density_error <= _LINEARITY_TOLERANCE):
         raise UnsupportedICCProfileError(
             f"'{signature}' is not a linear tone curve — this profile is gamma-encoded (e.g. for "
-            f"display use). Re-export using your raw processor's linear gamma/tone-curve option."
+            f"display use). Re-export using your raw processor's linear gamma/tone-curve option"
         )
 
 
@@ -178,7 +203,7 @@ def parse_linear_rgb_profile(icc_bytes: bytes) -> LinearRGBProfile:
     otherwise."""
     color_space, pcs = _read_header(icc_bytes)
     if color_space != b"RGB ":
-        raise UnsupportedICCProfileError(f"profile color space is {color_space!r}, expected RGB")
+        raise UnsupportedICCProfileError(f"profile colour space is {color_space!r}, expected RGB")
     if pcs != b"XYZ ":
         raise UnsupportedICCProfileError(f"profile connection space is {pcs!r}, expected XYZ")
 
@@ -187,7 +212,7 @@ def parse_linear_rgb_profile(icc_bytes: bytes) -> LinearRGBProfile:
     lut_tags_present = _LUT_TAG_SIGNATURES & tags.keys()
     if lut_tags_present:
         raise UnsupportedICCProfileError(
-            f"profile contains LUT-based tag(s) {sorted(lut_tags_present)} — only pure "
+            f"profile contains LUT-based {'tag' if len(lut_tags_present) == 1 else 'tags'} {sorted(lut_tags_present)} — only pure "
             f"matrix-shaper profiles (rXYZ/gXYZ/bXYZ + linear TRC) are supported"
         )
 
@@ -200,6 +225,11 @@ def parse_linear_rgb_profile(icc_bytes: bytes) -> LinearRGBProfile:
     _read_xyz_tag(icc_bytes, tags, "wtpt")  # required by spec; not otherwise needed here
 
     matrix = np.stack([r_xyz, g_xyz, b_xyz], axis=1)  # columns = primaries
+    if not np.all(np.abs(matrix.sum(axis=1) - _D50_PCS_WHITE) <= _WHITE_POINT_TOLERANCE):
+        raise UnsupportedICCProfileError(
+            "the embedded colour profile isn't adapted to D50 as ICC requires, so its colours "
+            "would come out with a cast; re-export with a standard profile"
+        )
     return LinearRGBProfile(rgb_to_pcs_xyz=matrix)
 
 

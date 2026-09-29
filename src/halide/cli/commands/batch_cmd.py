@@ -10,13 +10,25 @@ import warnings
 from dataclasses import replace
 from pathlib import Path
 
-from halide.batch.orchestrator import BatchJob, default_worker_count, discover_jobs, memory_budget_warning, run_batch
-from halide.batch.progress import GridProgressRenderer
+from halide.io.roll import list_scans
+from halide.batch.orchestrator import BatchJob, default_worker_count, jobs_for_files, memory_budget_warning, run_batch
+from halide.batch.progress import cancel_notice, make_renderer
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.cli._device_args import add_device_argument, resolve_device_arg
+from halide.cli._help import add_workers_argument
+from halide.cli._output_policy import (
+    add_output_policy_arguments,
+    check_input_folder,
+    is_interactive,
+    policy_from_args,
+    prepare_output_folder,
+    resolve_bulk_jobs,
+    resolve_existing,
+)
 from halide.cli._calibration_args import (
     add_calibration_arguments,
+    manual_calibration_given,
     add_scan_arguments,
     add_stage_arguments,
     add_tone_arguments,
@@ -27,7 +39,15 @@ from halide.cli._calibration_args import (
     resolve_stage,
     resolve_tone_params,
 )
-from halide.cli._run_sheet import choose_workers, compute_row, frame_count, roll_row, start_compute
+from halide.cli._run_sheet import (
+    choose_workers,
+    compute_row,
+    frame_count,
+    print_frame_warnings,
+    roll_row,
+    skipped_row,
+    start_compute,
+)
 from halide.cli._contact_sheet import add_contact_layout_arguments, write_contact_sheet
 from halide.core.types import Stage
 
@@ -38,10 +58,10 @@ _SEP = console.RunSheet.SEP
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("input_dir", help="Directory of input linear TIFF scans")
+    parser.add_argument("input_dir", help="Folder of linear TIFF scans (one roll)")
     parser.add_argument(
         "output_dir", nargs="?",
-        help="Directory to write output TIFFs into. Optional with --contact-sheet: leave it out to "
+        help="Folder to write the developed TIFFs into. Optional with --contact-sheet: leave it out to "
         "preview settings as a contact sheet without keeping any full-size TIFFs",
     )
     parser.add_argument(
@@ -52,11 +72,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "thumbnails are kept (in a temporary folder, deleted afterwards)",
     )
     add_contact_layout_arguments(parser)
-    parser.add_argument("--suffix", default="", help="Suffix to append to output filenames")
+    parser.add_argument("--suffix", default="", help="Text to add to each output file name, before .tif")
+    add_output_policy_arguments(parser, saves_profile=True)
 
     add_stage_arguments(parser)
-    add_calibration_arguments(parser)
-    parser.add_argument(
+    sources = add_calibration_arguments(parser)
+    sources.add_argument(
         "--auto-density-roll",
         action="store_true",
         help="Estimate one shared density-balance profile from the whole roll, rather than "
@@ -66,13 +87,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_tone_arguments(parser)
     add_scan_arguments(parser)
 
-    parser.add_argument(
-        "--workers",
-        type=int,
-        help="Number of parallel worker processes (default: auto-selected from available memory "
-        "and CPU count — full-resolution scans are memory-heavy enough that RAM, not CPU threads, "
-        "is usually the real limit; pass this to override the auto-selected count)",
-    )
+    add_workers_argument(parser)
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
     add_device_argument(parser)
 
@@ -161,6 +176,12 @@ def _destination(args: argparse.Namespace) -> str:
     return f"{destination} + contact sheet {args.contact_sheet}" if args.contact_sheet else destination
 
 
+# R-050: the automatic tiers are approximate (CLAUDE.md, auto calibration's limits); say what's better.
+AUTO_CALIBRATION_ADVICE = (
+    "automatic estimate - for the most faithful colour, pick neutral points with `halide calibrate`"
+)
+
+
 def _calibration_text(args: argparse.Namespace, profile, saved_tone) -> str:
     if profile is None:
         return f"auto{_SEP}estimated separately for each frame"
@@ -187,41 +208,77 @@ def run(args: argparse.Namespace) -> int:
     stage = resolve_stage(args)
 
     input_dir = Path(args.input_dir)
-    if not input_dir.exists():
-        raise SystemExit(f"input directory not found: {input_dir}")
+    check_input_folder(input_dir)
     if args.output_dir is None and not args.contact_sheet:
         raise SystemExit("give an output directory, --contact-sheet SHEET (a preview), or both")
-    if args.contact_sheet:
+    sheet_path = Path(args.contact_sheet) if args.contact_sheet else None
+    if sheet_path is not None:
         from halide.io.contact_sheet import check_sheet_path
 
         try:
-            check_sheet_path(args.contact_sheet)
+            check_sheet_path(sheet_path)
         except ValueError as exc:
             raise SystemExit(str(exc))
 
     if args.output_dir is not None:
         output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        jobs = discover_jobs(input_dir, output_dir, suffix=args.suffix)
+        prepare_output_folder(output_dir)
+        files, left_out = list_scans(input_dir)
+        jobs = jobs_for_files(files, output_dir, suffix=args.suffix)
     else:
-        jobs = [BatchJob(input_path=job.input_path, output_path=None)
-                for job in discover_jobs(input_dir, input_dir, suffix=args.suffix)]
+        output_dir = None
+        files, left_out = list_scans(input_dir)
+        jobs = [BatchJob(input_path=f, output_path=None) for f in files]
     if not jobs:
         print(f"No TIFF files found in {input_dir}")
         return 1
 
-    thumbnails = Path(tempfile.mkdtemp(prefix="halide-contact-")) if args.contact_sheet else None
+    # A preview run's jobs (output_dir is None) keep nothing but a temp thumbnail, so there's
+    # nothing there to protect; only real per-frame outputs and the contact sheet itself go
+    # through the overwrite policy — combined into one decision, one prompt for the whole roll.
+    if output_dir is not None:
+        extra = [(sheet_path, sheet_path)] if sheet_path is not None else None
+        jobs, skipped_frames, kept_outputs = resolve_bulk_jobs(
+            jobs, args, interactive=is_interactive(), extra_pairs=extra
+        )
+        build_sheet = sheet_path is None or sheet_path in kept_outputs
+    else:
+        skipped_frames = 0
+        # output_dir is None only reaches here with a contact sheet requested (checked above) — no
+        # single "input" for a sheet, so only its own existence matters.
+        build_sheet = bool(
+            resolve_existing([(sheet_path, sheet_path)], policy_from_args(args), interactive=is_interactive())
+        )
+
+    if output_dir is not None and not jobs:
+        if sheet_path is None or not build_sheet:
+            print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
+            return 0
+        # Nothing left to develop, but the sheet still needs building — from the whole,
+        # already-complete folder, the same way `halide contact <output_dir> <sheet>` would.
+        from halide.cli._contact_sheet import discover_processed_files, write_sheet_from_folder
+
+        files, _ = discover_processed_files(output_dir, sheet_path)
+        return write_sheet_from_folder(files, sheet_path, args, input_dir.name, quiet=args.quiet)
+    if output_dir is None and not build_sheet:
+        print(console.success(f"Nothing to do — {sheet_path} already exists (--skip-existing)."))
+        return 0
+
+    thumbnails = Path(tempfile.mkdtemp(prefix="halide-contact-")) if build_sheet else None
     try:
         if thumbnails is not None:
             jobs = [replace(job, thumbnail_path=thumbnails / f"{i:04d}.png") for i, job in enumerate(jobs)]
-        return _run(args, stage, input_dir, jobs)
+        return _run(
+            args, stage, input_dir, jobs, output_dir=output_dir, skipped_frames=skipped_frames, build_sheet=build_sheet,
+            left_out=left_out,
+        )
     finally:
         if thumbnails is not None:
             shutil.rmtree(thumbnails, ignore_errors=True)
 
 
 def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], sheet: console.RunSheet,
-             stack: contextlib.ExitStack):
+             stack: contextlib.ExitStack, skipped_frames: int = 0, left_out=None):
     """Everything decided before developing starts — scan checks, scan-exposure matching,
     calibration, print settings, how the GPU is used, worker count — each reported on the run sheet
     as it's decided. On a GPU the shared GPU service starts here and runs until `stack` closes.
@@ -229,6 +286,9 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     from halide.processing import ScanColorError, estimate_roll_density_profile, read_roll_scan_metadata
 
     roll_row(sheet, input_dir, len(jobs), _destination(args))
+    skipped_row(sheet, left_out)
+    if skipped_frames:
+        sheet.row("Skipping", f"{frame_count(skipped_frames)} already developed")
 
     per_frame_auto = args.auto_density and not args.auto_density_roll
     matching = args.match_scan_exposure and not (stage is Stage.INVERT_ONLY or per_frame_auto)
@@ -242,8 +302,6 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
         sheet.note("Scans", f"details, and how to scan a roll consistently: halide check {input_dir}")
     elif report.exposure_groups or report.white_balance_groups:
         sheet.ok("Scans", "scanned consistently")
-    else:
-        sheet.note("Scans", "not checked — no camera EXIF or darktable history in these files")
 
     scan_reference = None if args.auto_density_roll else resolve_scan_reference(args)
     if args.match_scan_exposure:
@@ -281,9 +339,12 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
             sheet.warn("Calibration", f"skipped unreadable {name}")
         for caught_warning in caught:
             sheet.warn("Calibration", str(caught_warning.message))
+        sheet.note("Calibration", AUTO_CALIBRATION_ADVICE)
     else:
         density_profile, saved_tone = resolve_density_profile(args)  # profile may be None -> per-frame auto
         sheet.row("Calibration", _calibration_text(args, density_profile, saved_tone))
+        if density_profile is None:
+            sheet.note("Calibration", AUTO_CALIBRATION_ADVICE)
 
     saved_path = maybe_save_profile(args, density_profile, tone=saved_tone, scan=scan_reference, announce=False)
     if saved_path is not None:
@@ -295,7 +356,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     # before the sheet closes — see CLAUDE.md's choose_calibration_source ordering note. The workers
     # develop on it (run_batch): on a GPU through the shared GPU service, or — if it can't be used —
     # with a CUDA context per worker, whose default count also fits the card's memory.
-    device = resolve_device_arg(args)
+    device = resolve_device_arg(args, isolated=True)  # the parent never computes on the card (2.4-7)
     compute = start_compute(stack, sheet, jobs, device)
     compute_row(sheet, device, compute)
 
@@ -309,24 +370,24 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     return jobs, density_profile, tone_params, scan_reference, workers, device, compute
 
 
-def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob]) -> int:
+def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], *,
+         output_dir: Path | None = None, skipped_frames: int = 0, build_sheet: bool = True,
+         left_out=None) -> int:
     if stage is not Stage.INVERT_ONLY:
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
-    manual_given =args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
-    other_source_given = bool(args.profile) or manual_given or args.auto_density
-    if args.auto_density_roll and other_source_given:
-        raise SystemExit(
-            "--auto-density-roll cannot be combined with --profile/manual overrides/--auto-density"
-        )
+    # --auto-density-roll vs --profile/--auto-density is argparse's (exclusive group); only the
+    # manual values need this hand check.
+    if args.auto_density_roll and manual_calibration_given(args):
+        raise SystemExit("manual overrides (--rm/--bm/--rs/--bs) can't be combined with --auto-density-roll")
 
     # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
     with contextlib.ExitStack() as stack:
         with console.RunSheet(quiet=args.quiet) as sheet:
             jobs, density_profile, tone_params, scan_reference, workers, device, compute = _prepare(
-                args, stage, input_dir, jobs, sheet, stack
+                args, stage, input_dir, jobs, sheet, stack, skipped_frames=skipped_frames, left_out=left_out
             )
 
-        renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="invert")
+        renderer = make_renderer(len(jobs), "invert", quiet=args.quiet)
         job_index = {job: i for i, job in enumerate(jobs)}
 
         def on_start(job):
@@ -348,6 +409,7 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
             max_workers=workers,
             on_result=on_result,
             on_start=on_start,
+            on_cancel=cancel_notice(renderer),
             thumbnail_long_edge=args.frame_width,
             device=device,
             compute=compute,
@@ -363,20 +425,28 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
 
     # Printed even with --quiet, like every run-sheet warning: e.g. a frame the GPU couldn't develop
     # and the CPU redid (same result, within the GPU tolerance, but the user should know).
-    for r in results:
-        if r.warning:
-            print(console.warning(f"{r.job.input_path.name}: {r.warning}"))
+    print_frame_warnings(results)
 
     failures = [r for r in results if r.error]
-    if renderer is None:
-        if cancelled:
-            print(console.warning(f"Cancelled — {len(results)}/{len(jobs)} frames processed."))
-        for r in failures:
-            print(console.error(f"{r.job.input_path.name}: {r.error}"))
 
     if cancelled:
         return 130
-    if args.contact_sheet:
-        settings = _settings_summary(args, stage, tone_params, scan_reference, args.match_scan_exposure)
-        write_contact_sheet(args, jobs, results, args.contact_sheet, input_dir.name, settings)
-    return 1 if failures else 0
+
+    sheet_failed = False
+    if args.contact_sheet and build_sheet:
+        if skipped_frames and output_dir is not None:
+            # Frames --skip-existing left alone never got a thumbnail from this run's own worker
+            # pool, so the sheet has to cover the whole roll the way `halide contact <output_dir>
+            # <sheet>` does: thumbnail every processed file on disk, not just this run's `jobs`.
+            from halide.cli._contact_sheet import discover_processed_files, write_sheet_from_folder
+
+            sheet_path = Path(args.contact_sheet)
+            files, _ = discover_processed_files(output_dir, sheet_path)
+            sheet_code = write_sheet_from_folder(files, sheet_path, args, input_dir.name, quiet=args.quiet)
+            if sheet_code == 130:
+                return 130
+            sheet_failed = sheet_code != 0
+        else:
+            settings = _settings_summary(args, stage, tone_params, scan_reference, args.match_scan_exposure)
+            write_contact_sheet(args, jobs, results, args.contact_sheet, input_dir.name, settings)
+    return 1 if (failures or sheet_failed) else 0

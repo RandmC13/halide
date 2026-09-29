@@ -13,6 +13,7 @@ venv/
 # Local-only material: scans, reference PDFs/photos, Claude Code worktrees
 Roll16-Testing/
 enlarger-controller.png
+contactsheet-barcoderef.jpg
 filminversion-ab.pdf
 .claude/
 
