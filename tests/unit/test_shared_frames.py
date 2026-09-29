@@ -349,7 +349,7 @@ def test_batch_prefix_is_different_for_every_batch():
     assert batch_prefix() != batch_prefix()
 
 
-def test_standalone_prefix_is_keyed_on_this_processs_own_pid_not_its_parents():
+def test_default_prefix_is_keyed_on_this_processs_own_pid_not_its_parents():
     import os
 
     with new_frame((2, 2, 3), np.float32) as frame:

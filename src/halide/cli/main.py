@@ -47,7 +47,7 @@ def _version() -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="halide", description="Develop scanned color negative film into a positive image.",
+        prog="halide", description="Develop scanned colour negative film into a positive image.",
         formatter_class=HELP_FORMATTER,
         epilog=examples(
             "halide calibrate roll16/",

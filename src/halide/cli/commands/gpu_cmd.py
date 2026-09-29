@@ -125,7 +125,7 @@ def _install(args: argparse.Namespace) -> int:
         f"    {sys.executable} -m pip cache purge"
     )
     if not args.yes:
-        if not sys.stdin.isatty():
+        if not console.is_interactive():
             print("Not installing — pass --yes to install without asking (no terminal to confirm in)")
             return 1
         if not console.confirm("Install now?", default=False):  # EOF (Ctrl-D) counts as "no"

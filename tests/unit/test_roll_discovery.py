@@ -210,7 +210,8 @@ def test_reinverting_a_halide_output_is_refused(tmp_path):
     with pytest.raises(ScanInputError) as excinfo:
         process_scan(positive, tmp_path / "again.tif", Stage.FULL, PROFILE, ToneCurveParams())
     message = str(excinfo.value)
-    assert message.startswith("pos.tif is already a halide positive (made on ")
+    assert message.startswith("pos.tif is already a halide positive. To re-print")
+    assert "made on" not in message
     assert "To re-print it use `halide print`; to develop again, point halide at the original scan" in message
     assert not (tmp_path / "again.tif").exists()
 

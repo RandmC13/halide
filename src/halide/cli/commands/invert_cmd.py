@@ -49,7 +49,7 @@ from halide.core.types import Stage
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("input", help="Linear TIFF scan of one negative")
     parser.add_argument("output", help="Where to write the positive TIFF")
-    add_output_policy_arguments(parser)
+    add_output_policy_arguments(parser, saves_profile=True)
     add_stage_arguments(parser)
     add_calibration_arguments(parser, allow_pick=True)
     add_tone_arguments(parser)

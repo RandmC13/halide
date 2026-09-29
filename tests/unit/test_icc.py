@@ -131,7 +131,7 @@ def test_rejects_lut_based_profile():
 
 
 def test_rejects_non_rgb_color_space():
-    with pytest.raises(UnsupportedICCProfileError, match="color space"):
+    with pytest.raises(UnsupportedICCProfileError, match="colour space"):
         parse_linear_rgb_profile(build_icc(LINEAR_TAGS, color_space=b"GRAY"))
 
 

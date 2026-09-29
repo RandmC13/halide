@@ -150,6 +150,7 @@ def test_profile_edit_interactive_prompts(negative_tiff, tmp_path, isolated_prof
     # Simulate a real terminal: film_stock and notes get new values, process/scanner are left
     # as-is (empty input), matching the order fields are prompted in (_EDIT_FIELD_LABELS).
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     responses = iter(["Kodak Ektar 100", "", "", "developed at home, scanned on a V600"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(responses))
 
@@ -174,6 +175,7 @@ def test_profile_edit_interactive_no_changes(negative_tiff, tmp_path, isolated_p
     capsys.readouterr()
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": "")
 
     exit_code = main(["profile", "edit", "untouched"])
@@ -249,6 +251,7 @@ def test_invert_without_a_source_offers_saved_profiles_newest_first(
     _two_saved_profiles(negative_tiff, tmp_path)
     capsys.readouterr()
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": "1")
 
     assert main(["invert", str(negative_tiff), str(tmp_path / "out.tiff")]) == 0
@@ -263,6 +266,7 @@ def test_batch_without_a_source_offers_saved_profiles(negative_tiff, tmp_path, i
     roll.mkdir()
     (roll / "frame1.tiff").write_bytes(negative_tiff.read_bytes())
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": "2")  # the older profile
 
     assert main(["batch", str(roll), str(tmp_path / "out"), "--quiet"]) == 0

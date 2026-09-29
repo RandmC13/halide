@@ -232,7 +232,7 @@ def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
         or getattr(args, "auto_density", False)
         or getattr(args, "pick", False)
         or getattr(args, "auto_density_roll", False)
-        or not sys.stdin.isatty()
+        or not is_interactive()
     ):
         return
 

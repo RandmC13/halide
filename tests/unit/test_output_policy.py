@@ -197,3 +197,33 @@ def test_resolve_bulk_jobs_folds_extra_pairs_into_one_prompt(tmp_path, monkeypat
     assert kept == jobs  # confirmed -> everything proceeds, including the sheet
     assert extra_out in kept_outputs
     assert skipped == 0
+
+
+def test_a_prompt_needs_stdout_as_well_as_stdin_to_be_a_terminal(monkeypatch):
+    import sys
+
+    from halide.cli import console
+
+    for stdin, stdout, expected in [(True, True, True), (True, False, False), (False, True, False)]:
+        monkeypatch.setattr(sys.stdin, "isatty", lambda v=stdin: v, raising=False)
+        monkeypatch.setattr(sys.stdout, "isatty", lambda v=stdout: v, raising=False)
+        assert console.is_interactive() is expected
+        if not expected:  # a logged run must never print a question or wait for an answer
+            assert console.confirm("ok?", default=True) is True
+            assert console.menu("pick", [("a", "A")]) is None
+            assert console.prompt_line("x: ") is None
+
+
+def test_the_calibration_menu_is_not_offered_when_output_is_redirected(monkeypatch, capsys):
+    import argparse
+    import sys
+
+    from halide.cli import _calibration_args
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr(_calibration_args, "list_profiles", lambda: pytest.fail("menu was built"))
+    args = argparse.Namespace(profile=None, auto_density=False, pick=False, auto_density_roll=False,
+                              rm=None, bm=None, rs=None, bs=None)
+    _calibration_args.choose_calibration_source(args, "invert")
+    assert capsys.readouterr().out == ""

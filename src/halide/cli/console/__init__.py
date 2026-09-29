@@ -91,6 +91,7 @@ from halide.cli.console.animation import (  # noqa: F401
 )
 
 from halide.cli.console.prompts import (  # noqa: F401
+    is_interactive,
     confirm,
     menu,
     prompt_line,

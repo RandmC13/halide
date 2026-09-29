@@ -14,6 +14,7 @@ from halide.calibration.profile_store import (
     damaged_profile_message,
     default_profiles_dir,
     delete_profile,
+    find_profile,
     list_profiles,
     load_anchors,
     load_profile,
@@ -213,8 +214,8 @@ def _run_delete(args: argparse.Namespace) -> int:
     except ProfileNameError as exc:
         raise SystemExit(str(exc))
     directory = default_profiles_dir()
-    path = directory / f"{name}.json"
-    if not path.exists():
+    path = find_profile(name, directory)
+    if path is None:
         suggestion = suggest_profile_name(name)
         hint = f" — did you mean '{suggestion}'?" if suggestion else ""
         raise SystemExit(f"no saved profile named {name!r} in {directory}{hint}")
@@ -250,8 +251,8 @@ def _interactive_edit_fields(profile) -> dict[str, str | None]:
 def _run_edit(args: argparse.Namespace) -> int:
     _reject_path_like(args.name, "edit")
     directory = default_profiles_dir()
-    path = directory / f"{args.name}.json"
-    if not path.exists():
+    path = find_profile(args.name, directory)
+    if path is None:
         suggestion = suggest_profile_name(args.name)
         hint = f" — did you mean '{suggestion}'?" if suggestion else ""
         raise SystemExit(f"no saved profile named {args.name!r} in {directory}{hint}")
@@ -264,7 +265,7 @@ def _run_edit(args: argparse.Namespace) -> int:
     if flag_fields:
         # One convention to clear a field: `-`, as in the prompt (the flag also takes '', undocumented).
         fields: dict[str, str | None] = {k: (None if v in ("", "-") else v) for k, v in flag_fields.items()}
-    elif sys.stdin.isatty():
+    elif is_interactive():
         fields = _interactive_edit_fields(profile)
         if not fields:
             print(console.dim("No changes made"))
