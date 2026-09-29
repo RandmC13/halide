@@ -4,6 +4,7 @@ from dataclasses import replace
 import pytest
 
 from halide.calibration.profile_store import (
+    default_profiles_dir,
     ProfileExistsError,
     ProfileNameError,
     damaged_profile_message,
@@ -421,3 +422,20 @@ def test_interrupted_profile_save_keeps_old_profile(tmp_path, monkeypatch):
     assert path.read_bytes() == old_bytes  # the old profile survives untouched
     assert load_profile(path).notes is None
     assert list(tmp_path.iterdir()) == [path]  # no leftover temp file
+
+
+def test_default_profiles_dir_on_macos_uses_application_support(monkeypatch, tmp_path):
+    """F13: macOS keeps per-user data in ~/Library/Application Support; XDG_CONFIG_HOME still wins."""
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert default_profiles_dir() == tmp_path / "Library" / "Application Support" / "halide" / "profiles"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert default_profiles_dir() == tmp_path / "xdg" / "halide" / "profiles"
+
+
+def test_default_profiles_dir_on_linux_is_dot_config(monkeypatch, tmp_path):
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert default_profiles_dir() == tmp_path / ".config" / "halide" / "profiles"

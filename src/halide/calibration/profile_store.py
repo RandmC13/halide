@@ -11,6 +11,7 @@ from __future__ import annotations
 import difflib
 import json
 import os
+import sys
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,7 +64,12 @@ def validate_profile_name(name: str) -> str:
 
 def default_profiles_dir() -> Path:
     config_home = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(config_home) if config_home else Path.home() / ".config"
+    if config_home:
+        base = Path(config_home)
+    elif sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "halide" / "profiles"
+    else:
+        base = Path.home() / ".config"
     return base / "halide" / "profiles"
 
 

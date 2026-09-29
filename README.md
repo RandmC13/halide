@@ -63,6 +63,9 @@ Later, `uv tool upgrade halide` updates to the latest version and `uv tool unins
 removes it. Use the full GitHub address above: a different, unrelated package called `halide` is on
 PyPI, so `uv tool install halide` on its own installs the wrong thing.
 
+Tested with numpy 2.5, colour-science 0.4.7, tifffile 2026.9, PySide6 6.11, Pillow 12.3, psutil 7.2 and
+shtab 1.12.
+
 halide is developed and tested on Linux. It is plain Python (numpy, Qt via PySide6), so macOS and
 Windows should work, but they haven't been tested yet.
 

@@ -1135,6 +1135,12 @@ from multiprocessing import shared_memory  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 
+def _stale_name(pid: int) -> str:
+    from halide.shared_frames import _base36
+
+    return f"hl{_base36(pid)}f00d-{time.time_ns():x}"[:30]
+
+
 def _dead_pid() -> int:
     child = subprocess.Popen([sys.executable, "-c", "pass"])
     child.wait()
@@ -1145,7 +1151,7 @@ def _dead_pid() -> int:
 def test_a_gpu_batch_first_sweeps_frames_a_killed_batch_left_behind(fake_gpu_service, clean_shm):
     """A whole-group SIGKILL (or the OOM killer taking the parent) leaves its frames in /dev/shm —
     RAM — with nothing left alive to sweep them. The next GPU batch removes them before it starts."""
-    stale = shared_memory.SharedMemory(create=True, size=4096, name=f"halide-{_dead_pid()}-0badf00d-{time.time_ns()}",
+    stale = shared_memory.SharedMemory(create=True, size=4096, name=_stale_name(_dead_pid()),
                                        track=False)
     try:
         with batch_compute([], _GPU) as compute:
@@ -1235,7 +1241,8 @@ def test_a_signalled_gpu_batch_cancels_in_order_and_leaves_nothing_behind(tmp_pa
     SIGHUP and SIGTERM now take Ctrl-C's orderly path: the frames in progress finish, the service
     stops, the shared frames are swept."""
     process = _start_cli(tmp_path, "service", frames=6, shape=(600, 900, 3))
-    ours = f"halide-{process.pid}-"
+    from halide.shared_frames import _base36
+    ours = f"hl{_base36(process.pid)}"
     deadline = time.monotonic() + 60
     while not any(name.startswith(ours) for name in _shm_entries()):  # a frame is in flight
         assert process.poll() is None and time.monotonic() < deadline, process.communicate()

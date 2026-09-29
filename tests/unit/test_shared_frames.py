@@ -219,8 +219,8 @@ def test_batch_prefix_is_keyed_on_this_processs_own_pid():
     import os
 
     prefix = batch_prefix()
-    assert prefix.startswith("halide-")
-    assert str(os.getpid()) in prefix
+    assert prefix.startswith("hl")
+    assert prefix_pid(prefix) == os.getpid()
 
 
 def test_new_frame_with_a_prefix_names_the_segment_accordingly():
@@ -353,8 +353,8 @@ def test_standalone_prefix_is_keyed_on_this_processs_own_pid_not_its_parents():
     import os
 
     with new_frame((2, 2, 3), np.float32) as frame:
-        assert frame.name.startswith(f"halide-{os.getpid()}-")
-        assert not frame.name.startswith(f"halide-{os.getppid()}-")
+        assert prefix_pid(frame.name) == os.getpid()
+        assert prefix_pid(frame.name) != os.getppid()
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
@@ -397,6 +397,13 @@ def test_sweeping_a_segment_this_processs_tracker_never_registered_prints_nothin
     assert not _segment_exists("orphan-sweep-test-x")
 
 
+def _dead_segment_name(pid: int, token: str) -> str:
+    """A segment name in the current format for a creator with this pid."""
+    from halide.shared_frames import _base36
+
+    return f"hl{_base36(pid)}{token}-{time.time_ns():x}"[:30]
+
+
 def _dead_pid() -> int:
     """The pid of a process that has run and been reaped — no longer running."""
     child = subprocess.Popen([sys.executable, "-c", "pass"])
@@ -407,14 +414,16 @@ def _dead_pid() -> int:
 @pytest.mark.parametrize(
     "name, pid",
     [
-        ("halide-1234-5aafe945-2e7234167abf465f8f74f90a03b33524", 1234),  # batch_prefix() + uuid
-        ("halide-1234-5aafe945-", 1234),  # batch_prefix() itself
-        ("halide-77-2e7234167abf465f8f74f90a03b33524", 77),  # _standalone_prefix() + uuid
-        ("halide-1234", None),  # no separator after the pid
-        ("halide--abc", None),
-        ("halide-12a4-x", None),
-        ("halide-²-x", None),  # a Unicode digit isn't a pid
-        ("sem.halide-1234-x", None),
+        ("hl0000yaaf3c-0123456789abcdef", 1234),  # batch_prefix() + frame id (1234 = "ya" in base 36)
+        ("hl0000yaaf3c-", 1234),  # batch_prefix() itself
+        ("hl000000af3c-0123456789abcdef", 0),
+        ("hl0000yaaf3c", None),  # no separator after the token
+        ("hl0000yi-0123456789abcdef", None),  # token too short
+        ("hl0000YIaf3c-x", None),  # base 36 is lower case
+        ("hl0000y_af3c-x", None),
+        ("hl²000yiaf3c-x", None),  # a Unicode digit isn't a pid
+        ("sem.hl0000yaaf3c-x", None),
+        ("halide-1234-5aafe945-x", None),  # the old long format is no longer ours
         ("other-1234-x", None),
         ("", None),
     ],
@@ -436,7 +445,7 @@ def test_sweep_stale_removes_a_dead_processs_segment_and_leaves_live_ones():
     """F12 (review 2.4-2): a batch killed outright (whole-group SIGKILL, closing the terminal)
     leaves its frames in /dev/shm, which is RAM, until reboot. A dead creator's segments go; a
     live process's never do."""
-    dead = shared_memory.SharedMemory(create=True, size=48, name=f"halide-{_dead_pid()}-deadbeef-{time.time_ns()}",
+    dead = shared_memory.SharedMemory(create=True, size=48, name=_dead_segment_name(_dead_pid(), "dead"),
                                       track=False)
     try:
         with new_frame((2, 2, 3), np.float32) as live, new_frame((2, 2, 3), np.float32, prefix=batch_prefix()) as ours:
@@ -454,8 +463,8 @@ def test_sweep_stale_skips_a_segment_it_may_not_open_and_carries_on(monkeypatch)
     import halide.shared_frames as shared_frames_module
 
     dead = _dead_pid()
-    theirs = f"halide-{dead}-0000aaaa-{time.time_ns()}"
-    ours = shared_memory.SharedMemory(create=True, size=48, name=f"halide-{dead}-0000bbbb-{time.time_ns()}", track=False)
+    theirs = _dead_segment_name(dead, "aaaa")
+    ours = shared_memory.SharedMemory(create=True, size=48, name=_dead_segment_name(dead, "bbbb"), track=False)
     real = shared_frames_module.shared_memory.SharedMemory
 
     def opener(*args, name=None, **kwargs):
@@ -470,3 +479,45 @@ def test_sweep_stale_skips_a_segment_it_may_not_open_and_carries_on(monkeypatch)
         assert not _segment_exists(ours.name)
     finally:
         ours.close()
+
+
+def test_every_shared_frame_name_is_at_most_30_characters():
+    """F35 (2.2-12): macOS caps a POSIX shared-memory name at 31 characters including the slash.
+    The longest pid Linux allows (2**22) and the widest frame id must still fit."""
+    from halide import shared_frames
+
+    for pid in (1, 4194304, 36**6 - 1):
+        assert len(f"hl{shared_frames._base36(pid)}0000-{uuid_hex()}") <= 30
+        assert prefix_pid(f"hl{shared_frames._base36(pid)}abcd-{uuid_hex()}") == pid
+    with new_frame((1, 1, 3), np.float32, prefix=batch_prefix()) as frame, new_frame((1, 1, 3), np.float32) as other:
+        assert len(frame.name) <= 30 and len(other.name) <= 30
+        assert frame.name != other.name
+
+
+def uuid_hex() -> str:
+    import uuid
+
+    return uuid.uuid4().hex[:16]
+
+
+@pytest.mark.skipif(sys.platform != "linux" or sys.version_info < (3, 13), reason="/dev/shm sweep, Python 3.13+")
+def test_sweep_stale_uses_the_short_format_and_own_batch_sweep_still_works():
+    """A dead pid's short-format segment is swept, a live one's is not, and `sweep(prefix)` still
+    removes exactly this batch's frames."""
+    import os
+
+    dead = shared_memory.SharedMemory(create=True, size=48, name=_dead_segment_name(_dead_pid(), "dead"), track=False)
+    live_name = _dead_segment_name(os.getpid(), "live")
+    live = shared_memory.SharedMemory(create=True, size=48, name=live_name, track=False)
+    try:
+        assert sweep_stale() >= 1
+        assert not _segment_exists(dead.name)
+        assert _segment_exists(live_name)
+        prefix = batch_prefix()
+        with new_frame((1, 1, 3), np.float32, prefix=prefix) as mine:
+            assert sweep(prefix) == 1
+            assert not _segment_exists(mine.name)
+    finally:
+        dead.close()
+        live.close()
+        live.unlink()
