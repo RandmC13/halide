@@ -110,34 +110,94 @@ def load_thumbnail(path: str | Path) -> tuple[np.ndarray, dict | None]:
 
 _EDGE_FONT_FILES = ("DejaVuSans-Bold.ttf", "DejaVuSansCondensed-Bold.ttf", "LiberationSans-Bold.ttf")
 _TEXT_FONT_FILES = ("DejaVuSans.ttf", "LiberationSans-Regular.ttf")
+_ARROW_SPACE = 0.2  # the thin space between the half-frame arrow and its number, in em
+
+
+def _packaged_font_path(name: str) -> Path | None:
+    from importlib.resources import files
+
+    path = Path(str(files("halide.assets") / "fonts" / name))
+    return path if path.is_file() else None
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """A system font if there is one (bold for the edge print, like film's own lettering), else
-    Pillow's built-in font, which has no bold but draws everything this sheet needs."""
+    """The vendored DejaVu (bold for the edge print, like film's own lettering); a system font only
+    if that file is missing, then Pillow's built-in font, which has no bold but draws everything
+    this sheet needs."""
     for name in _EDGE_FONT_FILES if bold else _TEXT_FONT_FILES:
+        packaged = _packaged_font_path(name)
         try:
-            return ImageFont.truetype(name, max(8, size))
+            return ImageFont.truetype(str(packaged) if packaged else name, max(8, size))
         except OSError:
             continue
     return ImageFont.load_default(size=max(8, size))
 
 
-def _barcode(draw: ImageDraw.ImageDraw, x0: float, x1: float, y: float, height: float, seed: int, fill) -> None:
-    """Edge-code-style bars between x0 and x1 - decoration in the manner of film's DX edge
-    barcode, fixed per frame number (the same frame always draws the same bars)."""
+def edge_code_unit(height: float) -> int:
+    """The width u of one clock bar (and of the gap after it) for a code `height` px tall."""
+    return max(1, round(height / 5))
+
+
+def edge_code_cells(seed: int, count: int) -> list[bool]:
+    """The data track's cells (one per clock bar and per gap, so twice the clock's resolution).
+    A start mark spans the first 3 clock bars, an end mark joins the last 2; between them roughly
+    40% of the cells are set, never more than 3 in a row, fixed per `seed`."""
     rng = random.Random(seed)
-    unit = max(1.0, (x1 - x0) / 110)
-    x = x0
-    while x < x1:
-        width = unit * rng.choice((1, 1, 2, 3))
-        tall = rng.random() < 0.6
-        top = y if tall else y + height * 0.45
-        right = min(x + width, x1) - 1
-        if right < x:  # no room left for even one pixel (tiny frames)
-            break
-        draw.rectangle([x, top, right, y + height], fill=fill)
-        x += width + unit * rng.choice((1, 1, 2))
+    cells = [False] * count
+    cells[:5] = [True] * 5  # the wide start mark: bars 0-2 and the gaps between them
+    cells[count - 3:] = [True] * 3  # the end mark: the last two bars and the gap between
+    run = 0
+    for i in range(6, count - 4):  # cell 5 and cell count-4 stay open, so the marks stand apart
+        if run < 3 and rng.random() < 0.4:
+            cells[i] = True
+            run += 1
+        else:
+            run = 0
+    return cells
+
+
+def _edge_code(draw: ImageDraw.ImageDraw, x0: float, x1: float, y: float, height: float, seed: int, fill) -> None:
+    """A DX-style two-track edge code between x0 and x1, in the manner of film's own: a clock track
+    (the lower ~55%) of narrow evenly spaced bars, and above it a data track of blocks that join
+    the bars they touch into tall ones. Fixed per frame (the same seed draws the same code)."""
+    u = edge_code_unit(height)
+    count = int((x1 - x0) // u)
+    count -= 1 - count % 2  # end on a clock bar
+    if count < 9:  # no room for the marks (tiny frames)
+        return
+    x0, y = round(x0), round(y)
+    bottom = y + round(height) - 1
+    data_bottom = y + round(height * 0.45) - 1
+    clock_top = data_bottom + 1
+    for i in range(0, count, 2):  # the clock track
+        draw.rectangle([x0 + i * u, clock_top, x0 + (i + 1) * u - 1, bottom], fill=fill)
+    for i, is_set in enumerate(edge_code_cells(seed, count)):  # the data track
+        if is_set:
+            draw.rectangle([x0 + i * u, y, x0 + (i + 1) * u - 1, data_bottom], fill=fill)
+
+
+def _draw_arrow(draw: ImageDraw.ImageDraw, x0: int, x1: int, mid: int, height: int, fill) -> None:
+    """A right-pointing arrow (shaft and filled head) drawn as shapes, so it needs no font glyph."""
+    half = max(1, height // 2)
+    head = max(2, min(x1 - x0, round(height * 0.9)))
+    shaft = max(1, round(height / 6))
+    draw.rectangle([x0, mid - shaft // 2, x1 - head, mid - shaft // 2 + shaft - 1], fill=fill)
+    draw.polygon([(x1 - head, mid - half), (x1 - 1, mid), (x1 - head, mid + half)], fill=fill)
+
+
+@dataclass(frozen=True)
+class LowerEdge:
+    """Where one frame's lower edge print sits: `N  [code]  ->NA  [code]`, all pixel boxes
+    (x0, x1) on the sheet, with the code strip's top `code_y` and height `code_h`."""
+
+    number_x: int
+    code_a: tuple[float, float]
+    arrow: tuple[int, int]
+    half_label_x: int
+    half_label_end: float
+    code_b: tuple[float, float]
+    code_y: int
+    code_h: int
 
 
 @dataclass(frozen=True)
@@ -208,6 +268,29 @@ class SheetLayout:
         y = self.margin + self.header_h + row * (self.strip_h + self.strip_gap) + self.top_edge
         return x, y, self.frame_w, self.frame_h
 
+    def lower_edge(self, index: int, number: int) -> LowerEdge:
+        """The lower edge print of frame `index`, whose frame number is `number`."""
+        x, y, W, H = self.frame_box(index)
+        font = _font(round(H * 0.046), bold=True)
+        size = font.size if hasattr(font, "size") else round(H * 0.046)
+        gap = W * 0.015
+        number_x = x + round(W * 0.03)
+        number_end = number_x + font.getlength(str(number))
+        arrow_x = x + round(W * 0.50)
+        arrow_w = round(size * 1.0)
+        label_x = arrow_x + arrow_w + round(size * _ARROW_SPACE)
+        label_end = label_x + font.getlength(f"{number}A")
+        return LowerEdge(
+            number_x=number_x,
+            code_a=(number_end + gap, arrow_x - gap),
+            arrow=(arrow_x, arrow_x + arrow_w),
+            half_label_x=label_x,
+            half_label_end=label_end,
+            code_b=(label_end + gap, x + W * 0.97),
+            code_y=y + H + round(self.bottom_edge * 0.27),
+            code_h=round(self.bottom_edge * 0.42),
+        )
+
     def frame_at(self, x: float, y: float) -> int | None:
         """The frame whose cell (with its edge print and caption) contains (x, y), if any."""
         for index in range(self.count):
@@ -228,7 +311,7 @@ def render_sheet(
     """The sheet as a real contact print looks: black wherever the film is (its rebate prints black
     on paper), frames butted in strips, the film's orange edge printing above and below each frame -
     frame number and film stock on top ("INVERTED BY HALIDE" when the stock isn't known), the number
-    with its half-frame "A" number and edge-code bars below - and, under that, a small dim line with
+    with its half-frame "A" number (arrowed, lower edge only) and DX-style edge code below - and, under that, a small dim line with
     the frame's file name and the printing decision halide recorded, so sheets from different
     settings stay self-describing."""
     layout = SheetLayout(len(tiles), frame_width, columns)
@@ -268,18 +351,14 @@ def render_sheet(
             draw.text((x + round(W * 0.03), top_mid), str(number), fill=_EDGE_PRINT, font=edge_font, anchor="lm")
             draw.text((x + round(W * 0.30), top_mid), stock, fill=_EDGE_PRINT, font=edge_font, anchor="lm")
 
-            # bottom edge: number + code, half-frame number + code
-            code_y = frames_y + H + round(bottom_edge * 0.3)
-            code_h = round(bottom_edge * 0.38)
-            code_mid = code_y + code_h // 2
-            for label, start, end, seed in (
-                (str(number), 0.03, 0.46, number * 2),
-                (f"{number}A", 0.52, 0.97, number * 2 + 1),
-            ):
-                lx = x + round(W * start)
-                draw.text((lx, code_mid), label, fill=_EDGE_PRINT, font=edge_font, anchor="lm")
-                text_end = lx + draw.textlength(label, font=edge_font) + W * 0.015
-                _barcode(draw, text_end, x + W * end, code_y, code_h, seed, _EDGE_PRINT)
+            # bottom edge: number, code, arrow + half-frame number, code
+            low = layout.lower_edge(r * columns + c, number)
+            code_mid = low.code_y + low.code_h // 2
+            draw.text((low.number_x, code_mid), str(number), fill=_EDGE_PRINT, font=edge_font, anchor="lm")
+            _draw_arrow(draw, low.arrow[0], low.arrow[1], code_mid, round(low.code_h * 0.5), _EDGE_PRINT)
+            draw.text((low.half_label_x, code_mid), f"{number}A", fill=_EDGE_PRINT, font=edge_font, anchor="lm")
+            _edge_code(draw, *low.code_a, low.code_y, low.code_h, number * 2, _EDGE_PRINT)
+            _edge_code(draw, *low.code_b, low.code_y, low.code_h, number * 2 + 1, _EDGE_PRINT)
 
             # the frame's file name and recorded printing decision, dim, below the film
             caption = f"{tile.name}   {tile.caption}" if tile.caption else tile.name

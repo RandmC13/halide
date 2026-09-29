@@ -132,3 +132,85 @@ def test_sheet_format_is_checked_up_front():
     check_sheet_path("sheet.png")
     with pytest.raises(ValueError, match=".jpg, .jpeg or .png"):
         check_sheet_path("sheet.tif")
+
+
+def test_half_frame_number_has_arrow_on_lower_edge_only():
+    from halide.io.contact_sheet import _EDGE_PRINT, SheetLayout
+
+    tiles = [Tile(f"IMG_{i}", np.full((60, 90, 3), 40, dtype=np.uint8)) for i in range(2)]
+    sheet = np.asarray(render_sheet(tiles, "Roll", frame_width=600, columns=6))
+    layout = SheetLayout(2, 600, 6)
+    orange = np.all(sheet == _EDGE_PRINT, axis=2)
+    for i in range(2):
+        low = layout.lower_edge(i, i + 1)
+        a0, a1 = low.arrow
+        assert a1 <= low.half_label_x  # the arrow sits left of the "A" number's box
+        rows = slice(low.code_y, low.code_y + low.code_h)
+        assert orange[rows, a0:a1].sum() > 20  # drawn as shapes, in the edge-print colour
+        assert orange[rows, a1:low.half_label_x - 1].sum() == 0  # then a thin space
+        # a filled head: the arrow's tip column is a single run, its base column a tall one
+        mid = low.code_y + low.code_h // 2
+        assert orange[mid, a1 - 1]
+        assert orange[rows, a1 - 4].sum() > orange[rows, a1 - 1].sum()
+        # nothing arrow-like on the top edge over the same columns beyond the stock's own lettering
+        x, fy, W, H = layout.frame_box(i)
+        top = orange[fy - layout.top_edge: fy, a0:a1]
+        assert top.sum() == 0 or top.sum() < orange[rows, a0:a1].sum()
+
+
+def test_edge_code_has_clock_track_and_merged_data_blocks():
+    from halide.io.contact_sheet import _EDGE_PRINT, _edge_code, edge_code_unit
+
+    height, width = 28, 400
+    u = edge_code_unit(height)
+    img = Image.new("RGB", (width, height + 4), (0, 0, 0))
+    from PIL import ImageDraw
+
+    _edge_code(ImageDraw.Draw(img), 0, width, 2, height, seed=3, fill=_EDGE_PRINT)
+    on = np.all(np.asarray(img) == _EDGE_PRINT, axis=2)
+
+    def runs(row):
+        out, n = [], 0
+        for v in list(row) + [False]:
+            if v:
+                n += 1
+            elif n:
+                out.append(n)
+                n = 0
+        return out
+
+    lower = on[2 + height - 2]  # inside the clock track only
+    cols = np.flatnonzero(lower)
+    assert len(runs(lower)) > 10
+    assert set(runs(lower)) == {u}  # every clock bar is u wide ...
+    starts = np.flatnonzero(np.diff(np.r_[False, lower].astype(int)) == 1)
+    assert set(np.diff(starts)) == {2 * u}  # ... on a regular 2u period
+    upper = on[2]
+    assert all(r % u == 0 for r in runs(upper))
+    assert max(runs(upper)) > u and runs(upper)[0] == 5 * u  # blocks merge; the wide start mark
+    assert max(runs(upper)) <= 5 * u  # no solid stretch beyond the start mark
+    assert cols.min() == 0
+
+
+def test_edge_code_deterministic_per_frame():
+    from halide.io.contact_sheet import edge_code_cells
+
+    assert edge_code_cells(7, 60) == edge_code_cells(7, 60)
+    assert edge_code_cells(7, 60) != edge_code_cells(8, 60)
+    cells = edge_code_cells(5, 200)
+    assert cells[-3:] == [True] * 3 and cells[-4] is False
+    middle = "".join("1" if c else "0" for c in cells[6:-4])
+    assert "1111" not in middle
+    assert 0.25 < middle.count("1") / len(middle) < 0.5
+
+
+def test_fonts_load_from_package():
+    from importlib.resources import files
+
+    from halide.io.contact_sheet import _font
+
+    fonts = files("halide.assets") / "fonts"
+    for name in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSansCondensed-Bold.ttf", "LICENSE-DejaVu.txt"):
+        assert (fonts / name).is_file()
+    assert "DejaVu Sans" in _font(20).getname()[0]
+    assert _font(20, bold=True).getname()[1] == "Bold"
