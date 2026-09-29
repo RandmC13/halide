@@ -45,10 +45,16 @@ class _ElidedNameLabel(QLabel):
         super().__init__()
         self._full = text
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # An ordinary name ("#12  IMG_0138") keeps the width it always had, so the row looks as it did
+        # before eliding existed; only a name longer than that gives way, at whatever width the row
+        # really gives the label (resizeEvent), never a fixed one.
+        self.ensurePolished()
+        metrics = QFontMetrics(self.font())
+        self.setMinimumWidth(min(metrics.horizontalAdvance(text), metrics.horizontalAdvance("#00  IMG_0000")))
         self._elide()
 
     def _elide(self) -> None:
-        self.setText(QFontMetrics(self.font()).elidedText(self._full, Qt.TextElideMode.ElideRight, max(0, self.width())))
+        self.setText(QFontMetrics(self.font()).elidedText(self._full, Qt.TextElideMode.ElideRight, max(0, self.width()) + 1))  # +1: Qt elides text that fits exactly
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)

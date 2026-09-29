@@ -157,3 +157,36 @@ def test_reliability_says_not_reliable_anywhere_instead_of_a_one_point_range(tmp
     assert not reliability.reliable_anywhere
     note = reliability.warning()
     assert "not reliable anywhere" in note and "D 1." not in note
+
+
+# --- point-list names (D-3: the 1080p picker must read as before) -----------------------------
+
+
+def _list_names(app, tmp_path, stem):
+    window = MainWindow()
+    window.setFixedSize(1056, 756)  # the 1920x1080 picker
+    path = tmp_path / f"{stem}.tif"
+    window.session.set_roll([path], [SCAN], tmp_path)
+    for density in (1.0, 1.1):
+        window.session.add_point(_point(path, density))
+    window._refresh_points()
+    window.show()
+    for _ in range(4):
+        app.processEvents()
+    from halide.gui.point_list import _ElidedNameLabel
+
+    labels = window.point_list.findChildren(_ElidedNameLabel)
+    return window, labels
+
+
+def test_a_normal_frame_name_is_not_elided_at_the_1080p_panel_width(app, tmp_path):
+    window, labels = _list_names(app, tmp_path, "IMG_0138")
+    assert labels and all(label.text() == label._full and "…" not in label.text() for label in labels)
+    window.close()
+
+
+def test_a_very_long_frame_name_is_elided_with_the_full_path_as_tooltip(app, tmp_path):
+    window, labels = _list_names(app, tmp_path, "IMG_0138_scanned_at_the_lab_on_a_tuesday_afternoon")
+    assert labels and all(label.text().endswith("…") for label in labels)
+    assert all("tuesday_afternoon" in label.toolTip() for label in labels)
+    window.close()
