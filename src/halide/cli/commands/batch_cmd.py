@@ -375,11 +375,10 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
          left_out=None) -> int:
     if stage is not Stage.INVERT_ONLY:
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
-    other_source_given = bool(args.profile) or manual_calibration_given(args) or args.auto_density
-    if args.auto_density_roll and other_source_given:
-        raise SystemExit(
-            "--auto-density-roll cannot be combined with --profile/manual overrides/--auto-density"
-        )
+    # --auto-density-roll vs --profile/--auto-density is argparse's (exclusive group); only the
+    # manual values need this hand check.
+    if args.auto_density_roll and manual_calibration_given(args):
+        raise SystemExit("manual overrides (--rm/--bm/--rs/--bs) can't be combined with --auto-density-roll")
 
     # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
     with contextlib.ExitStack() as stack:

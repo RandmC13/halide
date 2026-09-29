@@ -137,7 +137,7 @@ def test_profile_and_manual_override_conflict_errors(negative_tiff, tmp_path):
     profile_path = tmp_path / "profile.json"
     save_profile(DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0)), profile_path)
     output = tmp_path / "positive.tiff"
-    with pytest.raises(SystemExit, match="mutually exclusive"):
+    with pytest.raises(SystemExit, match="can't be combined with --profile"):
         main(["invert", str(negative_tiff), str(output), "--profile", str(profile_path), "--rm", "2.0"])
 
 
@@ -212,3 +212,8 @@ def test_invert_overwrite_replaces_existing_output(negative_tiff, tmp_path):
     before = output.read_bytes()
     assert main(["invert", str(negative_tiff), str(output), "--invert-only", "--overwrite"]) == 0
     assert output.read_bytes() == before  # same deterministic pipeline, but did re-run (no error)
+
+
+def test_manual_override_clashes_with_auto_density_by_hand_check(negative_tiff, tmp_path):
+    with pytest.raises(SystemExit, match="can't be combined with --auto-density"):
+        main(["invert", str(negative_tiff), str(tmp_path / "p.tiff"), "--auto-density", "--rm", "2.0"])
