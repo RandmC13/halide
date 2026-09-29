@@ -1,7 +1,9 @@
 """The coverage bar: a printed step wedge spanning this roll's own density range - film base (prints
 black) to the highlight end the print fit anchors to (prints white) - with a numbered tick for each
 neutral point and a bracket over the range they cover. Its job is the variety nudge: points spread
-across the tones tell the fit much more than points bunched at one tone.
+across the tones tell the fit much more than points bunched at one tone. When the fit through them
+can't be trusted over the whole roll (calibration/anchors.py::fit_reliability), an amber bracket
+under the labels marks the span it can be.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ _BAR_TOP = 14
 _BAR_HEIGHT = 14
 _TICK_ROW = _BAR_TOP + _BAR_HEIGHT + 3
 _LABEL_H = 13
+_RELIABLE_H = 8  # the reliable-range bracket's row, between the tick labels and the caption
 
 
 @dataclass(frozen=True)
@@ -34,16 +37,29 @@ class StepWedge(QWidget):
         super().__init__(parent)
         self._range: tuple[float, float] | None = None
         self._ticks: list[WedgeTick] = []
-        self.setFixedHeight(_TICK_ROW + 2 * _LABEL_H + 18)
+        self._reliable: tuple[float, float] | None = None
+        self._measuring = True
+        self.setFixedHeight(_TICK_ROW + 2 * _LABEL_H + _RELIABLE_H + 18)
         self.setToolTip(
             "The roll's density range as a printed step wedge: the film-base end prints black, the "
             "highlight end white. Each tick is one of your neutral points. Points spread across the "
             "tones give the fit more to work with than several at the same tone."
         )
 
-    def set_state(self, density_range: tuple[float, float] | None, ticks: list[WedgeTick]) -> None:
+    def set_state(
+        self,
+        density_range: tuple[float, float] | None,
+        ticks: list[WedgeTick],
+        reliable: tuple[float, float] | None = None,
+        measuring: bool = True,
+    ) -> None:
+        """`reliable`: the span the fit can be trusted over, drawn only when it's short of the roll.
+        `measuring`: with no density range yet, whether previews are still on their way (else there
+        is no roll to measure - "Continue without" - and the caption must not promise one)."""
         self._range = density_range
         self._ticks = list(ticks)
+        self._reliable = reliable
+        self._measuring = measuring
         self.update()
 
     def _x(self, density: float, left: float, width: float) -> float:
@@ -73,7 +89,9 @@ class StepWedge(QWidget):
 
         if self._range is None:
             painter.setPen(QColor(theme.TEXT_DIM))
-            painter.drawText(QRectF(left, _TICK_ROW, width, _LABEL_H * 2), Qt.AlignmentFlag.AlignCenter, "measuring the roll…")
+            painter.drawText(QRectF(left, _TICK_ROW, width, _LABEL_H * 2), Qt.AlignmentFlag.AlignCenter,
+                "measuring the roll…" if self._measuring else "no roll loaded - no density range to show",
+            )
             return
 
         if self._ticks:
@@ -98,9 +116,17 @@ class StepWedge(QWidget):
                 painter.drawText(label, Qt.AlignmentFlag.AlignCenter, str(tick.number))
                 painter.setFont(small)
 
+        bracket_y = _TICK_ROW + 2 * _LABEL_H + _RELIABLE_H - 2
+        if self._reliable is not None:
+            lo, hi = (self._x(d, left, width) for d in self._reliable)
+            painter.setPen(QPen(QColor(theme.TEXT_WARNING), 1.5))
+            painter.drawLine(int(lo), bracket_y, int(hi), bracket_y)
+            painter.drawLine(int(lo), bracket_y, int(lo), bracket_y - _RELIABLE_H + 3)
+            painter.drawLine(int(hi), bracket_y, int(hi), bracket_y - _RELIABLE_H + 3)
+
         low, high = self._range
         painter.setPen(QColor(theme.TEXT_DIM))
-        caption_y = _TICK_ROW + 2 * _LABEL_H + 2
+        caption_y = bracket_y + 2
         if self._ticks:
             densities = [t.density for t in self._ticks]
             caption = f"points cover {min(densities):.2f}–{max(densities):.2f} D  ·  roll {low:.2f}–{high:.2f} D"

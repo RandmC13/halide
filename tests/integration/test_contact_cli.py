@@ -82,3 +82,20 @@ def test_contact_from_processed_tiffs_and_from_exports(roll, tmp_path):
 def test_contact_rejects_a_bad_sheet_format(roll, tmp_path):
     with pytest.raises(SystemExit, match=".jpg, .jpeg or .png"):
         main(["contact", str(roll), str(tmp_path / "sheet.tif")])
+
+
+def test_batch_preview_thumbnail_folder_is_deleted_even_when_the_run_fails(roll, tmp_path, monkeypatch):
+    """R-077: the folder of full-frame thumbnails goes on any exit, not just a finished run."""
+    from halide.cli.commands import batch_cmd
+
+    made = _record_tempdirs(monkeypatch)
+
+    def crash(*args, **kwargs):
+        assert [d for d in made if os.path.basename(d).startswith("halide-contact-")]  # it existed by now
+        raise RuntimeError("the run went wrong")
+
+    monkeypatch.setattr(batch_cmd, "_run", crash)
+    with pytest.raises(RuntimeError, match="went wrong"):
+        main(["batch", str(roll), "--contact-sheet", str(tmp_path / "s.jpg"), *MANUAL, *SMALL])
+    ours = [d for d in made if os.path.basename(d).startswith("halide-contact-")]
+    assert ours and all(not os.path.exists(d) for d in ours)

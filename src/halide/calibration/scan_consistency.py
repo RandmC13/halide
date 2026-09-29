@@ -86,6 +86,9 @@ class RollScanReport:
         with --match-scan-exposure — still a warning: the correction is exact only for a truly
         linear scan, and one manual exposure for the whole roll is better."""
         lines = []
+        if self.missing_exif:
+            n = len(self.missing_exif)
+            lines.append(f"not verifiable (no camera EXIF in {n} frame{'' if n == 1 else 's'})")
         if self.exposure_inconsistent:
             spread = (
                 f"digitized at {len(self.exposure_groups)} different camera exposures, "

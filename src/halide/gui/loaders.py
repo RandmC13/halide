@@ -23,11 +23,12 @@ class PreviewLoader(QThread):
     error) as each finishes (any order). Stops early, without waiting on queued frames, if
     interrupted (a new roll loaded, or the window closed)."""
 
-    previewReady = Signal(int, object, object, object)
+    previewReady = Signal(int, int, object, object, object)  # generation, index, preview, estimate, error
 
-    def __init__(self, paths: list[Path], parent=None) -> None:
+    def __init__(self, paths: list[Path], generation: int = 0, parent=None) -> None:
         super().__init__(parent)
         self._paths = list(paths)
+        self._generation = generation
 
     def run(self) -> None:
         if not self._paths or self.isInterruptionRequested():  # stopped before it got going
@@ -50,7 +51,7 @@ class PreviewLoader(QThread):
                         preview, estimate, error = future.result()
                     except Exception as exc:  # noqa: BLE001 - a crashed worker is one bad frame, not a crash
                         preview, estimate, error = None, None, f"couldn't load: {exc}"
-                    self.previewReady.emit(index, preview, estimate, error)
+                    self.previewReady.emit(self._generation, index, preview, estimate, error)
         finally:
             # Interrupted (window closed, another roll loaded): stop the frames still decoding
             # rather than letting them finish - otherwise the interpreter waits on them at exit and
@@ -64,13 +65,15 @@ class PreviewLoader(QThread):
 
 class FrameLoader(QThread):
     """Loads one frame at full resolution (picks sample full-resolution pixels); emits
-    loaded(path, image, error)."""
+    loaded(generation, path, image, error). `generation` is whatever the caller tagged it with, handed
+    back so a late result from a replaced roll can be told from a current one."""
 
-    loaded = Signal(object, object, object)
+    loaded = Signal(int, object, object, object)
 
-    def __init__(self, path: Path, parent=None) -> None:
+    def __init__(self, path: Path, generation: int = 0, parent=None) -> None:
         super().__init__(parent)
         self._path = path
+        self._generation = generation
 
     def run(self) -> None:
         from halide.processing import load_working_space_image
@@ -78,6 +81,6 @@ class FrameLoader(QThread):
         try:
             image = load_working_space_image(self._path)
         except Exception as exc:  # noqa: BLE001 - surface any I/O error in the UI, don't crash it
-            self.loaded.emit(self._path, None, str(exc))
+            self.loaded.emit(self._generation, self._path, None, str(exc))
             return
-        self.loaded.emit(self._path, image, None)
+        self.loaded.emit(self._generation, self._path, image, None)

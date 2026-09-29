@@ -69,6 +69,19 @@ _RERENDER_INTERVAL_MS = 1200  # batch frames arriving together into one redraw
 _PLACEHOLDER = np.full((2, 3, 3), 28, dtype=np.uint8)  # a frame with nothing to show yet
 
 
+# Renderers of windows that have closed and are still winding down. A QThread that is destroyed
+# while running aborts the whole process, so closing a window hands its renderer here instead of
+# waiting for it (which froze the picker for as long as a rebuild took to stop); the picker's own
+# closeEvent is the one place that waits for them.
+_STOPPING: set[QThread] = set()
+
+
+def wait_for_stopping_renderers() -> None:
+    for thread in list(_STOPPING):
+        thread.wait()
+    _STOPPING.clear()
+
+
 class ProofRenderer(QThread):
     """Develops every frame at full resolution with batch's own worker; emits
     frameDone(index, thumbnail, record, error) as each finishes."""
@@ -368,8 +381,17 @@ class ProofWindow(QDialog):
             self._reproof_connected = True
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
-        self._renderer.requestInterruption()
-        # No timeout: Qt aborts the whole process if a running QThread is destroyed. Stopping is
-        # quick - the loop checks every 0.2 s and terminates its workers rather than waiting on them.
-        self._renderer.wait()
+        renderer = self._renderer
+        renderer.requestInterruption()
+        try:
+            renderer.frameDone.disconnect()
+        except (RuntimeError, TypeError):  # already disconnected (closed twice)
+            pass
+        if renderer.isRunning():
+            # Stopping is quick (the loop checks every 0.2 s and terminates its workers) but not
+            # instant, and this must not block the UI thread: detach the thread from this window,
+            # which is about to be deleted, and let it finish on its own.
+            renderer.setParent(None)
+            _STOPPING.add(renderer)
+            renderer.finished.connect(lambda: _STOPPING.discard(renderer))
         super().closeEvent(event)

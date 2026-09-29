@@ -16,17 +16,37 @@ import time
 from pathlib import Path
 
 from halide.batch.orchestrator import (
-    TIFF_SUFFIXES,
     BatchJob,
     default_worker_count,
     memory_budget_warning,
     run_print_batch,
 )
-from halide.batch.progress import GridProgressRenderer
+from halide.batch.progress import cancel_notice, make_renderer
 from halide.calibration.profile_store import load_tone_override, resolve_profile_path
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
-from halide.cli._run_sheet import choose_workers, compute_row, roll_row, start_compute
+from halide.cli._help import add_workers_argument
+from halide.cli._output_policy import (
+    add_output_policy_arguments,
+    check_input_file,
+    check_not_input,
+    check_output_parent,
+    is_interactive,
+    policy_from_args,
+    prepare_output_folder,
+    resolve_bulk_jobs,
+    resolve_existing,
+)
+from halide.io.roll import list_scans
+from halide.cli._run_sheet import (
+    choose_workers,
+    compute_row,
+    frame_count,
+    print_frame_warnings,
+    roll_row,
+    skipped_row,
+    start_compute,
+)
 from halide.cli._calibration_args import add_tone_arguments, describe_resolved_tone, resolve_tone_params
 from halide.core.types import ToneCurveParams
 from halide.device import ComputeDevice
@@ -39,25 +59,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "input",
         help="Flat linear positive TIFF (from `halide invert --output flat`, optionally edited "
-        "elsewhere and re-exported as linear float TIFF with an embedded profile), or a directory "
+        "elsewhere and re-exported as linear float TIFF with an embedded profile), or a folder "
         "of them",
     )
-    parser.add_argument("output", help="Output TIFF path, or an output directory when `input` is a directory")
+    parser.add_argument("output", help="Output TIFF path, or an output folder when `input` is a folder")
+    add_output_policy_arguments(parser)
     add_tone_arguments(parser, allow_output_mode=False)
     parser.add_argument(
         "--profile",
-        help="Use a saved profile's exposure/contrast override (from `halide calibrate`'s Fine-tune "
-        "controls), if it has one. Its density calibration is ignored — a flat positive already has "
-        "it applied.",
+        help="Use a saved profile's exposure/contrast override (from `halide calibrate`'s Print "
+        "controls), if it has one. Its density calibration is ignored: a flat positive already has "
+        "it applied",
     )
-    parser.add_argument("--suffix", default="", help="Suffix to append to output filenames when `input` is a directory")
-    parser.add_argument(
-        "--workers",
-        type=int,
-        help="Number of parallel worker processes when `input` is a directory (default: "
-        "auto-selected from available memory and CPU count)",
-    )
-    parser.add_argument("--quiet", action="store_true", help="Suppress the progress display when `input` is a directory")
+    parser.add_argument("--suffix", default="", help="Text to add to each output file name when `input` is a folder")
+    add_workers_argument(parser)
+    parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
     add_device_argument(parser)
 
 
@@ -75,12 +91,17 @@ def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCur
     from halide import device as halide_device
     from halide.processing import PrintInputError, ScanColorError, print_scan
 
-    if not input_path.exists():
-        raise SystemExit(f"input file not found: {input_path}")
+    check_input_file(input_path)
 
     output_path = Path(args.output)
-    if output_path.exists() and not console.confirm_overwrite(output_path):
-        return 1
+    check_output_parent(output_path)
+    check_not_input([(input_path, output_path)], suggest_suffix=False)
+    resolved = resolve_existing(
+        [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
+    )
+    if not resolved:
+        print(console.success(f"{output_path} already exists — skipped (--skip-existing)."))
+        return 0
 
     fallback_warning = device_fallback_warning(device)
     if fallback_warning:
@@ -117,18 +138,26 @@ def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCur
 
 def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveParams, device: ComputeDevice) -> int:
     output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_folder(output_dir)
 
-    files = sorted(f for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() in TIFF_SUFFIXES)
+    files, left_out = list_scans(input_dir)
     if not files:
         print(f"No TIFF files found in {input_dir}")
         return 1
     jobs = [BatchJob(input_path=f, output_path=output_dir / f"{f.stem}{args.suffix}.tif") for f in files]
 
+    jobs, skipped, _ = resolve_bulk_jobs(jobs, args, interactive=is_interactive())
+    if not jobs:
+        print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
+        return 0
+
     # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
     with contextlib.ExitStack() as stack:
         with console.RunSheet(quiet=args.quiet) as sheet:
             roll_row(sheet, input_dir, len(jobs), str(output_dir))
+            skipped_row(sheet, left_out)
+            if skipped:
+                sheet.row("Skipping", f"{frame_count(skipped)} already developed")
             compute = start_compute(stack, sheet, jobs, device, "develop")
             compute_row(sheet, device, compute)
             workers = choose_workers(
@@ -139,7 +168,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
                 compute=compute,
             )
 
-        renderer = None if args.quiet else GridProgressRenderer(total=len(jobs), verb="print")
+        renderer = make_renderer(len(jobs), "print", quiet=args.quiet)
         job_index = {job: i for i, job in enumerate(jobs)}
 
         def on_start(job):
@@ -155,6 +184,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
 
         results = run_print_batch(
             jobs, tone_params, max_workers=workers, on_result=on_result, on_start=on_start, device=device,
+            on_cancel=cancel_notice(renderer),
             compute=compute,
         )
 
@@ -166,16 +196,9 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
             renderer.cancel(not_started)
         renderer.finish(cancelled=cancelled)
 
-    for r in results:
-        if r.warning:
-            print(console.warning(f"{r.job.input_path.name}: {r.warning}"))
+    print_frame_warnings(results)
 
     failures = [r for r in results if r.error]
-    if renderer is None:
-        if cancelled:
-            print(console.warning(f"Cancelled — {len(results)}/{len(jobs)} frames processed."))
-        for r in failures:
-            print(console.error(f"{r.job.input_path.name}: {r.error}"))
 
     if cancelled:
         return 130
@@ -184,8 +207,8 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
 
 def run(args: argparse.Namespace) -> int:
     tone_params = _resolve_tone(args)
-    device = resolve_device_arg(args)
     input_path = Path(args.input)
+    device = resolve_device_arg(args, isolated=input_path.is_dir())  # a bulk run's parent never computes
     if input_path.is_dir():
         return _run_bulk(args, input_path, tone_params, device)
     return _run_single(args, input_path, tone_params, device)

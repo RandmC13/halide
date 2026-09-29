@@ -8,28 +8,31 @@ import shutil
 import textwrap
 from pathlib import Path
 
-from halide.batch.orchestrator import TIFF_SUFFIXES
 from halide.calibration.scan_consistency import SCANNING_GUIDANCE, assess_roll
 from halide.cli import console
+from halide.io.roll import Skipped, list_scans
 
 # The pipeline (numpy, Pillow, colour-science) is imported inside the functions that use it, so
 # building the parser — `halide --help`, tab completion — doesn't load it.
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("inputs", nargs="+", help="A directory of scans (one roll), or individual scan TIFFs")
+    parser.add_argument("inputs", nargs="+", help="A roll folder, or individual scan TIFFs")
 
 
-def _collect(inputs: list[str]) -> list[Path]:
+def _collect(inputs: list[str]) -> tuple[list[Path], Skipped]:
     files: list[Path] = []
+    skipped = Skipped()
     for item in map(Path, inputs):
         if item.is_dir():
-            files.extend(sorted(f for f in item.iterdir() if f.is_file() and f.suffix.lower() in TIFF_SUFFIXES))
+            found, left_out = list_scans(item)
+            files.extend(found)
+            skipped += left_out
         elif item.exists():
             files.append(item)
         else:
             raise SystemExit(f"not found: {item}")
-    return files
+    return files, skipped
 
 
 def _names(names: list[str], limit: int = 6) -> str:
@@ -40,33 +43,37 @@ def _names(names: list[str], limit: int = 6) -> str:
 def run(args: argparse.Namespace) -> int:
     from halide.processing import read_roll_scan_metadata
 
-    files = _collect(args.inputs)
+    files, skipped = _collect(args.inputs)
     if not files:
         print("No TIFF files found")
         return 1
     report = assess_roll({f.name: meta for f, meta in zip(files, read_roll_scan_metadata(files).values())})
 
     print(console.full_width_rule())
-    print(f"Checked {len(files)} scan(s)")
+    print(f"Checked {console.plural(len(files), 'frame')}")
+    if skipped:
+        print(console.dim(f"Skipped {skipped.describe()}"))
 
     print(f"\n{console.Style.BOLD}Camera exposure when digitizing{console.Style.RESET}")
     for setting, names in sorted(report.exposure_groups.items(), key=lambda kv: -len(kv[1])):
-        print(f"  {setting:>18s}  {len(names):3d} frame(s)  {_names(names)}")
+        print(f"  {setting:>18s}  {len(names):3d} frames  {_names(names)}")
     if report.missing_exif:
-        print(f"  {'(no EXIF)':>18s}  {len(report.missing_exif):3d} frame(s)  {_names(report.missing_exif)}")
+        print(f"  {'(no EXIF)':>18s}  {len(report.missing_exif):3d} frames  {_names(report.missing_exif)}")
+        n = len(report.missing_exif)
+        print(console.warning(f"not verifiable (no camera EXIF in {n} frame{'' if n == 1 else 's'})"))
     if report.exposure_inconsistent:
         print(console.warning(
             f"{report.exposure_spread_stops:.1f} stops between the brightest and darkest scan — "
             "correctable with --match-scan-exposure on invert/batch"
         ))
-    elif report.exposure_groups:
+    elif report.exposure_groups and not report.missing_exif:
         print(console.success("consistent"))
 
     print(f"\n{console.Style.BOLD}Raw white balance (darktable exports){console.Style.RESET}")
     if not report.white_balance_groups:
         print("  (no darktable history found — can't check)")
     for wb, names in sorted(report.white_balance_groups.items(), key=lambda kv: -len(kv[1])):
-        print(f"  R {wb[0]:.3f} G {wb[1]:.3f} B {wb[2]:.3f}  {len(names):3d} frame(s)  {_names(names)}")
+        print(f"  R {wb[0]:.3f} G {wb[1]:.3f} B {wb[2]:.3f}  {len(names):3d} frames  {_names(names)}")
     if report.white_balance_inconsistent:
         print(console.warning(
             "white balance differs between frames — not correctable after export (it's applied in "

@@ -3,7 +3,7 @@ the persistent `halide calibrate` app, for a user who just wants to manually pic
 points for a single image without building a reusable named profile.
 
 Reuses `main_window.MainWindow` as-is (magnifier, markers, live preview, the auto-detection overlay/
-comparison, Fine-tune) via its `is_pick_session=True` mode - none of that picking machinery is
+comparison, Print) via its `is_pick_session=True` mode - none of that picking machinery is
 specific to the profile-saving workflow, all of it is directly useful for picking quickly and
 accurately. The only real difference is the entry point itself: a blocking function that returns a
 value, rather than the persistent tabbed app's own event loop (see `gui/app.py`).
@@ -22,10 +22,12 @@ from halide.gui import theme
 from halide.gui.main_window import MainWindow
 
 
-def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None] | None:
+def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None, str | None] | None:
     """Open a standalone picker window pre-loaded with `path`, block until the user either clicks
-    "Develop" (returns the picked (DensityProfile, tone_override) - tone_override is None unless
-    the Print drawer pinned exposure/grade) or closes the window without doing so (returns None).
+    "Develop" (returns the picked (DensityProfile, tone_override, reliability warning) -
+    tone_override is None unless the Print drawer pinned exposure/grade; the warning is the
+    picker's "Fit reliable over D … only" note, None when the fit holds over the whole frame) or
+    closes the window without doing so (returns None).
 
     Runs a local QEventLoop rather than a full QApplication.exec() so this function can return a
     value once the user's done, rather than exiting the process - new territory for this codebase's
@@ -38,7 +40,7 @@ def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None] |
     window.setWindowTitle("halide · quick calibrate")
     window.load_files([Path(path)])
 
-    result_holder: list[tuple[DensityProfile, ToneCurveParams | None] | None] = [None]
+    result_holder: list[tuple[DensityProfile, ToneCurveParams | None, str | None] | None] = [None]
     loop = QEventLoop()
 
     def on_completed(value: object) -> None:

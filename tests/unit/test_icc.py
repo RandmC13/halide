@@ -131,7 +131,7 @@ def test_rejects_lut_based_profile():
 
 
 def test_rejects_non_rgb_color_space():
-    with pytest.raises(UnsupportedICCProfileError, match="color space"):
+    with pytest.raises(UnsupportedICCProfileError, match="colour space"):
         parse_linear_rgb_profile(build_icc(LINEAR_TAGS, color_space=b"GRAY"))
 
 
@@ -253,3 +253,111 @@ def test_convert_to_working_space_on_real_scans(name):
     np.testing.assert_array_max_ulp(
         convert_to_working_space(band, profile), _convert_with_colour(band, profile), maxulp=2
     )
+
+
+# ---------------------------------------------------------------------------
+# F08: density-based linearity, damage-proof parsing, D50 white point
+# ---------------------------------------------------------------------------
+def _with_trc(trc: bytes) -> bytes:
+    tags = dict(LINEAR_TAGS)
+    for ch in ("rTRC", "gTRC", "bTRC"):
+        tags[ch] = trc
+    return build_icc(tags)
+
+
+def test_rejects_gamma_1_013_curve():
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(0, [1.013])))
+
+
+def test_rejects_a_black_offset_of_0_004():
+    # y = 0.996 x + 0.004 (parametric type 2 with c = 0 would clip; type 1: (a x + b)^1)
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(1, [1.0, 0.996, 0.004])))
+
+
+def test_rejects_unadapted_primaries():
+    tags = dict(LINEAR_TAGS)
+    tags["rXYZ"] = _xyz_tag(0.6734 * 0.95, 0.2790, -0.0019)  # column sum off by ~0.03 in X
+    with pytest.raises(UnsupportedICCProfileError, match="isn't adapted to D50"):
+        parse_linear_rgb_profile(build_icc(tags))
+
+
+def _tag_boundaries() -> list[int]:
+    data = build_icc(LINEAR_TAGS)
+    (n,) = struct.unpack(">I", data[128:132])
+    cuts = {132 + 12 * n - 1, 131}
+    for i in range(n):
+        _, off, size = struct.unpack(">4sII", data[132 + 12 * i : 144 + 12 * i])
+        cuts.update({off, off + 1, off + size - 1})
+    return sorted(c for c in cuts if c < len(data))
+
+
+@pytest.mark.parametrize("cut", _tag_boundaries())
+def test_truncated_profile_is_reported_as_damaged(cut):
+    data = build_icc(LINEAR_TAGS)[:cut]
+    if cut < 132:  # not even a tag table: the header check speaks first
+        with pytest.raises(UnsupportedICCProfileError):
+            parse_linear_rgb_profile(data)
+        return
+    with pytest.raises(UnsupportedICCProfileError, match=r"damaged \(.* runs past the end\); re-export the scan"):
+        parse_linear_rgb_profile(data)
+
+
+def test_tag_smaller_than_its_contents_is_damaged():
+    data = bytearray(build_icc(LINEAR_TAGS))
+    (n,) = struct.unpack(">I", data[128:132])
+    for i in range(n):
+        if data[132 + 12 * i : 136 + 12 * i] == b"rXYZ":
+            data[140 + 12 * i : 144 + 12 * i] = struct.pack(">I", 8)  # size too small
+    with pytest.raises(UnsupportedICCProfileError, match="'rXYZ' tag runs past the end"):
+        parse_linear_rgb_profile(bytes(data))
+
+
+def test_halides_own_output_profile_passes():
+    parse_linear_rgb_profile(output_profile_bytes())
+
+
+# ---------------------------------------------------------------------------
+# Hostile / odd curve encodings (review 2.1-15): every parametric type, sampled tables, the tolerance
+# ---------------------------------------------------------------------------
+_LINEAR_PARA = {
+    0: [1.0],
+    1: [1.0, 1.0, 0.0],
+    2: [1.0, 1.0, 0.0, 0.0],
+    3: [1.0, 1.0, 0.0, 1.0, 0.0],
+    4: [1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+}
+_GAMMA_PARA = {  # the same shapes, gamma-encoded (g = 2.2)
+    0: [2.2],
+    1: [2.2, 1.0, 0.0],
+    2: [2.2, 1.0, 0.0, 0.0],
+    3: [2.2, 1.0, 0.0, 1.0, 0.0],
+    4: [2.2, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+}
+
+
+@pytest.mark.parametrize("function_type", sorted(_LINEAR_PARA))
+def test_every_parametric_curve_type_is_accepted_when_linear_and_rejected_when_gamma(function_type):
+    parse_linear_rgb_profile(_with_trc(_para_tag(function_type, _LINEAR_PARA[function_type])))
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(function_type, _GAMMA_PARA[function_type])))
+
+
+def test_a_parametric_curve_type_beyond_the_spec_is_refused_plainly():
+    with pytest.raises(UnsupportedICCProfileError, match="unsupported parametricCurveType functionType 5"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(5, [1.0] * 7)))
+
+
+def test_a_sampled_curve_with_many_entries_is_judged_by_its_shape():
+    ramp = list(np.linspace(0.0, 1.0, 4096))
+    parse_linear_rgb_profile(_with_trc(_curv_table_tag(ramp)))
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_curv_table_tag(list(np.linspace(0.0, 1.0, 4096) ** 2.2))))
+
+
+def test_the_linearity_tolerance_sits_between_gamma_1_001_and_1_002():
+    """0.005 D over the range 0.001..1: a curve this close to linear passes, a hair further does not."""
+    parse_linear_rgb_profile(_with_trc(_para_tag(0, [1.001])))
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(0, [1.002])))

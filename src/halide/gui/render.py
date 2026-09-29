@@ -20,6 +20,7 @@ from halide.core.pipeline import develop, negative_to_positive
 from halide.core.tone_render import ResolvedTone, apply_tone
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.gui.sampling import apply_stretch
+from halide.io.lut import load_paper_curve
 from halide.io.raster import to_srgb_8bit
 
 
@@ -35,7 +36,7 @@ def positive_display(
     can print its patch with the very same exposure/grade (print_patch) instead of re-fitting a
     tiny patch on its own."""
     frame = image * np.float32(scan_gain) if scan_gain != 1.0 else image
-    printed, resolved = develop(frame, profile, tone)
+    printed, resolved = develop(frame, profile, tone, load_paper_curve(tone.curve_path))
     return to_srgb_8bit(printed), resolved
 
 
@@ -44,4 +45,4 @@ def print_patch(
 ) -> np.ndarray:
     """A magnifier patch printed exactly as the displayed frame around it was (uint8 sRGB)."""
     frame = patch * np.float32(scan_gain) if scan_gain != 1.0 else patch
-    return to_srgb_8bit(apply_tone(negative_to_positive(frame, profile), resolved))
+    return to_srgb_8bit(apply_tone(negative_to_positive(frame, profile), resolved, load_paper_curve()))

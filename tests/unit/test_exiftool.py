@@ -7,7 +7,7 @@ goes through the same fake. Every command it receives is logged as one JSON line
 to the file in $FAKE_EXIFTOOL_LOG. Behaviour switches (per fake *process*, counting its commands
 from 1): FAIL_ON=<n> fails its nth command the way exiftool does; DIE_AFTER=<n> exits abruptly on
 command n+1 (0: on the first); HANG=1 never answers; NO_STATUS=1 ignores -echo3, like an exiftool
-older than 12.10.
+older than 12.10; ONESHOT_HANG=1 makes a one-shot run leave its temporary file and never finish.
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ FAKE = textwrap.dedent(
     DIE_AFTER = os.environ.get("DIE_AFTER")
     HANG = os.environ.get("HANG") == "1"
     NO_STATUS = os.environ.get("NO_STATUS") == "1"
+    ONESHOT_HANG = os.environ.get("ONESHOT_HANG") == "1"
 
     def log(mode, args):
         with open(LOG, "a") as f:
@@ -60,6 +61,9 @@ FAKE = textwrap.dedent(
     argv = sys.argv[1:]
     if "-stay_open" not in argv:
         log("oneshot", argv)
+        if ONESHOT_HANG:
+            open(argv[-1] + "_exiftool_tmp", "w").close()
+            time.sleep(3600)
         lines, status = write_file(argv, 1 if FAIL_ON == 1 else -1)
         print("\\n".join(lines))
         sys.exit(status)
@@ -109,7 +113,7 @@ def fake(tmp_path, monkeypatch):
     log.touch()
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setenv("FAKE_EXIFTOOL_LOG", str(log))
-    for name in ("FAIL_ON", "DIE_AFTER", "HANG", "NO_STATUS"):
+    for name in ("FAIL_ON", "DIE_AFTER", "HANG", "NO_STATUS", "ONESHOT_HANG"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(exiftool, "DEFAULT_TIMEOUT", 10.0)
     exiftool._reset()
@@ -255,6 +259,41 @@ def test_a_hung_session_times_out_and_the_copy_falls_back_to_oneshot(fake, tmp_p
     # Hung processes are killed, and the temporary file each left behind is removed (the one-shot
     # exiftool would otherwise refuse the file, as the real one does).
     assert not any(_alive(pid) for pid in starts)
+    assert not Path(str(dest) + "_exiftool_tmp").exists()
+
+
+def _oneshot_pids(log):
+    return [entry["pid"] for entry in log if entry["mode"] == "oneshot"]
+
+
+def test_a_hung_oneshot_after_hung_sessions_times_out_and_raises(fake, tmp_path, monkeypatch):
+    """F17 (review 2.4-5): after two hung sessions the one-shot fallback used to have no timeout,
+    so an exiftool that hangs on a file (a stalled network share) hung the batch for good."""
+    monkeypatch.setenv("HANG", "1")
+    monkeypatch.setenv("ONESHOT_HANG", "1")
+    monkeypatch.setattr(exiftool, "DEFAULT_TIMEOUT", 0.5)
+    source, (dest,) = _files(tmp_path)
+    started = time.monotonic()
+    with pytest.raises(exiftool.ExifToolError, match=r"exiftool didn't answer within 0\.5 s"):
+        copy_exif_metadata(source, dest)
+    assert time.monotonic() - started < 5
+    oneshots = _oneshot_pids(fake())
+    assert len(oneshots) == 1 and not _alive(oneshots[0])  # killed, not left running
+    assert not Path(str(dest) + "_exiftool_tmp").exists()
+    assert dest.read_bytes() == b"output"  # the image itself is untouched
+
+
+def test_a_hung_oneshot_only_call_times_out_too(fake, tmp_path, monkeypatch):
+    """The same bound for a command that goes one-shot from the start (a name an argument file
+    can't carry)."""
+    monkeypatch.setenv("ONESHOT_HANG", "1")
+    monkeypatch.setattr(exiftool, "DEFAULT_TIMEOUT", 0.5)
+    source, (dest,) = _files(tmp_path, name="odd\nname{}.tif")
+    started = time.monotonic()
+    with pytest.raises(exiftool.ExifToolError):
+        copy_exif_metadata(source, dest)
+    assert time.monotonic() - started < 5
+    assert not any(_alive(pid) for pid in _oneshot_pids(fake()))
     assert not Path(str(dest) + "_exiftool_tmp").exists()
 
 

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from PIL import Image
 
 from halide.cli.main import main
@@ -123,3 +124,29 @@ def test_bulk_export_runs_in_parallel_with_explicit_workers(tmp_path):
     out_dir = tmp_path / "out"
     assert main(["export", str(in_dir), str(out_dir), "--workers", "2", "--quiet"]) == 0
     assert len(list(out_dir.glob("*.png"))) == 4
+
+
+def test_export_bulk_rerun_refuses_without_overwrite(tmp_path):
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    for i in range(3):
+        _write_positive(in_dir / f"frame_{i:02d}.tiff")
+
+    out_dir = tmp_path / "out"
+    assert main(["export", str(in_dir), str(out_dir), "--quiet"]) == 0
+    outputs = sorted(out_dir.glob("*.png"))
+    before = {p: p.read_bytes() for p in outputs}
+
+    with pytest.raises(SystemExit) as exc:
+        main(["export", str(in_dir), str(out_dir), "--quiet"])
+    message = str(exc.value.code)
+    assert "--overwrite" in message and "--skip-existing" in message
+    assert {p: p.read_bytes() for p in outputs} == before  # nothing was silently overwritten
+
+    # --skip-existing develops nothing new (all 3 already exist) and leaves them untouched.
+    assert main(["export", str(in_dir), str(out_dir), "--quiet", "--skip-existing"]) == 0
+    assert {p: p.read_bytes() for p in outputs} == before
+
+    # --overwrite re-runs and succeeds.
+    assert main(["export", str(in_dir), str(out_dir), "--quiet", "--overwrite"]) == 0
+    assert len(list(out_dir.glob("*.png"))) == 3

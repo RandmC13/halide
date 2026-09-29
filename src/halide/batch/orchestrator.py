@@ -22,6 +22,7 @@ import multiprocessing
 import os
 import shutil
 import sys
+import time
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
@@ -29,16 +30,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from halide.cli.console import plural
 from halide.core.types import DensityProfile, Stage, ToneCurveParams
 from halide.device import ComputeDevice
+from halide.interrupts import cancel_on_hangup_and_term, children_ignore_terminal_signals, ignore_terminal_signals
 from halide.io.contact_sheet_defaults import DEFAULT_FRAME_WIDTH
+from halide.io.roll import TIFF_SUFFIXES, list_scans  # noqa: F401 -- TIFF_SUFFIXES re-exported
 
 # tifffile and halide.processing (numpy, Pillow, colour-science) are imported inside the functions
 # that use them: every CLI command imports this module, and `halide --help` shouldn't pay for them.
 # Workers don't pay either — the forkserver preloads halide.processing (_FORKSERVER_PRELOAD).
 # halide.gpu_service and halide.shared_frames likewise (the latter imports numpy).
 
-TIFF_SUFFIXES = (".tif", ".tiff")
 
 # Peak worker memory fits `baseline + K * decoded_pixel_bytes`. Measured on real worker processes
 # (`--workers 1` batches over the four real full-res scans, 3276x4849 = ~182 MiB decoded, peak
@@ -80,8 +83,9 @@ _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 # benchmark's 4-worker batch ran with no CPU fallbacks.
 # Previously PROVISIONAL (768 MiB + 4 x frame = 1492 MiB, from estimates before any real card ran).
 _CUDA_CONTEXT_BYTES = 256 * 1024 * 1024
-_DEVICE_CONTEXT_BYTES = _CUDA_CONTEXT_BYTES
 _DEVICE_FRAME_MULTIPLIER = 5
+# Used only when no file's header can be read: about a real 16-megapixel frame decoded (182 MiB, rounded up).
+_FALLBACK_FRAME_BYTES = 200 * 1024 * 1024
 
 # A GPU worker's *host* memory is much larger than a CPU worker's: the same benchmark measured the
 # largest GPU worker at 1212-1235 MiB RSS against 392-403 MiB for a CPU worker on the same frames
@@ -154,14 +158,18 @@ class BatchResult:
     job: BatchJob
     error: str | None  # None on success
     warning: str | None = None  # non-fatal, e.g. export's "doesn't look like ACEScg" notice
+    detail: str | None = None  # the printing decision, e.g. "grade 0.88 exp +0.39" (plain progress lines)
+    seconds: float | None = None  # how long the frame took in its worker
 
 
 def discover_jobs(input_dir: str | Path, output_dir: str | Path, suffix: str = "") -> list[BatchJob]:
-    input_dir = Path(input_dir)
+    """One job per scan in `input_dir` (halide.io.roll.list_scans decides what is a scan)."""
+    files, _ = list_scans(input_dir)
+    return jobs_for_files(files, output_dir, suffix)
+
+
+def jobs_for_files(files: list[Path], output_dir: str | Path, suffix: str = "") -> list[BatchJob]:
     output_dir = Path(output_dir)
-    files = sorted(
-        f for f in input_dir.iterdir() if f.is_file() and f.suffix.lower() in TIFF_SUFFIXES
-    )
     jobs = []
     for f in files:
         name = f"{f.stem}{suffix}{f.suffix}" if suffix else f.name
@@ -216,8 +224,8 @@ def estimate_worker_device_bytes(jobs: list[BatchJob]) -> int:
     it too."""
     sizes = [b for b in (_decoded_pixel_bytes(job.input_path) for job in jobs) if b is not None]
     if not sizes:
-        return _FALLBACK_PER_WORKER_BYTES
-    return _DEVICE_CONTEXT_BYTES + max(sizes) * _DEVICE_FRAME_MULTIPLIER
+        return _CUDA_CONTEXT_BYTES + _FALLBACK_FRAME_BYTES * _DEVICE_FRAME_MULTIPLIER  # a video-memory guess, not the RAM one
+    return _CUDA_CONTEXT_BYTES + max(sizes) * _DEVICE_FRAME_MULTIPLIER
 
 
 def device_worker_cap(jobs: list[BatchJob], device: ComputeDevice | None) -> int | None:
@@ -241,8 +249,8 @@ def device_budget_warning(jobs: list[BatchJob], requested_workers: int, device: 
     per_worker = estimate_worker_device_bytes(jobs)
     return (
         f"--workers {requested_workers} may not fit in free GPU memory (~{per_worker / 1024**3:.1f} GB "
-        f"estimated per worker vs. ~{device.memory_free / 1024**3:.1f} GB free suggests {safe_workers} "
-        f"worker(s)) — frames that don't fit are developed on the CPU instead, more slowly."
+        f"estimated per worker vs. ~{device.memory_free / 1024**3:.1f} GB free suggests {plural(safe_workers, 'worker')}) "
+        f"— frames that don't fit are developed on the CPU instead, more slowly"
     )
 
 
@@ -338,8 +346,8 @@ def memory_budget_warning(
         return None
     return (
         f"--workers {requested_workers} may exceed available memory (~{per_worker / 1024**3:.1f} "
-        f"GB estimated per worker vs. ~{available / 1024**3:.1f} GB available suggests {safe_workers} "
-        f"worker(s) is safer) — continuing with {requested_workers} since it was explicitly requested."
+        f"GB estimated per worker vs. ~{available / 1024**3:.1f} GB available suggests {plural(safe_workers, 'worker')} "
+        f"would be safer) — continuing with {requested_workers} since it was explicitly requested"
     )
 
 
@@ -521,6 +529,11 @@ def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: 
     if device is None or device.kind != "gpu":
         yield BatchCompute(device=device, workload=workload)
         return
+    from halide.shared_frames import sweep_stale
+
+    # F12: frames a batch killed outright left behind (nothing of it survived to sweep them) —
+    # first, so the /dev/shm cap below counts the space they held as free.
+    sweep_stale()
     if not _service_python_supported():
         yield BatchCompute(device=device, workload=workload,
                            fallback_reason="the shared GPU service needs Python 3.13 or newer")
@@ -540,6 +553,10 @@ def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: 
     from halide.shared_frames import batch_prefix, sweep
 
     with contextlib.ExitStack() as stack:
+        # F12: while the service runs, closing the terminal (SIGHUP) or SIGTERM cancels like Ctrl-C
+        # (KeyboardInterrupt), so the unwinding below still stops the service and sweeps. Entered
+        # first, so it is the last thing undone.
+        stack.enter_context(cancel_on_hangup_and_term())
         prefix = batch_prefix()
         # Registered before the service is entered, so — since an ExitStack unwinds last-registered
         # first (LIFO) — this callback is the *last* thing to run on the way out: the service (entered
@@ -595,14 +612,14 @@ def service_budget_warnings(jobs: list[BatchJob], requested_workers: int, comput
             warnings.append(
                 f"--workers {requested_workers} may exceed available memory (~{per_worker / 1024**3:.1f} GB "
                 f"estimated per worker, plus the GPU service, vs. ~{available / 1024**3:.1f} GB available "
-                f"suggests {safe} worker(s) is safer) — continuing with {requested_workers} since it was "
-                f"explicitly requested."
+                f"suggests {plural(safe, 'worker')} would be safer) — continuing with {requested_workers} since it was "
+                f"explicitly requested"
             )
     if compute.shm_cap is not None and requested_workers > compute.shm_cap:
         warnings.append(
             f"--workers {requested_workers} won't all fit in shared memory ({_SHM_DIR} holds "
-            f"{compute.shm_cap} worker(s)' frames) — frames that don't fit are developed on the CPU "
-            f"instead, more slowly."
+            f"{plural(compute.shm_cap, 'worker')}' frames) — frames that don't fit are developed on the CPU "
+            f"instead, more slowly"
         )
     return warnings
 
@@ -689,6 +706,15 @@ def _start_on_device(job: BatchJob, device_kind: str, memory_limit: int | None, 
     return device, warnings
 
 
+def _tone_detail(resolved) -> str | None:
+    """A frame's printing decision in a few words, for the plain progress line."""
+    if resolved is None:
+        return None
+    if resolved.mode == "linear":
+        return f"flat x{resolved.linear_scale:.4g}"
+    return f"grade {resolved.contrast:.2f} exp {resolved.exposure:+.2f}"
+
+
 def _worker(
     job: BatchJob,
     stage: Stage,
@@ -702,15 +728,17 @@ def _worker(
     from halide.processing import process_scan
 
     warnings = None
+    started = time.monotonic()
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "developed this frame")
         client, shm_prefix = _worker_service(service)
-        process_scan(
+        resolved = process_scan(
             job.input_path, job.output_path, stage, density_profile, tone_params, scan_gain=job.scan_gain,
             thumbnail_path=job.thumbnail_path, thumbnail_long_edge=thumbnail_long_edge,
             device=device, on_warning=warnings, service=client, shm_prefix=shm_prefix,
         )
-        return BatchResult(job=job, error=None, warning=warnings.text())
+        return BatchResult(job=job, error=None, warning=warnings.text(), detail=_tone_detail(resolved),
+                           seconds=time.monotonic() - started)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
@@ -722,12 +750,13 @@ def _export_worker(
     from halide.processing import export_delivery_image
 
     warnings = None
+    started = time.monotonic()
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "exported this file")
         client, shm_prefix = _worker_service(service)
         warnings(export_delivery_image(job.input_path, job.output_path, quality=quality,
                                        device=device, on_warning=warnings, service=client, shm_prefix=shm_prefix))
-        return BatchResult(job=job, error=None, warning=warnings.text())
+        return BatchResult(job=job, error=None, warning=warnings.text(), seconds=time.monotonic() - started)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
@@ -739,13 +768,15 @@ def _print_worker(
     from halide.processing import print_scan
 
     warnings = None
+    started = time.monotonic()
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "developed this frame")
         client, shm_prefix = _worker_service(service)
-        _, warning = print_scan(job.input_path, job.output_path, tone_params, device=device, on_warning=warnings,
+        resolved, warning = print_scan(job.input_path, job.output_path, tone_params, device=device, on_warning=warnings,
                                 service=client, shm_prefix=shm_prefix)
         warnings(warning)
-        return BatchResult(job=job, error=None, warning=warnings.text())
+        return BatchResult(job=job, error=None, warning=warnings.text(), detail=_tone_detail(resolved),
+                           seconds=time.monotonic() - started)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
@@ -771,6 +802,20 @@ def _thumbnail_worker(job: BatchJob, thumbnail_long_edge: int) -> BatchResult:
 _FORKSERVER_PRELOAD = ["__main__", "halide.processing", "colour"]
 
 
+def _start_forkserver(context) -> None:
+    """Start the pool's forkserver (if it isn't already running) with Ctrl-C and SIGHUP ignored
+    from its first instruction (2.4-9): Ctrl-C in the first second of a batch otherwise interrupted
+    its preload of colour/scipy and printed pages of tracebacks. It passes the ignored signals on
+    to every worker it forks, and the pool's worker initializer ignores them again anyway. Main
+    thread only, like any signal handling; the picker's background pools start it as before."""
+    if not isinstance(context, multiprocessing.context.ForkServerContext):
+        return
+    from multiprocessing import forkserver
+
+    with children_ignore_terminal_signals():
+        forkserver.ensure_running()
+
+
 def _pool_context():
     """The multiprocessing context for worker pools: forkserver with halide preloaded where the
     platform has it (Linux; Python 3.14's default there anyway), else the platform default. Only
@@ -791,6 +836,7 @@ def _run_pool(
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
     shm_prefix: str | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """Process every job in a process pool, in parallel, calling `worker(job, *worker_args)` for
     each. Calls on_start(job) when a job is handed to a worker and on_result(result) when it
@@ -822,7 +868,10 @@ def _run_pool(
     `shm_prefix`: the batch's shared-frame prefix in GPU service mode (BatchCompute.shm_prefix).
     Once the pool has fully shut down — on every way out, a crash or Ctrl+C included — whatever a
     dead worker left in /dev/shm under it is swept (shared_frames.sweep); never before, since
-    every worker shares the prefix."""
+    every worker shares the prefix.
+
+    `on_cancel(message)`: called once after a cancel if frames are still in progress, while they
+    finish (_finish_in_flight) — so the caller can say why the batch hasn't stopped yet."""
     if max_workers < 1:
         raise ValueError(f"max_workers must be at least 1, got {max_workers}")
 
@@ -835,76 +884,72 @@ def _run_pool(
 
     results: list[BatchResult] = []
 
-    def _crashed_result(job: BatchJob) -> BatchResult:
-        return BatchResult(
-            job=job,
-            error=(
-                "worker process crashed while processing this file or another file in the "
-                "same batch (often caused by running out of memory) — try re-running with "
-                "a lower --workers value"
-            ),
-        )
+    def record(result: BatchResult) -> None:
+        results.append(result)
+        if on_result:
+            on_result(result)
 
-    interrupted: list = []  # the pool's worker processes, if Ctrl+C stopped it without waiting
+    in_flight: dict = {}
+    stopped: list = []  # the pool's worker processes, once a cancel stopped it without waiting
     try:
-        with ProcessPoolExecutor(max_workers=max_workers, mp_context=_pool_context()) as executor:
-            pending = list(jobs)
-            in_flight: dict = {}
-
-            def submit_next() -> None:
-                # Loops rather than submitting exactly one job, so that once the pool is broken every
-                # remaining queued job is immediately resolved as a crashed result instead of being
-                # submitted (and raising) one at a time as later callers happen to invoke this again.
-                while pending:
-                    job = pending.pop(0)
-                    try:
-                        future = executor.submit(worker, job, *worker_args)
-                    except BrokenProcessPool:
-                        result = _crashed_result(job)
-                        results.append(result)
-                        if on_result:
-                            on_result(result)
-                        continue
-                    in_flight[future] = job
-                    if on_start:
-                        on_start(job)
-                    break
-
-            for _ in range(min(max_workers, len(jobs))):
-                submit_next()
-
+        # F12: closing the terminal (SIGHUP) or SIGTERM cancels exactly like Ctrl-C.
+        with cancel_on_hangup_and_term():
             try:
-                while in_flight:
-                    done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        job = in_flight.pop(future)
-                        try:
-                            result = future.result()
-                        except BrokenProcessPool:
-                            result = _crashed_result(job)
-                        results.append(result)
-                        if on_result:
-                            on_result(result)
-                        submit_next()
+                context = _pool_context()
+                _start_forkserver(context)
+                # Workers ignore Ctrl-C and SIGHUP (2.4-9): the parent owns cancelling, below.
+                with ProcessPoolExecutor(max_workers=max_workers, mp_context=context,
+                                         initializer=ignore_terminal_signals) as executor:
+                    try:
+                        pending = list(jobs)
+
+                        def submit_next() -> None:
+                            # Loops rather than submitting exactly one job, so that once the pool is
+                            # broken every remaining queued job is immediately resolved as a crashed
+                            # result instead of being submitted (and raising) one at a time as later
+                            # callers happen to invoke this again.
+                            while pending:
+                                job = pending.pop(0)
+                                try:
+                                    future = executor.submit(worker, job, *worker_args)
+                                except BrokenProcessPool:
+                                    record(_crashed_result(job))
+                                    continue
+                                in_flight[future] = job
+                                if on_start:
+                                    on_start(job)
+                                break
+
+                        for _ in range(min(max_workers, len(jobs))):
+                            submit_next()
+
+                        while in_flight:
+                            done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                            for future in done:
+                                record(_finished(future, in_flight.pop(future)))
+                                submit_next()
+                    except KeyboardInterrupt:
+                        # Ctrl+C (or SIGHUP/SIGTERM, above) can land on any bytecode boundary, from
+                        # the first submit (starting the workers — 2.4-9, the first second of a
+                        # batch) to the last result. Return whatever completed rather than
+                        # propagating, so the caller can report "X/N completed, cancelled" (see
+                        # batch_cmd.py/export_cmd.py) instead of every already-finished result being
+                        # lost to a bare KeyboardInterrupt traceback — the same "don't discard good
+                        # results" principle this function already applies to BrokenProcessPool.
+                        # Nothing new starts (cancel_futures); the workers ignored the signal, so the
+                        # frames they are on finish and are counted (_finish_in_flight).
+                        # The processes, first: a non-waiting shutdown forgets them, and the `with`'s
+                        # own shutdown(wait=True) then has nothing left to wait for.
+                        stopped = list((getattr(executor, "_processes", None) or {}).values())
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        _finish_in_flight(in_flight, record, stopped, on_cancel)
+                        return results
             except KeyboardInterrupt:
-                # Ctrl+C can land on any bytecode boundary in this loop, not just inside wait() — the
-                # try wraps the whole loop body rather than just the blocking call. Workers in the same
-                # process group receive SIGINT directly too and will exit on their own; cancel_futures
-                # drops anything not yet started rather than waiting for a full drain. Return whatever
-                # completed rather than propagating, so the caller can report "X/N completed, cancelled"
-                # (see batch_cmd.py/export_cmd.py) instead of every already-finished result being lost
-                # to a bare KeyboardInterrupt traceback — the same "don't discard good results" principle
-                # this function already applies to BrokenProcessPool above.
-                # The processes, first: a non-waiting shutdown forgets them, and the `with`'s own
-                # shutdown(wait=True) then has nothing left to wait for.
-                interrupted = list((getattr(executor, "_processes", None) or {}).values())
-                executor.shutdown(wait=False, cancel_futures=True)
-                return results
+                return results  # before the pool existed: nothing started, nothing to stop
     finally:
+        # Only once every worker is gone is nothing using a frame, and the sweep safe.
+        _wait_for_exit(stopped)
         if shm_prefix is not None:
-            # Normally the `with` has already waited for every worker to exit; after Ctrl+C they're
-            # waited for here. Only then is nothing using a frame, and the sweep safe.
-            _wait_for_exit(interrupted)
             from halide.shared_frames import sweep
 
             sweep(shm_prefix)
@@ -912,19 +957,71 @@ def _run_pool(
     return results
 
 
-# How long a worker still running after Ctrl+C gets to finish before it's terminated. Ctrl+C in a
-# terminal reaches the workers too, so they're normally gone at once; this covers one that wasn't
-# signalled (a KeyboardInterrupt raised in the parent alone) and is mid-frame.
+# How long the frames in progress get to finish after a cancel before their workers are
+# terminated. The workers ignore Ctrl-C (the parent owns cancelling), so each finishes the frame it
+# is on — normally a few seconds; this bounds one that is stuck.
 _INTERRUPT_GRACE = 10.0
+
+# What a caller's `on_cancel` is told while those frames finish (the CLI prints it).
+FINISHING_NOTICE = "Finishing the frames in progress — Ctrl-C again to stop now"
+
+
+def _finished(future, job: BatchJob) -> BatchResult:
+    try:
+        return future.result()
+    except BrokenProcessPool:
+        return _crashed_result(job)
+
+
+def _crashed_result(job: BatchJob) -> BatchResult:
+    return BatchResult(
+        job=job,
+        error=(
+            "worker process crashed while processing this file or another file in the "
+            "same batch (often caused by running out of memory) — try re-running with "
+            "a lower --workers value"
+        ),
+    )
+
+
+def _finish_in_flight(in_flight: dict, record: Callable[[BatchResult], None], processes: list,
+                      on_cancel: Callable[[str], None] | None = None) -> None:
+    """After a cancel: record the frames still in progress as they finish, for up to
+    _INTERRUPT_GRACE, so "X/N frames processed" counts every frame written. A second Ctrl-C (or
+    SIGHUP/SIGTERM) stops waiting: the workers are terminated at once. `on_cancel(FINISHING_NOTICE)`
+    is called first when there is anything to wait for, so the wait isn't silent."""
+    try:
+        if in_flight and on_cancel:
+            on_cancel(FINISHING_NOTICE)
+        done, not_done = wait(in_flight, timeout=_INTERRUPT_GRACE)
+    except KeyboardInterrupt:
+        _terminate(processes)
+        return
+    for future in done:
+        if not future.cancelled():
+            record(_finished(future, in_flight.pop(future)))
+    if not_done:
+        _terminate(processes)  # stuck: stop waiting for them
+
+
+def _terminate(processes: list) -> None:
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
 
 
 def _wait_for_exit(processes: list) -> None:
-    """Wait for `processes` to exit — terminating any still there after _INTERRUPT_GRACE."""
+    """Wait for `processes` to exit — terminating any still there after _INTERRUPT_GRACE, or at
+    once on a second Ctrl-C (or SIGHUP/SIGTERM) meanwhile."""
+    deadline = time.monotonic() + _INTERRUPT_GRACE
+    try:
+        for process in processes:
+            process.join(max(0.0, deadline - time.monotonic()))
+    except KeyboardInterrupt:
+        pass
+    _terminate(processes)
     for process in processes:
-        process.join(_INTERRUPT_GRACE)
-        if process.is_alive():
-            process.terminate()
-            process.join()
+        process.join()
 
 
 @contextlib.contextmanager
@@ -950,6 +1047,7 @@ def run_batch(
     thumbnail_long_edge: int = DEFAULT_FRAME_WIDTH,
     device: ComputeDevice | None = None,
     compute: BatchCompute | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """Invert every job in a process pool, in parallel — see _run_pool for the shared failure-
     handling and progress-callback behavior. `max_workers` defaults to default_worker_count(jobs,
@@ -966,7 +1064,7 @@ def run_batch(
         workers = max_workers if max_workers is not None else _default_count(jobs, compute, default_worker_count)
         return _run_pool(
             jobs, _worker, (stage, density_profile, tone_params, thumbnail_long_edge, *compute.worker_args(workers)),
-            workers, on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix,
+            workers, on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix, on_cancel=on_cancel,
         )
 
 
@@ -986,6 +1084,7 @@ def run_export_batch(
     on_start: Callable[[BatchJob], None] | None = None,
     device: ComputeDevice | None = None,
     compute: BatchCompute | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """Export every job (ACEScg TIFF -> delivery PNG/JPEG) in a process pool, in parallel — see
     _run_pool for the shared failure-handling and progress-callback behavior. `max_workers`
@@ -995,7 +1094,7 @@ def run_export_batch(
         workers = max_workers if max_workers is not None else _default_count(jobs, compute, default_export_worker_count)
         return _run_pool(
             jobs, _export_worker, (quality, *compute.worker_args(workers)), workers,
-            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix,
+            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix, on_cancel=on_cancel,
         )
 
 
@@ -1007,6 +1106,7 @@ def run_print_batch(
     on_start: Callable[[BatchJob], None] | None = None,
     device: ComputeDevice | None = None,
     compute: BatchCompute | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """`halide print` every job (flat positive -> print) in a process pool — see _run_pool for the
     shared failure-handling and progress-callback behavior. `max_workers` defaults to
@@ -1017,7 +1117,7 @@ def run_print_batch(
         workers = max_workers if max_workers is not None else _default_count(jobs, compute, default_worker_count)
         return _run_pool(
             jobs, _print_worker, (tone_params, *compute.worker_args(workers)), workers,
-            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix,
+            on_result=on_result, on_start=on_start, shm_prefix=compute.shm_prefix, on_cancel=on_cancel,
         )
 
 
@@ -1027,6 +1127,7 @@ def run_thumbnail_batch(
     max_workers: int | None = None,
     on_result: Callable[[BatchResult], None] | None = None,
     on_start: Callable[[BatchJob], None] | None = None,
+    on_cancel: Callable[[str], None] | None = None,
 ) -> list[BatchResult]:
     """Contact-sheet thumbnails of already-processed files (`halide contact`), in a process pool.
     Sized with export's constants: reading + colour-converting one full-size file is the same
@@ -1034,4 +1135,5 @@ def run_thumbnail_batch(
     already developed, and what's left — decode, (usually no) colour conversion, a block-average
     down to thumbnail size — would spend longer uploading the frame than computing on it."""
     workers = max_workers if max_workers is not None else default_export_worker_count(jobs)
-    return _run_pool(jobs, _thumbnail_worker, (thumbnail_long_edge,), workers, on_result=on_result, on_start=on_start)
+    return _run_pool(jobs, _thumbnail_worker, (thumbnail_long_edge,), workers, on_result=on_result, on_start=on_start,
+                     on_cancel=on_cancel)

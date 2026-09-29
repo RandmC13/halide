@@ -14,11 +14,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "inputs",
         nargs="*",
-        help="a roll folder, or one or more TIFF scans, to load on startup (optional)",
+        help="A roll folder, or one or more TIFF scans, to open in the picker (optional)",
     )
     parser.add_argument(
         "--profile",
-        help="reopen a saved profile (name or path): its neutral points, roll details and roll",
+        help="Reopen a saved profile (its name or a path) with its neutral points, extra information and roll folder",
     )
     add_device_argument(parser)
 

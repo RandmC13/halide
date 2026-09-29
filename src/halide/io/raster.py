@@ -53,7 +53,7 @@ def encode_srgb(linear):
 
 
 def to_srgb_8bit(acescg_image):
-    """Convert a linear ACEScg image (the output of core.pipeline.run_pipeline) into gamma-encoded
+    """Convert a linear ACEScg image (a developed positive, see core.pipeline) into gamma-encoded
     8-bit sRGB. Values outside sRGB's displayable range are clipped here — unlike the tone-render
     clipping bug this project fixed, this clip is expected and correct: an 8-bit delivery raster
     cannot represent out-of-gamut or HDR values, and by this stage we are deliberately committing

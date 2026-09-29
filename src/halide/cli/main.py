@@ -4,6 +4,7 @@ import argparse
 import sys
 
 from halide.cli import console
+from halide.cli._help import DEBUG_HELP, HELP_FORMATTER, examples, wrapped
 from halide.cli.commands import (
     batch_cmd,
     calibrate_cmd,
@@ -34,61 +35,81 @@ def _is_top_level_help(argv: list[str]) -> bool:
     return False
 
 
+def _version() -> str:
+    """The installed version, or the source tree's own when halide isn't installed as a package."""
+    from importlib import metadata
+
+    try:
+        return metadata.version("halide")
+    except metadata.PackageNotFoundError:
+        return "0.1.0"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="halide", description="Develop scanned color negative film into a positive image."
+        prog="halide", description="Develop scanned colour negative film into a positive image.",
+        formatter_class=HELP_FORMATTER,
+        epilog=examples(
+            "halide calibrate roll16/",
+            "halide batch roll16/ roll16-developed/ --profile \"Portra 400\"",
+            "halide invert negative.tif positive.tif --pick",
+        ),
     )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Show full Python tracebacks for unexpected errors instead of a short message "
-        "(must come before the subcommand, e.g. `halide --debug invert ...`; HALIDE_DEBUG=1 works "
-        "anywhere)",
-    )
+    parser.add_argument("--version", action="version", version=f"halide {_version()}")
+    parser.add_argument("--debug", action="store_true", help=DEBUG_HELP)
     # Not required: a bare `halide` shows a welcome screen (see main()) rather than argparse's
     # plain "the following arguments are required: command" error.
     subparsers = parser.add_subparsers(dest="command", required=False)
 
-    invert_parser = subparsers.add_parser("invert", help="Invert a single negative scan")
-    invert_cmd.add_arguments(invert_parser)
+    def add(name: str, summary: str, module, *sample_lines: str):
+        sub = subparsers.add_parser(
+            name, help=summary, description=wrapped(summary + "."),
+            formatter_class=HELP_FORMATTER, epilog=examples(*sample_lines),
+        )
+        # After the subcommand too. SUPPRESS: only set when given, so it can't overwrite the
+        # top-level flag with False.
+        sub.add_argument("--debug", action="store_true", default=argparse.SUPPRESS, help=DEBUG_HELP)
+        module.add_arguments(sub)
 
-    batch_parser = subparsers.add_parser("batch", help="Invert a directory of negative scans in parallel")
-    batch_cmd.add_arguments(batch_parser)
+    add("invert", "Invert a single negative scan", invert_cmd,
+        "halide invert negative.tif positive.tif --pick",
+        'halide invert negative.tif positive.tif --profile "Portra 400"',
+        "halide invert negative.tif flat.tif --auto-density --output flat")
+    add("batch", "Invert a folder of negative scans in parallel", batch_cmd,
+        'halide batch roll16/ roll16-developed/ --profile "Portra 400"',
+        "halide batch roll16/ --contact-sheet preview.jpg",
+        "halide batch roll16/ roll16-developed/ --skip-existing")
+    add("print", "Print a flat positive (from `invert --output flat`, optionally edited in "
+        "darktable) onto the paper curve", print_cmd,
+        "halide print flat_edited.tif print.tif",
+        "halide print flat-edited/ prints/ --contrast 0.8")
+    add("export", "Convert developed ACEScg TIFFs into delivery-ready sRGB PNG/JPEG", export_cmd,
+        "halide export positive.tif positive.png",
+        "halide export roll16-developed/ roll16-jpeg/ --format jpg --quality 92")
+    add("contact", "Make a high-resolution contact sheet of developed frames (TIFF, or "
+        "PNG/JPEG from export)", contact_cmd,
+        "halide contact roll16-developed/ roll16-sheet.jpg",
+        "halide contact roll16-jpeg/ sheet.png --columns 4 --title \"Roll 16\"")
+    add("check", "Check that a roll's scans were made consistently (camera settings, white "
+        "balance, edits)", check_cmd,
+        "halide check roll16/")
 
-    print_parser = subparsers.add_parser(
-        "print",
-        help="Print a flat positive (from `invert --output flat`, optionally edited in darktable) "
-        "onto the paper curve",
+    profile_parser = subparsers.add_parser(
+        "profile", help="Manage saved calibration profiles",
+        description=wrapped("Manage saved calibration profiles: list, show, rename, delete, or edit the "
+        "details recorded with one."),
+        formatter_class=HELP_FORMATTER,
     )
-    print_cmd.add_arguments(print_parser)
-
-    export_parser = subparsers.add_parser(
-        "export", help="Convert a processed ACEScg TIFF into a delivery-ready sRGB PNG/JPEG"
-    )
-    export_cmd.add_arguments(export_parser)
-
-    contact_parser = subparsers.add_parser(
-        "contact", help="Make a high-res contact sheet of a processed folder (TIFF or exported PNG/JPEG)"
-    )
-    contact_cmd.add_arguments(contact_parser)
-
-    check_parser = subparsers.add_parser(
-        "check", help="Check a roll's scans were made consistently (camera settings, white balance, edits)"
-    )
-    check_cmd.add_arguments(check_parser)
-
-    profile_parser = subparsers.add_parser("profile", help="Manage saved calibration profiles")
+    profile_parser.add_argument("--debug", action="store_true", default=argparse.SUPPRESS, help=DEBUG_HELP)
     profile_cmd.add_arguments(profile_parser)
 
-    calibrate_parser = subparsers.add_parser(
-        "calibrate", help="Launch the anchor-frame calibration picker GUI"
-    )
-    calibrate_cmd.add_arguments(calibrate_parser)
-
-    gpu_parser = subparsers.add_parser(
-        "gpu", help="Find an NVIDIA GPU and report/add optional GPU support"
-    )
-    gpu_cmd.add_arguments(gpu_parser)
+    add("calibrate", "Open the picker: click neutral points on a roll and save a calibration "
+        "profile", calibrate_cmd,
+        "halide calibrate roll16/",
+        'halide calibrate --profile "Portra 400"')
+    add("gpu", "Find an NVIDIA GPU and report or add optional GPU support", gpu_cmd,
+        "halide gpu",
+        "halide gpu --install")
 
     return parser
 
@@ -139,6 +160,13 @@ def run_cli(argv: list[str] | None = None) -> int:
     halide.cli.completion for why there's no `completion` command."""
     from halide.cli.completion import maybe_install_completion
     from halide.cli.console import run_guarded
+
+    # A logged run (`halide batch ... > log.txt 2>&1`) must keep its order: stdout is block-buffered
+    # when it isn't a terminal, so the run sheet, progress lines and warnings would otherwise arrive
+    # out of step with stderr's messages.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(line_buffering=True)
 
     code = run_guarded(main, argv)
     maybe_install_completion(build_parser())

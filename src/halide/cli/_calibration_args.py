@@ -5,27 +5,37 @@ flags/logic."""
 from __future__ import annotations
 
 import argparse
-import difflib
+import json
 import sys
 from dataclasses import replace
 
 from halide.calibration.profile_store import (
+    ProfileExistsError,
+    ProfileNameError,
+    damaged_profile_message,
     list_profiles,
     load_profile,
     load_scan_reference,
     load_tone_override,
     resolve_profile_path,
     save_named_profile,
+    suggest_profile_name,
+    validate_profile_name,
 )
+from halide.cli._help import contrast_grade, finite_float, positive_float
+from halide.cli._output_policy import OutputPolicy, is_interactive, policy_from_args
 from halide.io.scan_metadata import ScanSettings, read_scan_metadata
 from halide.cli import console
 from halide.core.types import DensityProfile, Stage, ToneCurveParams
 
 
-def _suggest_profile_name(name: str) -> str | None:
-    names = [n for n, _ in list_profiles()]
-    matches = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
-    return matches[0] if matches else None
+def _profile_name_type(value: str) -> str:
+    """--save-profile-as's argparse `type=`: validated at parse time (exit code 2, shown in
+    --help's usage line) rather than only once the run has gone ahead and calibrated something."""
+    try:
+        return validate_profile_name(value)
+    except ProfileNameError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def add_stage_arguments(parser: argparse.ArgumentParser) -> None:
@@ -38,29 +48,49 @@ def add_stage_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def manual_calibration_given(args: argparse.Namespace) -> bool:
+    """Whether any of --rm/--bm/--rs/--bs was typed. The one definition: the two scales default to
+    1.0 (not None), so "given" means "moved off the default"."""
+    return args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
+
+
 def add_calibration_arguments(
     parser: argparse.ArgumentParser, *, allow_auto: bool = True, allow_pick: bool = False
-) -> None:
-    parser.add_argument(
-        "--profile", help="A saved calibration profile — either a file path or a saved profile's name"
+):
+    """Adds the calibration flags and returns the group of mutually exclusive *sources* (--profile,
+    --auto-density, --pick) so a command can add its own (batch's --auto-density-roll). The manual
+    --rm/--bm/--rs/--bs values can't join that group: argparse can't tell "typed" from "left at the
+    default" for the two scales (default 1.0), so their clash with a source is checked by hand in
+    resolve_density_profile (and in batch, for --auto-density-roll)."""
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument(
+        "--profile", help="A saved calibration profile: its name, or a path to its file"
     )
-    parser.add_argument("--rm", type=float, help="Red channel white-balance multiplier (manual calibration)")
-    parser.add_argument("--bm", type=float, help="Blue channel white-balance multiplier (manual calibration)")
     parser.add_argument(
-        "--rs", type=float, default=1.0, help="Red channel density-balance scale (manual calibration, default: 1.0)"
+        "--rm", type=positive_float, metavar="X",
+        help="Red white-balance multiplier, above 0 (manual calibration; default: 1.0)",
     )
     parser.add_argument(
-        "--bs", type=float, default=1.0, help="Blue channel density-balance scale (manual calibration, default: 1.0)"
+        "--bm", type=positive_float, metavar="X",
+        help="Blue white-balance multiplier, above 0 (manual calibration; default: 1.0)",
+    )
+    parser.add_argument(
+        "--rs", type=positive_float, default=1.0, metavar="X",
+        help="Red density-balance scale, above 0 (manual calibration; default: 1.0)",
+    )
+    parser.add_argument(
+        "--bs", type=positive_float, default=1.0, metavar="X",
+        help="Blue density-balance scale, above 0 (manual calibration; default: 1.0)",
     )
     if allow_auto:
-        parser.add_argument(
+        sources.add_argument(
             "--auto-density",
             action="store_true",
             help="Automatically estimate density balance from the image itself (approximate — "
             "prefer a saved --profile from a real calibration when you have one)",
         )
     if allow_pick:
-        parser.add_argument(
+        sources.add_argument(
             "--pick",
             action="store_true",
             help="Interactively pick shadow/highlight neutral points in a small GUI window, then "
@@ -70,14 +100,17 @@ def add_calibration_arguments(
     parser.add_argument(
         "--save-profile-as",
         metavar="NAME",
+        type=_profile_name_type,
         help="Save the calibration profile used for this run (however it was obtained — manual, "
-        "loaded, automatic, or picked) under NAME for reuse via --profile NAME next time",
+        "loaded, automatic, or picked) under NAME for reuse via --profile NAME next time. Refuses "
+        "an existing name unless --overwrite is also given (or, in a terminal, confirmed)",
     )
     parser.add_argument(
         "--notes",
         help="Attach a free-text note to the profile saved via --save-profile-as (e.g. how it "
         "was generated) — ignored without --save-profile-as; edit later with `halide profile edit`",
     )
+    return sources
 
 
 def add_tone_arguments(parser: argparse.ArgumentParser, *, allow_output_mode: bool = True) -> None:
@@ -96,19 +129,21 @@ def add_tone_arguments(parser: argparse.ArgumentParser, *, allow_output_mode: bo
         )
     parser.add_argument(
         "--exposure",
-        type=float,
+        metavar="E",
+        type=finite_float,
         default=None,
         help="Print exposure (where the negative sits on the paper curve, in density units). "
         "Default: fitted per image so the negative's highlights land on the paper's highlight "
-        "point. Pass a value to pin it, e.g. to match a look across a whole roll.",
+        "point. Pass a value to pin it, e.g. to match a look across a whole roll",
     )
     parser.add_argument(
         "--contrast",
-        type=float,
+        metavar="C",
+        type=contrast_grade,
         default=None,
-        help="Paper grade, 0-1 (1.0 = the untouched reference paper; lower = softer). Default: "
+        help="Paper grade, above 0 and up to 2 (1.0 = the untouched reference paper; lower = softer). Default: "
         "fitted per image so the negative's density range fills the paper's range (capped at 1.0), "
-        "or a value saved into the resolved --profile's calibration if it has one.",
+        "or a value saved into the resolved --profile's calibration if it has one",
     )
 
 
@@ -158,7 +193,7 @@ def resolve_stage(args: argparse.Namespace) -> Stage:
 def resolve_tone_params(args: argparse.Namespace, saved_tone: ToneCurveParams | None = None) -> ToneCurveParams:
     """Precedence for exposure/contrast: an explicit CLI flag wins, then a tone override saved
     into the resolved calibration profile (see calibration/profile_store.py's `tone` sidecar,
-    written by the GUI's Fine-tune controls), then None = fitted per image (see
+    written by the GUI's Print controls), then None = fitted per image (see
     core.tone_render.fit_print). The flat/linear output is CLI-flag-only — never inherited from
     `saved_tone`, deliberately (silently changing output format felt like the wrong kind of thing
     for a saved profile to do by default)."""
@@ -190,18 +225,19 @@ def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
 
     Non-interactive, or with a source already given, this does nothing; resolve_density_profile
     then raises its actionable "needs a calibration source" error if there's still none."""
-    manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
+    manual_given = manual_calibration_given(args)
     if (
         args.profile
         or manual_given
         or getattr(args, "auto_density", False)
         or getattr(args, "pick", False)
         or getattr(args, "auto_density_roll", False)
-        or not sys.stdin.isatty()
+        or not is_interactive()
     ):
         return
 
-    saved = sorted(list_profiles(), key=lambda item: item[1].created_at or "", reverse=True)
+    readable = [(stem, profile) for stem, profile, problem in list_profiles() if problem is None]
+    saved = sorted(readable, key=lambda item: item[1].created_at or "", reverse=True)
     options: list[tuple[str, str]] = []
     for stem, profile in saved[:_MENU_PROFILES]:
         bits = [b for b in (profile.film_stock, (profile.created_at or "")[:10]) if b]
@@ -235,29 +271,36 @@ def resolve_density_profile(
     """Returns (profile, saved_tone) - profile=None means "compute automatically per-frame" (only
     call this when the pipeline stage actually needs a density profile at all, i.e. not
     Stage.INVERT_ONLY); saved_tone is an optional exposure/contrast override that came bundled with
-    the resolved profile (from a saved profile's "tone" sidecar, or from the GUI's Fine-tune
+    the resolved profile (from a saved profile's "tone" sidecar, or from the GUI's Print
     controls during --pick), to be passed into resolve_tone_params."""
-    manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
+    manual_given = manual_calibration_given(args)
     auto_given = getattr(args, "auto_density", False)
     pick_given = getattr(args, "pick", False)
 
-    if sum([bool(args.profile), manual_given, auto_given, pick_given]) > 1:
-        raise SystemExit(
-            "--profile, manual overrides (--rm/--bm/--rs/--bs), --auto-density, and --pick are "
-            "mutually exclusive"
-        )
+    # Source-vs-source clashes are argparse's (the exclusive group); only manual values, which
+    # argparse can't tell from their defaults, are checked here.
+    if manual_given:
+        clashing = [flag for flag, given in (("--profile", args.profile), ("--auto-density", auto_given),
+                                             ("--pick", pick_given)) if given]
+        if clashing:
+            raise SystemExit(
+                f"manual overrides (--rm/--bm/--rs/--bs) can't be combined with {' or '.join(clashing)}"
+            )
 
     if args.profile:
         try:
             path = resolve_profile_path(args.profile)
-            return load_profile(path), load_tone_override(path)
         except FileNotFoundError as exc:
-            suggestion = _suggest_profile_name(args.profile)
+            suggestion = suggest_profile_name(args.profile)
             if suggestion and console.confirm(f"No profile named '{args.profile}' — did you mean '{suggestion}'?"):
                 path = resolve_profile_path(suggestion)
-                return load_profile(path), load_tone_override(path)
-            hint = f" — did you mean '{suggestion}'?" if suggestion else ""
-            raise SystemExit(f"{exc}{hint}") from exc
+            else:
+                hint = f" — did you mean '{suggestion}'?" if suggestion else ""
+                raise SystemExit(f"{exc}{hint}") from exc
+        try:
+            return load_profile(path), load_tone_override(path)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise SystemExit(damaged_profile_message(path.stem, exc)) from exc
     if manual_given:
         return (
             DensityProfile(
@@ -279,7 +322,9 @@ def resolve_density_profile(
         result = run_quick_pick(args.input)
         if result is None:
             raise SystemExit("no calibration picked — closed without using a calibration")
-        return result
+        profile, tone, reliability_warning = result
+        args.pick_reliability_warning = reliability_warning  # shown if the picks are saved (maybe_save_profile)
+        return profile, tone
 
     # Interactive runs were already asked (choose_calibration_source); this is the non-interactive
     # (or cancelled) path.
@@ -304,7 +349,7 @@ def maybe_save_profile(
     if nothing was asked to be saved); `announce=False` leaves reporting it to the caller. `profile=None` means no
     single profile was computed here (per-frame --auto-density produces a different profile per
     image; --invert-only skips density balance entirely) — that is an error if the user asked to
-    save one. `tone` (e.g. from a --pick session's Fine-tune controls) is saved alongside it."""
+    save one. `tone` (e.g. from a --pick session's Print controls) is saved alongside it."""
     save_as = getattr(args, "save_profile_as", None)
     if not save_as:
         return None
@@ -318,7 +363,25 @@ def maybe_save_profile(
     notes = getattr(args, "notes", None)
     if notes:
         profile = replace(profile, notes=notes)
-    path = save_named_profile(profile, save_as, tone=tone, scan=scan)
+
+    overwrite = policy_from_args(args) is OutputPolicy.OVERWRITE
+    try:
+        path = save_named_profile(profile, save_as, tone=tone, scan=scan, overwrite=overwrite)
+    except ProfileExistsError:
+        if is_interactive() and console.confirm(f"A profile named '{save_as}' already exists - replace it?"):
+            path = save_named_profile(profile, save_as, tone=tone, scan=scan, overwrite=True)
+        elif is_interactive():
+            raise SystemExit("Nothing saved. (--overwrite replaces it without asking next time.)")
+        else:
+            raise SystemExit(
+                f"a profile named {save_as!r} already exists. Add --overwrite to replace it, or "
+                "choose a different --save-profile-as name"
+            )
     if announce:
         print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))
+    # Picked points that only pin the fit down over part of the frame (D-2): saved all the same,
+    # but a profile is meant for the whole roll, so say where it holds.
+    reliability_warning = getattr(args, "pick_reliability_warning", None)
+    if reliability_warning:
+        print(console.warning(reliability_warning))
     return path

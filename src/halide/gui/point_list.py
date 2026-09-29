@@ -8,7 +8,8 @@ the same numbers and colours.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from halide.gui import theme
 from halide.gui.roll import PointView
@@ -17,19 +18,47 @@ ROW_HEIGHT = 24
 
 CC_EXPLANATION = (
     "How far each point is from what the other points agree neutral is, as a colour-printing filter "
-    "value: CC is Kodak's Colour Compensating scale (density × 100, so CC 10 = 0.10), the unit of a "
-    "dichroic enlarger head's filter dials. The letter is the colour the point would print "
-    "(R/G/B, or C/M/Y for a lack of red/green/blue). Measured on the density-balanced negative, "
-    "before the paper curve. Shown from 3 points: with 2, the line passes through both.\n\n"
+    "pack: CC is Kodak's Colour Compensating scale (density × 100, so CC 10 = 0.10), the unit of a "
+    "dichroic enlarger head's filter dials. The pack is the cast the point would print, in Y/M/C "
+    "dials as you'd set them on the head - a red cast reads as M + Y, and CC 20Y + 10M is an "
+    "orange-yellow. Measured on the density-balanced negative, before the paper curve. Shown from 3 points: with 2, the line passes through both.\n\n"
     "Around CC 5 or more, check the object really was neutral (a cream wall, a sunlit cloud edge, "
     "skin...). Deal with the worst point first: one bad point makes the others read a few CC off too."
 )
+
+
+def no_wrap(text: str) -> str:
+    """Non-breaking spaces, so a filter pack ("CC 10Y + 6M") never wraps or elides mid-pack."""
+    return text.replace(" ", "\u00a0")
 
 
 def agreement_colour(view: PointView) -> str:
     if view.agreement is None:
         return theme.AGREE_NONE
     return {"calm": theme.AGREE_CALM, "amber": theme.AGREE_AMBER, "red": theme.AGREE_RED}[view.agreement.band]
+
+
+class _ElidedNameLabel(QLabel):
+    """The frame name, cut with "…" when the row is narrower than it (the tooltip has it in full)."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self._full = text
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # An ordinary name ("#12  IMG_0138") keeps the width it always had, so the row looks as it did
+        # before eliding existed; only a name longer than that gives way, at whatever width the row
+        # really gives the label (resizeEvent), never a fixed one.
+        self.ensurePolished()
+        metrics = QFontMetrics(self.font())
+        self.setMinimumWidth(min(metrics.horizontalAdvance(text), metrics.horizontalAdvance("#00  IMG_0000")))
+        self._elide()
+
+    def _elide(self) -> None:
+        self.setText(QFontMetrics(self.font()).elidedText(self._full, Qt.TextElideMode.ElideRight, max(0, self.width()) + 1))  # +1: Qt elides text that fits exactly
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._elide()
 
 
 class _Row(QFrame):
@@ -54,17 +83,19 @@ class _Row(QFrame):
         layout.addWidget(number)
 
         frame_text = f"#{view.frame_number}  {view.point.frame.stem}" if view.frame_number else f"{view.point.frame.stem} (missing)"
-        frame = QLabel(frame_text)
-        frame.setToolTip(str(view.point.frame))
+        if view.note:
+            frame_text += "  ⚠"
+        frame = _ElidedNameLabel(frame_text)
+        frame.setToolTip(f"{view.point.frame}\n{view.note}" if view.note else str(view.point.frame))
         layout.addWidget(frame, stretch=1)
 
         density = QLabel(f"D {view.green_density:.2f}")
         density.setProperty("role", "dim")
         layout.addWidget(density)
 
-        agreement = QLabel(f"● {view.agreement.label()}" if view.agreement else "·")
+        agreement = QLabel(f"● {no_wrap(view.agreement.label())}" if view.agreement else "·")
         agreement.setStyleSheet(f"color: {colour};")
-        agreement.setFixedWidth(76)
+        agreement.setFixedWidth(104)  # "● CC 20Y + 10M"
         layout.addWidget(agreement)
 
         remove = QPushButton("✕")
@@ -87,7 +118,9 @@ class PointList(QScrollArea):
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setMinimumHeight(ROW_HEIGHT * 3 + 4)
+        # One row: the list is what gives up height first when the panel is squeezed (a drawer open
+        # with the reliability note showing, smallest window) so nothing below it clips.
+        self.setMinimumHeight(ROW_HEIGHT + 4)
         self.setMaximumHeight(ROW_HEIGHT * visible_rows + 12)
         self._body = QWidget()
         self._layout = QVBoxLayout(self._body)

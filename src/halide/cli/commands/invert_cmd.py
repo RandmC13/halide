@@ -8,6 +8,15 @@ import time
 from pathlib import Path
 
 from halide.cli import console
+from halide.cli._output_policy import (
+    add_output_policy_arguments,
+    check_input_file,
+    check_not_input,
+    check_output_parent,
+    is_interactive,
+    policy_from_args,
+    resolve_existing,
+)
 from halide.cli._device_args import (
     add_device_argument,
     device_fallback_warning,
@@ -17,6 +26,7 @@ from halide.cli._device_args import (
 )
 from halide.cli._calibration_args import (
     add_calibration_arguments,
+    manual_calibration_given,
     add_scan_arguments,
     add_stage_arguments,
     add_tone_arguments,
@@ -37,8 +47,9 @@ from halide.core.types import Stage
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("input", help="Input linear TIFF scan of a negative")
-    parser.add_argument("output", help="Output TIFF path")
+    parser.add_argument("input", help="Linear TIFF scan of one negative")
+    parser.add_argument("output", help="Where to write the positive TIFF")
+    add_output_policy_arguments(parser, saves_profile=True)
     add_stage_arguments(parser)
     add_calibration_arguments(parser, allow_pick=True)
     add_tone_arguments(parser)
@@ -123,8 +134,16 @@ def run(args: argparse.Namespace) -> int:
     from halide.processing import ScanColorError, process_scan
 
     input_path = Path(args.input)
-    if not input_path.exists():
-        raise SystemExit(f"input file not found: {input_path}")
+    check_input_file(input_path)
+    output_path = Path(args.output)
+    check_output_parent(output_path)
+    check_not_input([(input_path, output_path)], suggest_suffix=False)
+    resolved = resolve_existing(
+        [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
+    )
+    if not resolved:
+        print(console.success(f"{output_path} already exists — skipped (--skip-existing)."))
+        return 0
 
     stage = resolve_stage(args)
     if stage is Stage.INVERT_ONLY:
@@ -139,21 +158,16 @@ def run(args: argparse.Namespace) -> int:
     if fallback_warning:
         print(console.warning(fallback_warning))
     _maybe_print_gpu_hint(device)
-    manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
-    calibrated_here = stage is not Stage.INVERT_ONLY and not args.profile and not manual_given
+    calibrated_here = stage is not Stage.INVERT_ONLY and not args.profile and not manual_calibration_given(args)
     gain, scan_reference = _resolve_scan_gain(args, calibrated_here)
     maybe_save_profile(args, density_profile, tone=saved_tone, scan=scan_reference)
     tone_params = resolve_tone_params(args, saved_tone=saved_tone)
-
-    output_path = Path(args.output)
-    if output_path.exists() and not console.confirm_overwrite(output_path):
-        return 1
 
     start = time.monotonic()
     label = f"{console.VERB['invert']} {input_path.name}..."
     try:
         with console.themed_animation(
-            console.TANK_FRAMES,
+            console.tank_frames(),
             label,
             min_width=console.TANK_MIN_SIZE[0],
             min_height=console.TANK_MIN_SIZE[1],
