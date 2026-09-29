@@ -181,7 +181,9 @@ def test_failures_never_break_a_run(home, monkeypatch, capsys):
     def boom(*args, **kwargs):
         raise PermissionError("read-only home")
 
-    monkeypatch.setattr(completion, "ensure_completion", boom)
+    monkeypatch.setattr(completion, "wanted", lambda: True)
+    monkeypatch.setattr(completion, "detect_shell", lambda: "zsh")
+    monkeypatch.setattr(completion, "_install", boom)  # what maybe_install_completion really calls
     completion.maybe_install_completion(build_parser())  # must not raise
     assert capsys.readouterr().err == ""
 

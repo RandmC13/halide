@@ -317,3 +317,10 @@ def test_run_cli_makes_stdout_line_buffered(monkeypatch):
     monkeypatch.setenv("HALIDE_NO_COMPLETION", "1")
     assert cli_main.run_cli([]) == 0
     assert calls == [{"line_buffering": True}]
+
+
+def test_verbs_name_what_each_command_does():
+    """R-096: `export` says "Exporting" (it was "Printing" before a real print step existed)."""
+    assert console.VERB["export"] == "Exporting" and console.VERB_PAST["export"] == "Exported"
+    assert console.VERB["print"] == "Printing" and console.VERB_PAST["print"] == "Printed"
+    assert console.VERB["invert"] == console.VERB["batch"] == "Developing"

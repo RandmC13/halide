@@ -316,3 +316,48 @@ def test_tag_smaller_than_its_contents_is_damaged():
 
 def test_halides_own_output_profile_passes():
     parse_linear_rgb_profile(output_profile_bytes())
+
+
+# ---------------------------------------------------------------------------
+# Hostile / odd curve encodings (review 2.1-15): every parametric type, sampled tables, the tolerance
+# ---------------------------------------------------------------------------
+_LINEAR_PARA = {
+    0: [1.0],
+    1: [1.0, 1.0, 0.0],
+    2: [1.0, 1.0, 0.0, 0.0],
+    3: [1.0, 1.0, 0.0, 1.0, 0.0],
+    4: [1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+}
+_GAMMA_PARA = {  # the same shapes, gamma-encoded (g = 2.2)
+    0: [2.2],
+    1: [2.2, 1.0, 0.0],
+    2: [2.2, 1.0, 0.0, 0.0],
+    3: [2.2, 1.0, 0.0, 1.0, 0.0],
+    4: [2.2, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+}
+
+
+@pytest.mark.parametrize("function_type", sorted(_LINEAR_PARA))
+def test_every_parametric_curve_type_is_accepted_when_linear_and_rejected_when_gamma(function_type):
+    parse_linear_rgb_profile(_with_trc(_para_tag(function_type, _LINEAR_PARA[function_type])))
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(function_type, _GAMMA_PARA[function_type])))
+
+
+def test_a_parametric_curve_type_beyond_the_spec_is_refused_plainly():
+    with pytest.raises(UnsupportedICCProfileError, match="unsupported parametricCurveType functionType 5"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(5, [1.0] * 7)))
+
+
+def test_a_sampled_curve_with_many_entries_is_judged_by_its_shape():
+    ramp = list(np.linspace(0.0, 1.0, 4096))
+    parse_linear_rgb_profile(_with_trc(_curv_table_tag(ramp)))
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_curv_table_tag(list(np.linspace(0.0, 1.0, 4096) ** 2.2))))
+
+
+def test_the_linearity_tolerance_sits_between_gamma_1_001_and_1_002():
+    """0.005 D over the range 0.001..1: a curve this close to linear passes, a hair further does not."""
+    parse_linear_rgb_profile(_with_trc(_para_tag(0, [1.001])))
+    with pytest.raises(UnsupportedICCProfileError, match="not a linear tone curve"):
+        parse_linear_rgb_profile(_with_trc(_para_tag(0, [1.002])))

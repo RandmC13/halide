@@ -268,3 +268,14 @@ def test_auto_density_roll_with_another_source_is_argparses_refusal(roll_dir, tm
         main(["batch", str(roll_dir), str(tmp_path / "out"), "--auto-density-roll", "--auto-density", "--quiet"])
     assert exit_info.value.code == 2
     assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_batch_has_no_pick_option(roll_dir, tmp_path, capsys):
+    """R-054: picking is `invert --pick` only; a roll is calibrated in `halide calibrate`."""
+    with pytest.raises(SystemExit) as refused:
+        main(["batch", str(roll_dir), str(tmp_path / "out"), "--pick"])
+    assert refused.value.code == 2
+    assert "--pick" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["batch", "--help"])
+    assert "--pick" not in capsys.readouterr().out

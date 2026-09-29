@@ -525,6 +525,14 @@ def test_sweep_stale_uses_the_short_format_and_own_batch_sweep_still_works():
 
 def test_batch_prefix_token_is_wide_and_never_repeats_across_many_batches():
     """R21: a 4-hex token repeated about once in 65,536 same-process batches, and a repeat lets one
-    batch's sweep unlink another's live frames. 6 base-36 characters: no repeat in 20,000 draws."""
-    prefixes = {batch_prefix() for _ in range(20000)}
-    assert len(prefixes) == 20000
+    batch's sweep unlink another's live frames. The token is 6 base-36 characters (2.2e9 values).
+    Asserted on the token space itself and on a small draw: 20,000 draws collide ~9% of runs
+    (birthday bound), which made this test flaky; 200 draws collide about once in 100,000 runs."""
+    from halide import shared_frames
+
+    assert 36**shared_frames._TOKEN_LENGTH >= 2 * 10**9
+    tokens = [shared_frames._random_token() for _ in range(200)]
+    assert all(len(t) == shared_frames._TOKEN_LENGTH for t in tokens)
+    assert len(set(tokens)) == len(tokens)
+    prefixes = {batch_prefix() for _ in range(200)}
+    assert len(prefixes) == 200

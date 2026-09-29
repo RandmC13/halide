@@ -426,9 +426,11 @@ def test_killed_service_makes_the_next_request_raise_promptly(tmp_path):
             with pytest.raises(ServiceUnavailable) as dead:
                 _develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
             assert time.monotonic() - start < 5
-            # host_touched is True if the request got sent (it may have died mid-download), False if the
-            # send itself broke (nothing reached it) - which one depends on timing, both are correct.
-            assert isinstance(dead.value.failure.host_touched, bool)
+            # Whether host_touched is True (the request was sent) or False (the send itself broke)
+            # depends on timing against a really-killed process, so it isn't asserted here: each
+            # branch is pinned deterministically by
+            # test_a_send_that_fails_never_reached_the_service_so_the_frame_is_untouched.
+            assert dead.value.failure is not None
             # Dead for good: no reconnecting, no waiting.
             with pytest.raises(ServiceUnavailable):
                 _develop_through(client, scan, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
@@ -454,7 +456,7 @@ def test_stuck_service_times_out(tmp_path):
             assert time.monotonic() - start < 0.5
 
 
-@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="needs signal.setitimer")
+@pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="needs signal.pthread_kill")
 def test_an_interrupted_request_makes_the_client_dead_not_out_of_step(tmp_path):
     """F06 (review 2.4-1): Ctrl-C landing while a request waits for its reply used to leave that
     reply owed on the connection, so the next request read the *previous* frame's reply and its own
@@ -470,12 +472,22 @@ def test_an_interrupted_request_makes_the_client_dead_not_out_of_step(tmp_path):
     with running_service("cpu", initializer=partial(_slow_but_real_develop_in_child, str(arrived))) as address:
         with ServiceClient(address) as client:
             previous = signal.signal(signal.SIGALRM, interrupt)
+
+            def interrupt_once_in_flight():
+                # Fire only once the service has really started on A (its `arrived` marker), not
+                # after a fixed delay that a slow machine could beat.
+                deadline = time.monotonic() + 30
+                while not arrived.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                signal.pthread_kill(threading.main_thread().ident, signal.SIGALRM)
+
+            watcher = threading.Thread(target=interrupt_once_in_flight, daemon=True)
             try:
-                signal.setitimer(signal.ITIMER_REAL, 0.5)
+                watcher.start()
                 with pytest.raises(KeyboardInterrupt):
                     _develop_through(client, scan_a, Stage.FULL, ToneCurveParams(), PROFILE, 1.0)
             finally:
-                signal.setitimer(signal.ITIMER_REAL, 0)
+                watcher.join()
                 signal.signal(signal.SIGALRM, previous)
             assert arrived.exists()  # A really was in flight inside the service
             start = time.monotonic()

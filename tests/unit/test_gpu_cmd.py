@@ -258,6 +258,13 @@ def old_driver_absent_cupy(monkeypatch):
         device_module, "detect_nvidia_driver",
         lambda: NvidiaDriver(cuda_version=13040, device_name="NVIDIA GeForce RTX 3070"),
     )
+    # The installer asks whether pip exists; a venv made --without-pip says no. Fake "yes" so these
+    # tests pass on any host (the no-pip test overrides this); everything else is looked up for real.
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec",
+        lambda name, *a, **k: object() if name == "pip" else real_find_spec(name, *a, **k),
+    )
 
 
 def test_install_declines_runs_nothing(monkeypatch, capsys, old_driver_absent_cupy):
