@@ -184,3 +184,49 @@ def test_failures_never_break_a_run(home, monkeypatch, capsys):
     monkeypatch.setattr(completion, "ensure_completion", boom)
     completion.maybe_install_completion(build_parser())  # must not raise
     assert capsys.readouterr().err == ""
+
+
+def test_opt_out_skips_shell_detection_and_psutil(home, monkeypatch):
+    import sys
+
+    monkeypatch.setenv("HALIDE_NO_COMPLETION", "1")
+    monkeypatch.delitem(sys.modules, "psutil", raising=False)
+
+    def no_detect():
+        raise AssertionError("detect_shell must not run")
+
+    monkeypatch.setattr(completion, "detect_shell", no_detect)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    completion.maybe_install_completion(build_parser())
+    assert "psutil" not in sys.modules
+
+
+def test_failed_rc_edit_is_retried_next_run(home, monkeypatch):
+    rc = home / ".bashrc"
+    real_open = type(rc).open
+
+    def broken(self, *args, **kwargs):
+        if self == rc and args and args[0] == "a":
+            raise PermissionError("read-only")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(rc), "open", broken)
+    with pytest.raises(PermissionError):
+        install("bash")
+    assert not completion.shell_setup("bash").stamp.exists()
+    monkeypatch.setattr(type(rc), "open", real_open)
+    assert "added" in install("bash")
+    assert completion.RC_BEGIN in rc.read_text()
+    assert completion.shell_setup("bash").stamp.exists()
+
+
+def test_symlinked_completion_file_is_written_through(home):
+    target = home / "config" / "fish" / "completions" / "halide.fish"
+    real = home / "dotfiles" / "halide.fish"
+    real.parent.mkdir(parents=True)
+    real.write_text(completion._HEADER + "old\n")
+    target.parent.mkdir(parents=True)
+    target.symlink_to(real)
+    install("fish")
+    assert target.is_symlink()
+    assert real.read_text() == completion.fish_script(build_parser())

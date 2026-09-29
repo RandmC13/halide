@@ -367,6 +367,8 @@ def detect_shell() -> str | None:
 
 
 def _write_if_changed(path: Path, text: str) -> None:
+    # A symlinked dotfile (managed by stow, chezmoi...) is written through, not replaced.
+    path = path.resolve()
     try:
         if path.read_text(encoding="utf-8") == text:
             return
@@ -378,17 +380,22 @@ def _write_if_changed(path: Path, text: str) -> None:
     partial.replace(path)
 
 
+def wanted(interactive: bool | None = None) -> bool:
+    """The cheap checks, before any shell detection: not opted out, and at a terminal."""
+    if os.environ.get("HALIDE_NO_COMPLETION"):
+        return False
+    if interactive is None:
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    return bool(interactive)
+
+
 def ensure_completion(
     parser: argparse.ArgumentParser, *, shell: str | None = None, interactive: bool | None = None
 ) -> str | None:
     """Write/refresh this shell's completion script and, the first time, hook it in. Only for a
     person at a terminal (not scripts, pipes or tests). Returns the one-time note to show when it
     has just been installed, else None."""
-    if os.environ.get("HALIDE_NO_COMPLETION"):
-        return None
-    if interactive is None:
-        interactive = sys.stdin.isatty() and sys.stdout.isatty()
-    if not interactive:
+    if not wanted(interactive):
         return None
     shell = shell or detect_shell()
     if shell not in SHELLS:
@@ -409,9 +416,8 @@ def ensure_completion(
     if not first_time:
         return None
 
-    setup.stamp.parent.mkdir(parents=True, exist_ok=True)
-    setup.stamp.touch()
     if setup.rc is None:
+        _write_stamp(setup.stamp)
         # Verified: an already-open fish has cached "no completions for halide" and won't look
         # again, so this is for new terminals too.
         return f"added {_tilde(setup.target)} — open a new terminal to use it"
@@ -420,12 +426,20 @@ def ensure_completion(
     except FileNotFoundError:
         rc_text = ""
     if RC_BEGIN in rc_text:
+        _write_stamp(setup.stamp)
         return None
     block = setup.rc_block()
     with setup.rc.open("a", encoding="utf-8") as handle:
         handle.write(block)
+    # Only now is it done: a failed edit leaves no stamp, so the next run tries again.
+    _write_stamp(setup.stamp)
     lines = len(block.strip().splitlines())
     return f"added {lines} lines to {_tilde(setup.rc)} — open a new terminal to use it"
+
+
+def _write_stamp(stamp: Path) -> None:
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.touch()
 
 
 def _tilde(path: Path) -> str:
@@ -441,6 +455,8 @@ def maybe_install_completion(parser: argparse.ArgumentParser) -> None:
     from halide.cli import console
 
     try:
+        if not wanted():
+            return
         shell = detect_shell()
         note = ensure_completion(parser, shell=shell)
     except Exception:  # noqa: BLE001 -- see docstring
