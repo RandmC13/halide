@@ -183,3 +183,21 @@ def test_fit_rejects_too_few_or_flat_points():
         fit_density_balance([SHADOW_RGB])
     with pytest.raises(ValueError):
         fit_density_balance([(0.05, 0.05, 0.05), (0.06, 0.05, 0.04)])  # same green density
+
+
+def test_near_flat_channel_rejected():
+    # Red barely moves as green does: a density scale of ~50 (or 1e15 for a flat line).
+    greens = (0.3, 0.6, 0.9)
+    points = [(10 ** -(0.5 + 0.02 * (g - 0.3)), 10 ** -g, 10 ** -(0.4 + 1.1 * g)) for g in greens]
+    with pytest.raises(ValueError, match="red layer.*further apart in density"):
+        fit_density_balance(points)
+    flat_blue = [(10 ** -(0.2 + 1.1 * g), 10 ** -g, 10 ** -(0.7 + 0.001 * g)) for g in greens]
+    with pytest.raises(ValueError, match="blue layer"):
+        fit_density_balance(flat_blue)
+
+
+def test_realistic_scales_are_still_accepted():
+    greens = (0.3, 0.6, 0.9)
+    points = [(10 ** -(0.1 + g / 1.12), 10 ** -g, 10 ** -(0.05 + g / 0.78)) for g in greens]
+    profile = fit_density_balance(points)
+    assert profile.density_scale == pytest.approx((1.12, 1.0, 0.78))

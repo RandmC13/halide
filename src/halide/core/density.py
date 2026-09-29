@@ -77,6 +77,13 @@ def solve_density_balance(
     )
 
 
+# A fitted density scale outside this range means a channel's line against green is nearly flat or
+# nearly vertical - the points barely pin it down (a scale of 50, or 1e15, came out of real edge
+# cases). Real film's dye layers sit within a factor of two or so of each other.
+MIN_DENSITY_SCALE = 0.2
+MAX_DENSITY_SCALE = 5.0
+
+
 def fit_density_balance(neutral_rgbs: Sequence[tuple[float, float, float]]) -> DensityProfile:
     """Solve white balance + density balance from any number (>= 2) of neutral reference points.
 
@@ -112,7 +119,14 @@ def fit_density_balance(neutral_rgbs: Sequence[tuple[float, float, float]]) -> D
                 "these points don't describe a film response (a channel's density falls as green "
                 "rises) — at least one of them isn't neutral"
             )
-        density_scale[channel] = 1.0 / slope
+        scale = 1.0 / slope
+        if not MIN_DENSITY_SCALE <= scale <= MAX_DENSITY_SCALE:
+            layer = "red" if channel == 0 else "blue"
+            raise ValueError(
+                f"the neutral points don't pin down the {layer} layer; pick points further apart "
+                "in density"
+            )
+        density_scale[channel] = scale
         white_balance[channel] = 10.0**intercept
     return DensityProfile(white_balance=tuple(white_balance.tolist()), density_scale=tuple(density_scale.tolist()))
 

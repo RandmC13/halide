@@ -953,8 +953,9 @@ class MainWindow(QWidget):
         self._refresh_markers()
         self._refresh_notice(views)
         self._refresh_details(views)
-        self.primary_button.setEnabled(self.session.can_fit())
-        self.proof_button.setEnabled(self.session.can_fit() and bool(self.session.frames))
+        fitted = self.session.profile() is not None
+        self.primary_button.setEnabled(fitted)
+        self.proof_button.setEnabled(fitted and bool(self.session.frames))
 
     def _refresh_wedge(self, views: list[PointView] | None = None) -> None:
         views = self.session.views() if views is None else views
@@ -966,7 +967,10 @@ class MainWindow(QWidget):
 
     def _refresh_notice(self, views: list[PointView]) -> None:
         worst = self.session.worst()
-        if self._nudge:
+        problem = self.session.fit_problem()
+        if problem:
+            text, colour = f"⚠ {problem}", theme.TEXT_WARNING
+        elif self._nudge:
             text, colour = f"› {self._nudge}", theme.TEXT_DIM
         elif worst is not None:
             a = views[worst].agreement
@@ -1075,9 +1079,9 @@ class MainWindow(QWidget):
     # --- save / develop -------------------------------------------------------------------------
 
     def _on_primary_clicked(self) -> None:
-        if not self.session.can_fit():
-            return
         profile = self.session.profile()
+        if profile is None:
+            return
         for view in self.session.views():
             if view.note:
                 print(console.warning(view.note))

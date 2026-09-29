@@ -352,6 +352,15 @@ def welcome_screen() -> str:
     """Shown when `halide` is run with no subcommand — replaces argparse's bare "the following
     arguments are required: command" error with something that actually orients a non-programmer
     photographer, instead of just failing."""
+    starts = [
+        ("halide calibrate in_dir/", "pick neutral points, save a profile"),
+        ("halide invert negative.tif positive.tif", "develop a single scan"),
+        ("halide check in_dir/", "check a roll was scanned consistently"),
+        ("halide batch in_dir/ out_dir/", "develop a whole roll"),
+        ("halide batch in_dir/ --contact-sheet s.jpg", "preview settings as a contact sheet"),
+    ]
+    # One padding for the whole list, from its longest command, so the descriptions can't drift.
+    pad = max(len(command) for command, _ in starts) + 3
     return "\n".join(
         [
             _banner("h a l i d e".center(_rule_width())),
@@ -359,15 +368,11 @@ def welcome_screen() -> str:
             rule(),
             "",
             "  New here? Start with:",
-            "    halide calibrate in_dir/                  pick neutral points, save a profile",
-            "    halide invert negative.tif positive.tif   develop a single scan",
-            "    halide check  in_dir/                     check a roll was scanned consistently",
-            "    halide batch  in_dir/ out_dir/            develop a whole roll",
-            "    halide batch  in_dir/ --contact-sheet s.jpg  preview settings as a contact sheet",
+            *(f"    {command.ljust(pad)}{note}" for command, note in starts),
             "",
             "  Editing yourself? Develop flat, edit in darktable, then print:",
             "    halide invert negative.tif flat.tif --output flat",
-            "    halide print  flat_edited.tif print.tif",
+            "    halide print flat_edited.tif print.tif",
             "",
             "  Run `halide --help` for the full command list",
         ]

@@ -31,12 +31,12 @@ def add_output_policy_arguments(parser) -> None:
     group.add_argument(
         "--overwrite",
         action="store_true",
-        help="replace output files that already exist (and a saved profile of the same name)",
+        help="Replace output files that already exist (and a saved profile of the same name)",
     )
     group.add_argument(
         "--skip-existing",
         action="store_true",
-        help="develop only the frames whose output doesn't exist yet - resumes an interrupted roll",
+        help="Develop only the frames whose output doesn't exist yet (resumes an interrupted roll)",
     )
 
 

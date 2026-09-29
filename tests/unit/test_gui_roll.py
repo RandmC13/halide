@@ -266,3 +266,28 @@ def test_an_older_relative_profile_opened_from_another_folder_isnt_given_a_guess
     found = reopened.sidecars()
     assert found["roll"] == str(roll)
     assert [a["frame"] for a in found["anchors"]] == [str(p) for p in paths]
+
+
+def test_a_fit_the_points_dont_pin_down_is_reported_not_raised(tmp_path):
+    # Points spread widely in green but with red nearly flat: can_fit passes the 0.1 D gate, yet
+    # the fit refuses (red scale ~50). The picker must treat that as "can't fit yet".
+    session, paths = _session(tmp_path)
+    for i, g in enumerate((0.3, 0.7, 1.1)):
+        rgb = (10 ** -(0.5 + 0.02 * g), 10 ** -g, 10 ** -(0.05 + g / 0.78))
+        session.add_point(NeutralPoint(frame=paths[i], x=10 * i, y=50, rgb=rgb, scan=AT_1_30))
+    assert session.can_fit()
+    assert session.profile() is None
+    assert "red layer" in session.fit_problem()
+    assert "further apart in density" in session.fit_problem()
+    session.views()  # agreement / worst() must not raise either
+    assert session.worst() is None or isinstance(session.worst(), int)
+    with pytest.raises(ValueError):
+        session.profile_to_save()
+
+
+def test_no_fit_problem_for_good_points(tmp_path):
+    session, paths = _session(tmp_path)
+    session.add_point(_pt(paths[0], 0.4))
+    session.add_point(_pt(paths[1], 1.2, x=5))
+    assert session.fit_problem() is None
+    assert session.profile() is not None
