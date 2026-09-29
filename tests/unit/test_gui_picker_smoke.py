@@ -12,13 +12,13 @@ import time
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
 from halide.calibration.profile_store import default_profiles_dir
 from halide.gui import proof_window
 from halide.gui.main_window import MainWindow, SaveProfileDialog
 from halide.io.tiff import write_tiff
+from tests.unit._gui_helpers import ParkedLoader, record_started_threads
 from tests.unit.test_icc import LINEAR_TAGS, build_icc
 
 SHADOW_RGB = (0.094, 0.131, 0.050)
@@ -58,6 +58,7 @@ def test_picker_session_from_load_to_saved_profile_to_clean_close(tmp_path, monk
     for i in range(3):
         _write_frame(roll / f"frame_{i:02d}.tiff", seed=i)
 
+    started = record_started_threads(monkeypatch)
     window = MainWindow()
     window.load_roll(roll)
     window.show()
@@ -106,8 +107,12 @@ def test_picker_session_from_load_to_saved_profile_to_clean_close(tmp_path, monk
     assert data["film_stock"] == "Test Stock"
     assert window.status_label.full_text().startswith("Saved calibration profile 'smoke'")
 
+    # Close with a frame load still mid-flight (the Task 12 crash path): close() must not return
+    # while any thread the window started is running.
+    ParkedLoader.reset()
+    monkeypatch.setattr("halide.gui.main_window.FrameLoader", ParkedLoader)
+    window._select_frame(2)
+    assert ParkedLoader.started_for and started[-1].isRunning()
     window.close()
     proof_window.wait_for_stopping_renderers()
-    assert window._threads == set()
-    assert not [t for t in window.findChildren(QThread) if t.isRunning()]
-
+    assert len(started) >= 3 and all(not thread.isRunning() for thread in started)
