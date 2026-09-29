@@ -38,6 +38,7 @@ class StepWedge(QWidget):
         self._range: tuple[float, float] | None = None
         self._ticks: list[WedgeTick] = []
         self._reliable: tuple[float, float] | None = None
+        self._measuring = True
         self.setFixedHeight(_TICK_ROW + 2 * _LABEL_H + _RELIABLE_H + 18)
         self.setToolTip(
             "The roll's density range as a printed step wedge: the film-base end prints black, the "
@@ -50,11 +51,15 @@ class StepWedge(QWidget):
         density_range: tuple[float, float] | None,
         ticks: list[WedgeTick],
         reliable: tuple[float, float] | None = None,
+        measuring: bool = True,
     ) -> None:
-        """`reliable`: the span the fit can be trusted over, drawn only when it's short of the roll."""
+        """`reliable`: the span the fit can be trusted over, drawn only when it's short of the roll.
+        `measuring`: with no density range yet, whether previews are still on their way (else there
+        is no roll to measure - "Continue without" - and the caption must not promise one)."""
         self._range = density_range
         self._ticks = list(ticks)
         self._reliable = reliable
+        self._measuring = measuring
         self.update()
 
     def _x(self, density: float, left: float, width: float) -> float:
@@ -84,7 +89,9 @@ class StepWedge(QWidget):
 
         if self._range is None:
             painter.setPen(QColor(theme.TEXT_DIM))
-            painter.drawText(QRectF(left, _TICK_ROW, width, _LABEL_H * 2), Qt.AlignmentFlag.AlignCenter, "measuring the roll…")
+            painter.drawText(QRectF(left, _TICK_ROW, width, _LABEL_H * 2), Qt.AlignmentFlag.AlignCenter,
+                "measuring the roll…" if self._measuring else "no roll loaded - no density range to show",
+            )
             return
 
         if self._ticks:

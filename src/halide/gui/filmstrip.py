@@ -9,9 +9,9 @@ widget only lays them out, paints the film and reports clicks.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QFrame, QScrollArea, QWidget
+from PySide6.QtWidgets import QFrame, QScrollArea, QToolTip, QWidget
 
 from halide.gui import theme
 
@@ -30,7 +30,7 @@ class _Strip(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pixmaps: list[QPixmap | None] = []
-        self._failed: set[int] = set()
+        self._failed: dict[int, str] = {}  # frame index -> why it didn't load
         self._numbers: list[int] = []
         self._counts: list[int] = []
         self._current: int | None = None
@@ -48,16 +48,39 @@ class _Strip(QWidget):
         self._numbers = list(numbers)
         self._pixmaps = [None] * len(numbers)
         self._counts = [0] * len(numbers)
-        self._failed = set()
+        self._failed = {}
         self._current = None
         self._resize()
         self.update()
 
-    def set_pixmap(self, index: int, pixmap: QPixmap | None, failed: bool = False) -> None:
+    def set_pixmap(self, index: int, pixmap: QPixmap | None, failed: bool = False, reason: str = "") -> None:
         self._pixmaps[index] = pixmap
         if failed:
-            self._failed.add(index)
+            self._failed[index] = reason or "couldn't load"
         self.update(self.frame_rect(index).adjusted(-2, -2, 2, 2))
+
+    def mark_failed(self, index: int, reason: str) -> None:
+        """Put a warning over a frame (keeping any thumbnail it has), with `reason` as its tooltip."""
+        if 0 <= index < len(self._numbers):
+            self._failed[index] = reason or "couldn't load"
+            self.update(self.frame_rect(index).adjusted(-2, -2, 2, 2))
+
+    def failure_at(self, pos) -> str | None:
+        for i in self._failed:
+            if self.frame_rect(i).contains(pos):
+                return self._failed[i]
+        return None
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.Type.ToolTip:
+            reason = self.failure_at(event.pos())
+            if reason is not None:
+                QToolTip.showText(event.globalPos(), f"Couldn't load this frame: {reason}", self)
+            else:
+                QToolTip.hideText()
+                event.ignore()
+            return True
+        return super().event(event)
 
     def set_counts(self, counts: list[int]) -> None:
         self._counts = list(counts)
@@ -90,14 +113,30 @@ class _Strip(QWidget):
             rect = self.frame_rect(i)
             pixmap = self._pixmaps[i]
             if pixmap is not None:
-                scaled = pixmap.scaled(rect.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                # Scaled to device pixels (and tagged with the ratio), so a HiDPI screen gets a sharp
+                # thumbnail rather than a stretched one.
+                ratio = self.devicePixelRatioF()
+                scaled = pixmap.scaled(
+                    round(rect.width() * ratio), round(rect.height() * ratio),
+                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+                )
+                scaled.setDevicePixelRatio(ratio)
                 painter.drawPixmap(
-                    rect.x() + (rect.width() - scaled.width()) // 2, rect.y() + (rect.height() - scaled.height()) // 2, scaled
+                    rect.x() + round((rect.width() - scaled.width() / ratio) / 2),
+                    rect.y() + round((rect.height() - scaled.height() / ratio) / 2),
+                    scaled,
                 )
             else:
                 # undeveloped: loading, or a frame that failed to load
-                painter.fillRect(rect, QColor("#3a1a18" if i in self._failed else "#1c1916"))
+                painter.fillRect(rect, QColor(theme.FILM_FAILED if i in self._failed else theme.FILM_LOADING))
 
+            if i in self._failed:
+                warn_font = QFont(self.font())
+                warn_font.setPixelSize(22)
+                painter.setFont(warn_font)
+                painter.setPen(QColor(theme.TEXT_WARNING))
+                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "⚠")
+                painter.setFont(edge_font)
             painter.setPen(QColor(theme.EDGE_PRINT))
             painter.drawText(QRect(rect.x(), 0, rect.width(), REBATE), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, f" {number}")
             if self._counts and self._counts[i]:
