@@ -673,8 +673,7 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
       one container could unlink a live batch's frames from another; the worker then gets a missing
       segment and develops that frame on the CPU. Names are `hl` + 6-char base36 pid + a 6-char
       random token (`os.urandom`) + `-` + a 14-hex frame id = 29 chars, under macOS's 31-char
-      shared-memory name limit (F35), and the token space is wide enough (20,000 prefixes, no repeat in
-      the test) that two batches never share a prefix, since a shared one would let one batch's
+      shared-memory name limit (F35), and the token space is 36^6 (the test asserts the space and 200 draws) that two batches never share a prefix, since a shared one would let one batch's
       sweep unlink the other's live frames.
     - The service attaches with `SharedMemory(track=False)` (Python >= 3.13), so its tracker doesn't
       claim the worker's segment. Below 3.13 `attach_frame` refuses and `sweep` does nothing: an
@@ -791,16 +790,17 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
     `--match-scan-exposure` makes; the reference is saved as the profile's `scan` sidecar).
     Roll 16 was digitized at 1/25-1/60, and without it mixed-exposure picks fit a wrong profile.
   - Each point's agreement is judged against the fit through the *other* points (leave-one-out),
-    shown as a colour-printing filter pack, "CC 10Y + 6M" (Kodak CC = density x 100; a pack of at most
-    two of the Y/M/C dials, largest first, the smallest dial dropped as neutral density; the
-    magnitude - the largest minus the smallest channel error - and the bands below are unchanged).
+    shown as a colour-printing filter, now a pack such as "CC 10Y + 6M" (Kodak CC = density x 100; at
+    most two of the Y/M/C dials, largest first, the smallest dropped as neutral density; the
+    magnitude - largest minus smallest channel error - and the bands below are unchanged). The
+    readings quoted below are measurements in the old single-letter notation ("CC 8 R").
     Against a fit that includes it, a bad point hides its own error (a point truly CC 3.9 off read
     CC 2.6 while good points took the blame).
   - No reading while the others span < 0.1 D (`MIN_DENSITY_SEPARATION`): an extrapolated line
-    accused the trike of a CC 8 cast when the other two points were 0.06 D apart.
+    accused the trike of "CC 8 M" when the other two points were 0.06 D apart.
   - Bands: <= CC 5 calm, 5-10 amber, > 10 red. The "was that object really neutral?" hint fires
-    from amber, not red: on Roll 16 the known-suspect objects read amber (cream wall CC 7.9,
-    sunlit cloud edge CC 9.6) while trusted whites stayed within CC 4.8. The user confirmed CC 5
+    from amber, not red: on Roll 16 the known-suspect objects read amber (cream wall CC 7.9 R,
+    sunlit cloud edge CC 9.6 Y) while trusted whites stayed within CC 4.8. The user confirmed CC 5
     felt right in use (it mostly fired on shadowed neutrals, plausibly tinted by what casts the
     shadow).
   - The hint names one point - the one whose removal leaves the others most consistent, not simply
@@ -1057,7 +1057,7 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   (verified in Xvfb at 1366x768). Accepted difference from before on 1080p: the step wedge is 8 px
   taller (room for the reliability bracket), the window itself is unchanged.
 - **Terminal output follows the terminal** (`console.use_color`, `batch/progress.py`): colour is
-  off for `NO_COLOR` (any value), `TERM=dumb`, or output that isn't a tty; `FORCE_COLOR` wins over
+  off for `NO_COLOR` (any value), `TERM=dumb`, or output that isn't a tty; `FORCE_COLOR` (set and not 0) wins over
   all. When output isn't interactive, batch/print/export/contact use `PlainProgressRenderer` - one
   line per frame ("✓ IMG_0138.tif  grade 0.88 exp +0.39  4.1s"), no cursor movement - instead of
   the contact-sheet grid, and `--quiet` prints only the end line and failures. stdout is
@@ -1097,9 +1097,9 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   `.review/approval/` rather than stopping mid-run: each is an isolated, revertible commit and
   nothing merges without approval. The shared-frame sweep, when the segment name format changes,
   is updated together with `prefix_pid` and its test. The parent-RSS measurement of the device probe (isolated
-  in a child process for batch and directory print/export) was left for the user's RTX 3070. Open questions for the user: whether the filter pack should show only the Y/M form
-  ("take out 2Y + 1M"), their darkroom convention to choose; and whether CLAUDE.md itself should be
-  shortened.
+  in a child process for batch and directory print/export) was left for the user's RTX 3070.
+  Open questions for the user: whether the filter pack should show only the Y/M form ("take out
+  2Y + 1M"), their darkroom convention to choose; and whether CLAUDE.md itself should be shortened.
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 
