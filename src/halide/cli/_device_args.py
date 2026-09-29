@@ -41,8 +41,8 @@ def add_device_argument(parser: argparse.ArgumentParser) -> None:
         choices=("auto", "cpu", "gpu"),
         type=_device_value,
         default=None,
-        help="where to do the arithmetic: auto (GPU if one is usable; default), cpu, or gpu (fail "
-        "if unusable). Also HALIDE_DEVICE.",
+        help="Where to do the arithmetic: auto (the GPU if one is usable; default), cpu, or gpu "
+        "(an error if there isn't one). Also HALIDE_DEVICE",
     )
 
 

@@ -17,16 +17,18 @@ from halide.io.roll import Skipped
 
 def add_contact_layout_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--columns", type=int, default=DEFAULT_COLUMNS, help=f"Frames per strip (default: {DEFAULT_COLUMNS})"
+        "--columns", type=int, default=DEFAULT_COLUMNS, metavar="N",
+        help=f"Frames per strip (default: {DEFAULT_COLUMNS})"
     )
     parser.add_argument(
         "--frame-width",
         type=int,
         default=DEFAULT_FRAME_WIDTH,
+        metavar="PX",
         help=f"Width of each frame on the sheet, in pixels (default: {DEFAULT_FRAME_WIDTH}; a "
         "six-across sheet is then about 6000 px wide)",
     )
-    parser.add_argument("--title", help="Title printed at the top of the sheet (default: the input folder's name)")
+    parser.add_argument("--title", help="Title printed at the top of the sheet (default: the folder's name)")
 
 
 def _common_decision(records: list[dict | None]) -> str:

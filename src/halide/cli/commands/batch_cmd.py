@@ -16,6 +16,7 @@ from halide.batch.progress import cancel_notice, make_renderer
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.cli._device_args import add_device_argument, resolve_device_arg
+from halide.cli._help import add_workers_argument
 from halide.cli._output_policy import (
     add_output_policy_arguments,
     check_input_folder,
@@ -56,10 +57,10 @@ _SEP = console.RunSheet.SEP
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("input_dir", help="Directory of input linear TIFF scans")
+    parser.add_argument("input_dir", help="Folder of linear TIFF scans (one roll)")
     parser.add_argument(
         "output_dir", nargs="?",
-        help="Directory to write output TIFFs into. Optional with --contact-sheet: leave it out to "
+        help="Folder to write the developed TIFFs into. Optional with --contact-sheet: leave it out to "
         "preview settings as a contact sheet without keeping any full-size TIFFs",
     )
     parser.add_argument(
@@ -70,7 +71,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "thumbnails are kept (in a temporary folder, deleted afterwards)",
     )
     add_contact_layout_arguments(parser)
-    parser.add_argument("--suffix", default="", help="Suffix to append to output filenames")
+    parser.add_argument("--suffix", default="", help="Text to add to each output file name, before .tif")
     add_output_policy_arguments(parser)
 
     add_stage_arguments(parser)
@@ -85,13 +86,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_tone_arguments(parser)
     add_scan_arguments(parser)
 
-    parser.add_argument(
-        "--workers",
-        type=int,
-        help="Number of parallel worker processes (default: auto-selected from available memory "
-        "and CPU count — full-resolution scans are memory-heavy enough that RAM, not CPU threads, "
-        "is usually the real limit; pass this to override the auto-selected count)",
-    )
+    add_workers_argument(parser)
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
     add_device_argument(parser)
 

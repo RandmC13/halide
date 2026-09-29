@@ -23,13 +23,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--install",
         action="store_true",
-        help="install GPU support (about 1 GB download); asks to confirm unless --yes is given",
+        help="Install GPU support (about 1 GB download); asks first unless --yes is given",
     )
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="with --install, skip the confirmation prompt (for scripts; still refuses with no "
-        "usable NVIDIA driver)",
+        help="With --install, don't ask first (for scripts; still refuses with no usable NVIDIA "
+        "driver)",
     )
 
 

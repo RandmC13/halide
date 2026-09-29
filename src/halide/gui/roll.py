@@ -207,6 +207,17 @@ class CalibrationSession:
         except ValueError:
             return None
 
+    def fit_problem(self) -> str | None:
+        """Why the points can't be fitted although they span enough density (e.g. a colour layer
+        the points don't pin down), in plain words for the status line - else None."""
+        if not self.can_fit():
+            return None
+        try:
+            anchors.fit(self.points, self.reference)
+        except ValueError as exc:
+            return str(exc)
+        return None
+
     def views(self) -> list[PointView]:
         reference = self.reference
         agreements = anchors.agreement(self.points, reference)

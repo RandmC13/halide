@@ -17,7 +17,7 @@ from halide.io.roll import Skipped, list_scans
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("inputs", nargs="+", help="A directory of scans (one roll), or individual scan TIFFs")
+    parser.add_argument("inputs", nargs="+", help="A roll folder, or individual scan TIFFs")
 
 
 def _collect(inputs: list[str]) -> tuple[list[Path], Skipped]:

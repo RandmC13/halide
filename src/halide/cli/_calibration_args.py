@@ -22,6 +22,7 @@ from halide.calibration.profile_store import (
     suggest_profile_name,
     validate_profile_name,
 )
+from halide.cli._help import contrast_grade, finite_float, positive_float
 from halide.cli._output_policy import OutputPolicy, is_interactive, policy_from_args
 from halide.io.scan_metadata import ScanSettings, read_scan_metadata
 from halide.cli import console
@@ -51,15 +52,23 @@ def add_calibration_arguments(
     parser: argparse.ArgumentParser, *, allow_auto: bool = True, allow_pick: bool = False
 ) -> None:
     parser.add_argument(
-        "--profile", help="A saved calibration profile — either a file path or a saved profile's name"
-    )
-    parser.add_argument("--rm", type=float, help="Red channel white-balance multiplier (manual calibration)")
-    parser.add_argument("--bm", type=float, help="Blue channel white-balance multiplier (manual calibration)")
-    parser.add_argument(
-        "--rs", type=float, default=1.0, help="Red channel density-balance scale (manual calibration, default: 1.0)"
+        "--profile", help="A saved calibration profile: its name, or a path to its file"
     )
     parser.add_argument(
-        "--bs", type=float, default=1.0, help="Blue channel density-balance scale (manual calibration, default: 1.0)"
+        "--rm", type=positive_float, metavar="X",
+        help="Red white-balance multiplier, above 0 (manual calibration; default: 1.0)",
+    )
+    parser.add_argument(
+        "--bm", type=positive_float, metavar="X",
+        help="Blue white-balance multiplier, above 0 (manual calibration; default: 1.0)",
+    )
+    parser.add_argument(
+        "--rs", type=positive_float, default=1.0, metavar="X",
+        help="Red density-balance scale, above 0 (manual calibration; default: 1.0)",
+    )
+    parser.add_argument(
+        "--bs", type=positive_float, default=1.0, metavar="X",
+        help="Blue density-balance scale, above 0 (manual calibration; default: 1.0)",
     )
     if allow_auto:
         parser.add_argument(
@@ -107,19 +116,21 @@ def add_tone_arguments(parser: argparse.ArgumentParser, *, allow_output_mode: bo
         )
     parser.add_argument(
         "--exposure",
-        type=float,
+        metavar="E",
+        type=finite_float,
         default=None,
         help="Print exposure (where the negative sits on the paper curve, in density units). "
         "Default: fitted per image so the negative's highlights land on the paper's highlight "
-        "point. Pass a value to pin it, e.g. to match a look across a whole roll.",
+        "point. Pass a value to pin it, e.g. to match a look across a whole roll",
     )
     parser.add_argument(
         "--contrast",
-        type=float,
+        metavar="C",
+        type=contrast_grade,
         default=None,
-        help="Paper grade, 0-1 (1.0 = the untouched reference paper; lower = softer). Default: "
+        help="Paper grade, above 0 and up to 2 (1.0 = the untouched reference paper; lower = softer). Default: "
         "fitted per image so the negative's density range fills the paper's range (capped at 1.0), "
-        "or a value saved into the resolved --profile's calibration if it has one.",
+        "or a value saved into the resolved --profile's calibration if it has one",
     )
 
 
@@ -169,7 +180,7 @@ def resolve_stage(args: argparse.Namespace) -> Stage:
 def resolve_tone_params(args: argparse.Namespace, saved_tone: ToneCurveParams | None = None) -> ToneCurveParams:
     """Precedence for exposure/contrast: an explicit CLI flag wins, then a tone override saved
     into the resolved calibration profile (see calibration/profile_store.py's `tone` sidecar,
-    written by the GUI's Fine-tune controls), then None = fitted per image (see
+    written by the GUI's Print controls), then None = fitted per image (see
     core.tone_render.fit_print). The flat/linear output is CLI-flag-only — never inherited from
     `saved_tone`, deliberately (silently changing output format felt like the wrong kind of thing
     for a saved profile to do by default)."""
@@ -247,7 +258,7 @@ def resolve_density_profile(
     """Returns (profile, saved_tone) - profile=None means "compute automatically per-frame" (only
     call this when the pipeline stage actually needs a density profile at all, i.e. not
     Stage.INVERT_ONLY); saved_tone is an optional exposure/contrast override that came bundled with
-    the resolved profile (from a saved profile's "tone" sidecar, or from the GUI's Fine-tune
+    the resolved profile (from a saved profile's "tone" sidecar, or from the GUI's Print
     controls during --pick), to be passed into resolve_tone_params."""
     manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
     auto_given = getattr(args, "auto_density", False)
@@ -319,7 +330,7 @@ def maybe_save_profile(
     if nothing was asked to be saved); `announce=False` leaves reporting it to the caller. `profile=None` means no
     single profile was computed here (per-frame --auto-density produces a different profile per
     image; --invert-only skips density balance entirely) — that is an error if the user asked to
-    save one. `tone` (e.g. from a --pick session's Fine-tune controls) is saved alongside it."""
+    save one. `tone` (e.g. from a --pick session's Print controls) is saved alongside it."""
     save_as = getattr(args, "save_profile_as", None)
     if not save_as:
         return None

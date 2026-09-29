@@ -10,6 +10,7 @@ from pathlib import Path
 from halide.cli import console
 from halide.cli._contact_sheet import add_contact_layout_arguments, discover_processed_files, write_sheet_from_folder
 from halide.cli._device_args import add_device_argument, device_row, requested_device_arg, resolve_device_arg
+from halide.cli._help import add_workers_argument
 from halide.cli._output_policy import (
     add_output_policy_arguments,
     is_interactive,
@@ -26,12 +27,12 @@ from halide.io.roll import Skipped
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "inputs", nargs="+",
-        help="A folder of processed frames (TIFF output of invert/batch/print, or PNG/JPEG from "
-        "export), or individual files, followed by the sheet to write",
+        help="A folder of developed frames (TIFFs from invert/batch/print, or PNG/JPEG from export), "
+        "or individual files, followed by the contact sheet to write (.jpg or .png)",
     )
     add_contact_layout_arguments(parser)
     add_output_policy_arguments(parser)
-    parser.add_argument("--workers", type=int, help="Number of parallel worker processes (default: auto-selected)")
+    add_workers_argument(parser)
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
     add_device_argument(parser)
 

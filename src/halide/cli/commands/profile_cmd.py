@@ -25,6 +25,7 @@ from halide.calibration.profile_store import (
     validate_profile_name,
 )
 from halide.cli import console
+from halide.cli._help import DEBUG_HELP, HELP_FORMATTER, examples, wrapped
 from halide.cli._output_policy import is_interactive
 
 # (field attr name, CLI flag dest, human label) — drives both the `edit` subparser's flags and
@@ -38,32 +39,54 @@ _EDIT_FIELD_LABELS = {
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.epilog = examples(
+        "halide profile list",
+        'halide profile show "Portra 400"',
+        'halide profile edit "Portra 400" --scanner "D850 + macro lens"',
+    )
     subparsers = parser.add_subparsers(dest="profile_command", required=True)
 
-    subparsers.add_parser("list", help="List saved calibration profiles")
+    def add(name: str, summary: str, *sample_lines: str, description: str | None = None):
+        sub = subparsers.add_parser(
+            name, help=summary, description=wrapped(description or summary + "."),
+            formatter_class=HELP_FORMATTER, epilog=examples(*sample_lines),
+        )
+        sub.add_argument("--debug", action="store_true", default=argparse.SUPPRESS, help=DEBUG_HELP)
+        return sub
 
-    show_parser = subparsers.add_parser("show", help="Show one saved profile's details")
-    show_parser.add_argument("name", help="Profile name or file path")
+    add("list", "List saved calibration profiles", "halide profile list",
+        description="List every saved calibration profile, newest first, with its film stock and "
+        "when it was made.")
 
-    rename_parser = subparsers.add_parser("rename", help="Rename a saved profile")
-    rename_parser.add_argument("old_name")
-    rename_parser.add_argument("new_name")
+    show_parser = add("show", "Show one saved profile's details", 'halide profile show "Portra 400"',
+                      description="Show a saved profile's calibration, the details you recorded "
+                      "about it, and the roll it was picked from.")
+    show_parser.add_argument("name", help="The profile's name, or a path to its file")
 
-    delete_parser = subparsers.add_parser("delete", help="Delete a saved profile")
-    delete_parser.add_argument("name")
+    rename_parser = add("rename", "Rename a saved profile", 'halide profile rename "Portra 400" "Portra 400 (Roll 16)"',
+                        description="Give a saved profile a new name; everything recorded with it comes along.")
+    rename_parser.add_argument("old_name", help="The profile's current name")
+    rename_parser.add_argument("new_name", help="The name to give it")
+
+    delete_parser = add("delete", "Delete a saved profile", 'halide profile delete "Portra 400"',
+                        'halide profile delete "Portra 400" --yes',
+                        description="Delete a saved profile for good. Asks first in a terminal; "
+                        "outside one, --yes is required.")
+    delete_parser.add_argument("name", help="The profile's name, or a path to its file")
     delete_parser.add_argument(
-        "--yes", action="store_true", help="Delete without asking for confirmation (needed outside a terminal)"
+        "--yes", action="store_true", help="Delete without asking (needed outside a terminal)"
     )
 
-    edit_parser = subparsers.add_parser(
-        "edit",
-        help="Edit a saved profile's film stock, process, scanner, or notes",
+    edit_parser = add(
+        "edit", "Edit a saved profile's film stock, process, scanner, or notes",
+        'halide profile edit "Portra 400" --film-stock "Kodak Portra 400"',
+        'halide profile edit "Portra 400" --notes -',
         description="Edit a saved profile's metadata fields (film stock, process, scanner, "
         "notes) — the calibration data itself (white balance / density scale) isn't editable "
         "here, only what you've recorded about it. With no flags and a real terminal, prompts "
         "for each field interactively; otherwise pass one or more flags to set fields directly.",
     )
-    edit_parser.add_argument("name")
+    edit_parser.add_argument("name", help="The profile's name, or a path to its file")
     edit_parser.add_argument("--film-stock", dest="film_stock", help="Set the film stock (pass - to clear)")
     edit_parser.add_argument("--process", help="Set the process (pass - to clear)")
     edit_parser.add_argument("--scanner", help="Set the scanner (pass - to clear)")

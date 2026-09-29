@@ -25,6 +25,7 @@ from halide.batch.progress import cancel_notice, make_renderer
 from halide.calibration.profile_store import load_tone_override, resolve_profile_path
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
+from halide.cli._help import add_workers_argument
 from halide.cli._output_policy import (
     add_output_policy_arguments,
     check_input_file,
@@ -58,26 +59,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "input",
         help="Flat linear positive TIFF (from `halide invert --output flat`, optionally edited "
-        "elsewhere and re-exported as linear float TIFF with an embedded profile), or a directory "
+        "elsewhere and re-exported as linear float TIFF with an embedded profile), or a folder "
         "of them",
     )
-    parser.add_argument("output", help="Output TIFF path, or an output directory when `input` is a directory")
+    parser.add_argument("output", help="Output TIFF path, or an output folder when `input` is a folder")
     add_output_policy_arguments(parser)
     add_tone_arguments(parser, allow_output_mode=False)
     parser.add_argument(
         "--profile",
-        help="Use a saved profile's exposure/contrast override (from `halide calibrate`'s Fine-tune "
-        "controls), if it has one. Its density calibration is ignored — a flat positive already has "
-        "it applied.",
+        help="Use a saved profile's exposure/contrast override (from `halide calibrate`'s Print "
+        "controls), if it has one. Its density calibration is ignored: a flat positive already has "
+        "it applied",
     )
-    parser.add_argument("--suffix", default="", help="Suffix to append to output filenames when `input` is a directory")
-    parser.add_argument(
-        "--workers",
-        type=int,
-        help="Number of parallel worker processes when `input` is a directory (default: "
-        "auto-selected from available memory and CPU count)",
-    )
-    parser.add_argument("--quiet", action="store_true", help="Suppress the progress display when `input` is a directory")
+    parser.add_argument("--suffix", default="", help="Text to add to each output file name when `input` is a folder")
+    add_workers_argument(parser)
+    parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
     add_device_argument(parser)
 
 

@@ -17,6 +17,7 @@ from halide.batch.orchestrator import (
 from halide.batch.progress import cancel_notice, make_renderer
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
+from halide.cli._help import add_workers_argument
 from halide.cli._output_policy import (
     add_output_policy_arguments,
     check_input_file,
@@ -47,39 +48,31 @@ _FORMATS = ("png", "jpg", "jpeg")
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "input", help="Input ACEScg TIFF, or a directory of them (output of `halide invert`/`halide batch`)"
+        "input", help="An ACEScg TIFF, or a folder of them (output of `halide invert`/`halide batch`)"
     )
     parser.add_argument(
         "output",
-        help="Output image path (.png, .jpg, or .jpeg) for a single file, or an output directory "
-        "when `input` is a directory",
+        help="Output image path (.png, .jpg, or .jpeg) for a single file, or an output folder "
+        "when `input` is a folder",
     )
     add_output_policy_arguments(parser)
     parser.add_argument(
-        "--quality", type=int, default=95, help="JPEG quality, 1-100 (default: 95; ignored for PNG)"
+        "--quality", type=int, default=95, help="JPEG quality, 1-100 (default: 95, ignored for PNG)"
     )
     parser.add_argument(
         "--format",
         default="png",
         choices=_FORMATS,
-        help="Output format when `input` is a directory (default: png). Ignored for a single "
-        "file, where the output path's own extension is used instead.",
+        help="Output format when `input` is a folder (default: png); a single file follows its "
+        "output name's extension instead",
     )
     parser.add_argument(
         "--suffix",
         default="",
-        help="Suffix to append to output filenames when `input` is a directory (default: none)",
+        help="Text to add to each output file name when `input` is a folder (default: none)",
     )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        help="Number of parallel worker processes when `input` is a directory (default: "
-        "auto-selected from available memory and CPU count, same as `halide batch`; pass this to "
-        "override the auto-selected count)",
-    )
-    parser.add_argument(
-        "--quiet", action="store_true", help="Suppress the progress display when `input` is a directory"
-    )
+    add_workers_argument(parser)
+    parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
     add_device_argument(parser)
 
 

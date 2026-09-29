@@ -69,7 +69,7 @@ class ToneCurveParams:
     real scan — flat, lifted blacks (sRGB ~45) and dim whites (~220-233) against the paper's own
     ~11/255. The fitted grade typically lands around 0.8-0.9 on real scans, so a good calibration
     matters more than it did at 0.5: a residual cast is ~1.7x more visible. Pin either value
-    explicitly (CLI flag, or a saved profile's Fine-tune override) to take it out of the fit.
+    explicitly (CLI flag, or a saved profile's Print override) to take it out of the fit.
     """
 
     mode: Literal["paper", "linear"] = "paper"

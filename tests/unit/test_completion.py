@@ -49,8 +49,8 @@ def test_script_is_valid_shell_code(shell, tmp_path):
 
 def test_values_are_completed_not_just_flag_names():
     zsh = completion.zsh_script(build_parser())
-    assert ":Input linear TIFF scan of a negative:_files -g '*.(#i)tif(|f)'" in zsh
-    assert ":Directory of input linear TIFF scans:_files -/" in zsh
+    assert ":Linear TIFF scan of one negative:_files -g '*.(#i)tif(|f)'" in zsh
+    assert ":Folder of linear TIFF scans (one roll):_files -/" in zsh
     assert ":profile:_halide_profiles" in zsh
     assert ":output_mode:(print flat)" in zsh
 

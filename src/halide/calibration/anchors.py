@@ -134,7 +134,10 @@ def _spread_without(points: Sequence[NeutralPoint], index: int, reference: ScanS
     if not can_fit(others, reference):
         return float("inf")
     rgbs = [normalised_rgb(p, reference) for p in others]
-    residuals = neutral_residuals(fit_density_balance(rgbs), rgbs)
+    try:
+        residuals = neutral_residuals(fit_density_balance(rgbs), rgbs)
+    except ValueError:
+        return float("inf")
     return float(np.sqrt(np.mean([describe_cast(r)[0] ** 2 for r in residuals])))
 
 
