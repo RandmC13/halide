@@ -7,16 +7,16 @@ license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "numpy>=2.5,<3",
-    "tifffile>=2026.9",
-    "imagecodecs",
-    "colour-science>=0.4.7,<0.5",
-    "scipy",
-    "PySide6>=6.11,<7",
-    "pillow>=12.3",  # delivery-format export only (8-bit PNG/JPEG writing + a synthesized sRGB ICC
+    "numpy>=2.0,<3",
+    "tifffile>=2024.8",  # asarray(out=, buffersize=) (io/tiff.py)
+    "imagecodecs>=2023.9",
+    "colour-science>=0.4.6,<0.5",
+    "scipy>=1.11",
+    "PySide6>=6.7,<7",
+    "pillow>=10.1",  # 10.1 for ImageFont.load_default(size=) (io/contact_sheet.py); delivery-format export only (8-bit PNG/JPEG writing + a synthesized sRGB ICC
                # profile) — NOT used for the ICC-parsing in io/icc.py, see its module docstring
-    "psutil>=7.2",  # cross-platform available-memory query, batch/orchestrator.py's worker-count sizing
-    "shtab>=1.12",  # generates the zsh tab-completion script from the argparse parser, cli/completion.py
+    "psutil>=5.9",  # cross-platform available-memory query, batch/orchestrator.py's worker-count sizing
+    "shtab>=1.7",  # generates the zsh tab-completion script from the argparse parser, cli/completion.py
 ]
 
 [project.optional-dependencies]

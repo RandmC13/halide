@@ -3,7 +3,8 @@ across a whole roll (and across sessions) instead of re-solved per image — thi
 behind "calibrate once per stock, not per image."
 
 Profiles can be referenced either by a full file path or by a bare name, resolved against a
-default directory (`~/.config/halide/profiles/`, or `$XDG_CONFIG_HOME/halide/profiles/` if set).
+default directory (`~/.config/halide/profiles/` on Linux, `~/Library/Application Support/halide/
+profiles/` on macOS, or `$XDG_CONFIG_HOME/halide/profiles/` if set).
 """
 
 from __future__ import annotations

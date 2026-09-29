@@ -68,7 +68,7 @@ _SHTAB_PREAMBLE = {
     "zsh": """
 _halide_profiles() {
   local -a names
-  names=(${XDG_CONFIG_HOME:-$HOME/.config}/halide/profiles/*.json(N:t:r))
+  names=("${XDG_CONFIG_HOME:-@CONFIG_BASE@}"/halide/profiles/*.json(N:t:r))
   _wanted profiles expl 'saved profile' compadd -a names
 }
 """,
@@ -80,7 +80,7 @@ _halide_tiff_files() {
 
 _halide_profiles() {
   local f names=()
-  for f in "${XDG_CONFIG_HOME:-$HOME/.config}"/halide/profiles/*.json; do
+  for f in "${XDG_CONFIG_HOME:-@CONFIG_BASE@}"/halide/profiles/*.json; do
     [ -e "$f" ] && f=${f##*/} && names+=("${f%.json}")
   done
   compgen -W "${names[*]}" -- "$1"
@@ -110,11 +110,23 @@ def _attach_completers(parser: argparse.ArgumentParser, command: str | None = No
         _attach_completers(subparser, command or name)
 
 
+def _config_base_shell() -> str:
+    """Where `profile_store.default_profiles_dir()` looks when `$XDG_CONFIG_HOME` is unset, as the
+    shell should write it — so the scripts list profiles from the same folder halide saves them in
+    (macOS: ~/Library/Application Support). Read when the script is generated; the script is
+    rewritten when it changes."""
+    if sys.platform == "darwin":
+        return "$HOME/Library/Application Support"
+    return "$HOME/.config"
+
+
 def _shtab_script(parser: argparse.ArgumentParser, shell: str) -> str:
     import shtab
 
     _attach_completers(parser)
-    script = shtab.complete(parser, shell, preamble=_SHTAB_PREAMBLE)
+    script = shtab.complete(
+        parser, shell, preamble={k: v.replace("@CONFIG_BASE@", _config_base_shell()) for k, v in _SHTAB_PREAMBLE.items()}
+    )
     # shtab's header tells the reader to copy the file into place by hand; here halide does that.
     # zsh's first line (`#compdef halide`) is what makes it a completion function, so it stays.
     lines = script.splitlines(keepends=True)
@@ -201,7 +213,7 @@ function __halide_tiffs --description 'halide: folders and TIFF scans'
 end
 
 function __halide_profiles --description 'halide: saved profile names'
-    set -l dir ~/.config
+    set -l dir "@CONFIG_BASE@"
     set -q XDG_CONFIG_HOME; and set dir $XDG_CONFIG_HOME
     set -l files $dir/halide/profiles/*.json
     for file in $files
@@ -288,7 +300,7 @@ def fish_script(parser: argparse.ArgumentParser) -> str:
         + "complete -c halide -f  # only offer files where an argument actually takes one\n\n"
         + "set -g __halide_commands " + " ".join(_fish_quote(c) for c in commands) + "\n"
         + "set -g __halide_value_options " + " ".join(_fish_quote(o) for o in value_options) + "\n"
-        + _FISH_HELPERS
+        + _FISH_HELPERS.replace("@CONFIG_BASE@", _config_base_shell())
         + "\n"
         + "\n".join(lines)
         + "\n"

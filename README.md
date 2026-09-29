@@ -64,7 +64,7 @@ removes it. Use the full GitHub address above: a different, unrelated package ca
 PyPI, so `uv tool install halide` on its own installs the wrong thing.
 
 Tested with numpy 2.5, colour-science 0.4.7, tifffile 2026.9, PySide6 6.11, Pillow 12.3, psutil 7.2 and
-shtab 1.12.
+shtab 1.12. Older versions within halide's declared ranges should work but aren't tested.
 
 halide is developed and tested on Linux. It is plain Python (numpy, Qt via PySide6), so macOS and
 Windows should work, but they haven't been tested yet.

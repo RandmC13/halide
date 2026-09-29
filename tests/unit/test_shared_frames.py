@@ -401,7 +401,7 @@ def _dead_segment_name(pid: int, token: str) -> str:
     """A segment name in the current format for a creator with this pid."""
     from halide.shared_frames import _base36
 
-    return f"hl{_base36(pid)}{token}-{time.time_ns():x}"[:30]
+    return f"hl{_base36(pid)}{token.rjust(6, "0")}-{time.time_ns():x}"[:30]
 
 
 def _dead_pid() -> int:
@@ -414,15 +414,15 @@ def _dead_pid() -> int:
 @pytest.mark.parametrize(
     "name, pid",
     [
-        ("hl0000yaaf3c-0123456789abcdef", 1234),  # batch_prefix() + frame id (1234 = "ya" in base 36)
-        ("hl0000yaaf3c-", 1234),  # batch_prefix() itself
-        ("hl000000af3c-0123456789abcdef", 0),
-        ("hl0000yaaf3c", None),  # no separator after the token
-        ("hl0000yi-0123456789abcdef", None),  # token too short
-        ("hl0000YIaf3c-x", None),  # base 36 is lower case
-        ("hl0000y_af3c-x", None),
-        ("hl²000yiaf3c-x", None),  # a Unicode digit isn't a pid
-        ("sem.hl0000yaaf3c-x", None),
+        ("hl0000yaaf3c00-0123456789abcdef", 1234),  # batch_prefix() + frame id (1234 = "ya" in base 36)
+        ("hl0000yaaf3c00-", 1234),  # batch_prefix() itself
+        ("hl000000af3c00-0123456789abcdef", 0),
+        ("hl0000yaaf3c00", None),  # no separator after the token
+        ("hl0000yiaf3c-0123456789abcdef", None),  # token too short (4)
+        ("hl0000YIaf3c00-x", None),  # base 36 is lower case
+        ("hl0000y_af3c00-x", None),
+        ("hl²000yiaf3c00-x", None),  # a Unicode digit isn't a pid
+        ("sem.hl0000yaaf3c00-x", None),
         ("halide-1234-5aafe945-x", None),  # the old long format is no longer ours
         ("other-1234-x", None),
         ("", None),
@@ -487,8 +487,8 @@ def test_every_shared_frame_name_is_at_most_30_characters():
     from halide import shared_frames
 
     for pid in (1, 4194304, 36**6 - 1):
-        assert len(f"hl{shared_frames._base36(pid)}0000-{uuid_hex()}") <= 30
-        assert prefix_pid(f"hl{shared_frames._base36(pid)}abcd-{uuid_hex()}") == pid
+        assert len(f"hl{shared_frames._base36(pid)}zzzzzz-{uuid_hex()}") <= 30
+        assert prefix_pid(f"hl{shared_frames._base36(pid)}abcdef-{uuid_hex()}") == pid
     with new_frame((1, 1, 3), np.float32, prefix=batch_prefix()) as frame, new_frame((1, 1, 3), np.float32) as other:
         assert len(frame.name) <= 30 and len(other.name) <= 30
         assert frame.name != other.name
@@ -497,7 +497,7 @@ def test_every_shared_frame_name_is_at_most_30_characters():
 def uuid_hex() -> str:
     import uuid
 
-    return uuid.uuid4().hex[:16]
+    return uuid.uuid4().hex[:14]
 
 
 @pytest.mark.skipif(sys.platform != "linux" or sys.version_info < (3, 13), reason="/dev/shm sweep, Python 3.13+")
@@ -521,3 +521,10 @@ def test_sweep_stale_uses_the_short_format_and_own_batch_sweep_still_works():
         dead.close()
         live.close()
         live.unlink()
+
+
+def test_batch_prefix_token_is_wide_and_never_repeats_across_many_batches():
+    """R21: a 4-hex token repeated about once in 65,536 same-process batches, and a repeat lets one
+    batch's sweep unlink another's live frames. 6 base-36 characters: no repeat in 20,000 draws."""
+    prefixes = {batch_prefix() for _ in range(20000)}
+    assert len(prefixes) == 20000

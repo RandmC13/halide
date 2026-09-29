@@ -232,3 +232,17 @@ def test_symlinked_completion_file_is_written_through(home):
     install("fish")
     assert target.is_symlink()
     assert real.read_text() == completion.fish_script(build_parser())
+
+
+def test_generated_scripts_list_profiles_from_application_support_on_macos(monkeypatch):
+    """The scripts must look where default_profiles_dir() saves profiles: on macOS that's
+    ~/Library/Application Support, not ~/.config."""
+    from halide.cli.main import build_parser
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    for script in (completion.zsh_script(build_parser()), completion.bash_script(build_parser()),
+                   completion.fish_script(build_parser())):
+        assert "$HOME/Library/Application Support" in script
+        assert "$HOME/.config" not in script.replace("~/.config/fish", "")
+    monkeypatch.setattr("sys.platform", "linux")
+    assert "$HOME/.config" in completion.bash_script(build_parser())
