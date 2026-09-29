@@ -1011,16 +1011,17 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
 - **Non-finite and non-positive pixels are warned about and kept out of calibration, never
   propagated** (review F05). A raw converter's export can carry NaN/inf. At the working-space
   boundary they are counted and replaced by `nan_to_num` (treated as clear film) with a warning
-  ("N pixels weren't valid numbers ... treated as clear film"; N counts RGB *values* - one bad raw
-  value spreads to 3 through the ICC matrix); above 1% of values the frame fails ("this export
-  looks broken"). Auto calibration excludes non-finite and non-positive-in-any-channel pixels from
+  ("N pixels weren't valid numbers ... treated as clear film"; N counts pixel *locations* - one bad
+  raw value spreads to all 3 channels through the ICC matrix but is reported as 1 pixel); above 1%
+  of pixels the frame fails ("this export looks broken"). Auto calibration excludes non-finite and non-positive-in-any-channel pixels from
   the population *before* the density-local binning - one NaN used to poison its bin's median and,
   through it, the whole solved profile - and a non-positive pixel scores +inf (least neutral), not 0
   (most neutral). `fit_print` and `estimate_linear_scale` raise on a non-finite statistic as a
   backstop. This was the one change allowed to move `--auto-density` output on clean input: measured
   on the four real scans it was bit-for-bit identical, profile included (evidence in the task's
-  report, `.review/approval/task4-auto-density.md`, git-ignored). Known gap: a frame developed by the
-  GPU service cleans NaNs silently (its reply has no warning channel for that yet).
+  report, `.review/approval/task4-auto-density.md`, git-ignored). Through the GPU service the warning
+  travels back in the reply and is re-emitted by the worker (the service itself never prints), and a
+  bad-input error comes back as itself ("input_error"), never as "the GPU failed".
 - **One roll discovery** (`io/roll.py::list_scans`): batch, print, export, check, contact and the
   picker all list a folder through it, so they agree on which files are frames and in what order.
   Skipped, with one "Skipped" run-sheet row (a dim line for check/contact) and never a failed frame:
@@ -1098,8 +1099,9 @@ the root. Put new write-ups in the matching folder and add a line to `docs/READM
   nothing merges without approval. The shared-frame sweep, when the segment name format changes,
   is updated together with `prefix_pid` and its test. The parent-RSS measurement of the device probe (isolated
   in a child process for batch and directory print/export) was left for the user's RTX 3070.
-  Open questions for the user: whether the filter pack should show only the Y/M form ("take out
-  2Y + 1M"), their darkroom convention to choose; and whether CLAUDE.md itself should be shortened.
+  The user chose to keep Y/M/C filter packs (2026-09-29: "this isn't a real analogue process"); the
+  CC reading is only a label - the fit and the saved profile are continuous, never quantised to
+  whole CC. Still open: whether CLAUDE.md itself should be shortened.
 - **Cut for now, deliberately**: ColorChecker calibration tier, a denoise stage, and a real (not
   naive-average) B&W negative mode. Not oversights — out of scope until asked for.
 
