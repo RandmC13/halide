@@ -203,7 +203,7 @@ def parse_linear_rgb_profile(icc_bytes: bytes) -> LinearRGBProfile:
     otherwise."""
     color_space, pcs = _read_header(icc_bytes)
     if color_space != b"RGB ":
-        raise UnsupportedICCProfileError(f"profile color space is {color_space!r}, expected RGB")
+        raise UnsupportedICCProfileError(f"profile colour space is {color_space!r}, expected RGB")
     if pcs != b"XYZ ":
         raise UnsupportedICCProfileError(f"profile connection space is {pcs!r}, expected XYZ")
 

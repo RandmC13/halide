@@ -32,7 +32,7 @@ def welcome_screen() -> str:
     return "\n".join(
         [
             _banner("h a l i d e".center(_rule_width())),
-            "develop scanned color negative film".center(_rule_width()),  # not bold, outside _banner
+            "develop scanned colour negative film".center(_rule_width()),  # not bold, outside _banner
             rule(),
             "",
             "  New here? Start with:",
@@ -55,13 +55,13 @@ def help_banner() -> str:
     user-facing help text — a HelpFormatter.format_help() override meant for the latter ends up
     hijacking the former too, corrupting every subcommand's usage line with this banner's own text.
     Printing it as a plain string before argparse ever runs sidesteps that internal reuse entirely."""
-    plain_tagline = "halide · develop scanned color negative film"
+    plain_tagline = "halide · develop scanned colour negative film"
     # The default rule (20 columns -> 39 visible chars) is narrower than this tagline (44 visible
     # chars) — centering against it would be a no-op (str.center() can't shrink below the string's
     # own length), so this banner uses a wider rule specifically sized to leave room either side.
     columns = 24
     width = _rule_width(columns)
-    tagline = f"{Style.BOLD}halide{Style.RESET} · develop scanned color negative film"
+    tagline = f"{Style.BOLD}halide{Style.RESET} · develop scanned colour negative film"
     centered = tagline.center(width + len(Style.BOLD) + len(Style.RESET))
     assert len(plain_tagline) < width, "help_banner()'s rule must stay wider than its tagline"
     return f"{rule(columns)}\n{centered}\n{rule(columns)}\n"

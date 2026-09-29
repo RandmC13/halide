@@ -125,13 +125,6 @@ def batch_prefix() -> str:
     return f"{_NAME_STEM}{_base36(os.getpid())}{_random_token()}-"
 
 
-def _standalone_prefix() -> str:
-    """`new_frame`'s default prefix when no orchestrator-provided one is given — direct/non-batch
-    use, or a unit test. Keyed on this process's own pid, the one that creates (and unlinks) the
-    segment: its parent may be anything — a shell — and names nothing useful."""
-    return batch_prefix()
-
-
 def _nbytes(shape: tuple[int, ...], dtype: np.dtype) -> int:
     size = dtype.itemsize
     for dim in shape:
@@ -189,7 +182,7 @@ def new_frame(shape: tuple[int, ...], dtype, *, prefix: str | None = None) -> It
 
     `prefix`, if given (see `batch_prefix()`), becomes the start of the segment's name — the rest is
     a random per-frame suffix, so two frames from the same batch never collide. Defaults to
-    `_standalone_prefix()` for direct/non-batch callers.
+    `batch_prefix()` for direct/non-batch callers.
 
     Also raises `SharedMemoryUnavailable` if the segment *is* created but there isn't really room
     for it — seen on a small `/dev/shm` (64 MiB in a default Docker container): on tmpfs, `SharedMemory(create=True,
@@ -206,7 +199,7 @@ def new_frame(shape: tuple[int, ...], dtype, *, prefix: str | None = None) -> It
     """
     np_dtype = np.dtype(dtype)
     size = _nbytes(shape, np_dtype)
-    name = f"{prefix or _standalone_prefix()}{uuid.uuid4().hex[:14]}"  # hl+6+6+"-"+14 = 29 <= 30
+    name = f"{prefix or batch_prefix()}{uuid.uuid4().hex[:14]}"  # hl+6+6+"-"+14 = 29 <= 30
     try:
         shm = shared_memory.SharedMemory(create=True, size=size, name=name)
     except (OSError, ValueError) as exc:
@@ -324,7 +317,7 @@ def sweep(prefix: str) -> int:
 
 def prefix_pid(name: str) -> int | None:
     """The pid a halide segment name (or prefix) was made by — `hl<pid base36><token>-…`, both
-    `batch_prefix()`'s and `_standalone_prefix()`'s format — or None for anything else. One place
+    `batch_prefix()`'s format — or None for anything else. One place
     to parse the name, so a change to the prefix format changes it here alone."""
     head = len(_NAME_STEM) + _PID_DIGITS
     if not name.startswith(_NAME_STEM) or len(name) <= head + _TOKEN_LENGTH or name[head + _TOKEN_LENGTH] != "-":

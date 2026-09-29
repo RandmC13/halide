@@ -272,6 +272,7 @@ def test_install_declines_runs_nothing(monkeypatch, capsys, old_driver_absent_cu
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)) or None)
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     assert main(["gpu", "--install"]) == 0
     assert calls == []
     out = _strip(capsys.readouterr().out)
@@ -288,6 +289,7 @@ def test_install_prompt_eof_counts_as_no(monkeypatch, capsys, old_driver_absent_
 
     monkeypatch.setattr("builtins.input", eof)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     assert main(["gpu", "--install"]) == 0
     assert calls == []
     assert "Not installed" in _strip(capsys.readouterr().out)
@@ -303,6 +305,7 @@ def test_install_accepts_runs_pip_install_exactly(monkeypatch, capsys, old_drive
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     assert main(["gpu", "--install"]) == 0
     assert calls[0] == [sys.executable, "-m", "pip", "install", "cupy-cuda13x[ctk]"]
     out = _strip(capsys.readouterr().out)
@@ -347,6 +350,7 @@ def test_install_non_interactive_without_yes_refuses(monkeypatch, capsys, old_dr
     calls = []
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)) or None)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
     assert main(["gpu", "--install"]) == 1
     assert calls == []
     out = _strip(capsys.readouterr().out)
@@ -592,6 +596,7 @@ def test_install_advice_names_the_nvidia_wheels_and_the_pip_cache(monkeypatch, c
     monkeypatch.setattr(subprocess, "run", lambda argv, **k: subprocess.CompletedProcess(argv, 0, stdout=""))
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     main(["gpu", "--install"])
     out = _strip(capsys.readouterr().out)
     assert "nvidia-" in out and "pip cache purge" in out

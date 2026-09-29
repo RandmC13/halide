@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import datetime
 import functools
 import json
 import re
@@ -235,8 +234,7 @@ def _reject_positive(path: str | Path) -> None:
         return
     if record is None:
         return
-    made = datetime.date.fromtimestamp(path.stat().st_mtime).isoformat()
-    raise ScanInputError(f"{path.name} is already a halide positive (made on {made}). To re-print it use "
+    raise ScanInputError(f"{path.name} is already a halide positive. To re-print it use "
                          f"`halide print`; to develop again, point halide at the original scan")
 
 
@@ -941,7 +939,7 @@ def export_delivery_image(
                     warning = (
                         f"{input_path}'s embedded profile does not look like ACEScg — `halide export` "
                         f"expects the output of `halide invert`/`halide batch`. Proceeding anyway, but "
-                        f"colors may be wrong"
+                        f"colours may be wrong"
                     )
             except UnsupportedICCProfileError as exc:
                 warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway"

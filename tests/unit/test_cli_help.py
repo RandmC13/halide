@@ -148,3 +148,23 @@ def test_non_numbers_get_a_plain_message():
     for fn in (contrast_grade, finite_float, positive_float, worker_count):
         with pytest.raises(argparse.ArgumentTypeError, match="number"):
             fn("abc")
+
+
+def _overwrite_help(command, capsys) -> str:
+    out = " ".join(_help([command], capsys).split())
+    return out.split(" --overwrite Replace")[1].split("--skip-existing")[0]
+
+
+@pytest.mark.parametrize("command", ["invert", "batch"])
+def test_overwrite_help_mentions_the_profile_where_one_is_saved(command, capsys):
+    assert "saved profile" in _overwrite_help(command, capsys)
+
+
+@pytest.mark.parametrize("command", ["print", "export", "contact"])
+def test_overwrite_help_says_nothing_of_profiles_where_none_is_saved(command, capsys):
+    assert "profile" not in _overwrite_help(command, capsys)
+
+
+@pytest.mark.parametrize("command", ["batch", "print", "export", "contact"])
+def test_workers_help_doesnt_say_develop(command, capsys):
+    assert "develop" not in _workers_help(command, capsys)

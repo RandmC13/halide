@@ -439,3 +439,36 @@ def test_default_profiles_dir_on_linux_is_dot_config(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     assert default_profiles_dir() == tmp_path / ".config" / "halide" / "profiles"
+
+
+def _saved(tmp_path, name="Roll16"):
+    save_named_profile(PROFILE, name, tmp_path)
+    return tmp_path
+
+
+def test_rename_update_delete_find_a_profile_whatever_its_capitals(tmp_path):
+    _saved(tmp_path)
+    rename_profile("roll16", "Roll17", tmp_path)
+    assert (tmp_path / "Roll17.json").exists() and not (tmp_path / "Roll16.json").exists()
+    update_profile("ROLL17", tmp_path, notes="x")
+    assert load_profile(tmp_path / "Roll17.json").notes == "x"
+    delete_profile("roll17", tmp_path)
+    assert not (tmp_path / "Roll17.json").exists()
+
+
+def test_show_path_resolves_a_name_in_other_capitals(tmp_path):
+    _saved(tmp_path)
+    assert resolve_profile_path("roll16", tmp_path) == tmp_path / "Roll16.json"
+
+
+def test_a_typo_in_capitals_only_suggests_the_saved_name(tmp_path):
+    _saved(tmp_path)
+    assert suggest_profile_name("ROLL16", tmp_path) == "Roll16"
+
+
+def test_hidden_leftover_temp_files_are_not_listed_or_found(tmp_path):
+    _saved(tmp_path)
+    (tmp_path / ".Roll16.halide-partial-123.json").write_text("{")
+    (tmp_path / ".Other.halide-case-rename-9.json").write_text("{}")
+    assert [name for name, _, _ in list_profiles(tmp_path)] == ["Roll16"]
+    assert find_profile(".Other.halide-case-rename-9", tmp_path) is None

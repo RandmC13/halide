@@ -6,10 +6,17 @@ import sys
 from typing import Sequence
 
 
+def is_interactive() -> bool:
+    """True only when both stdin and stdout are real terminals — a script or a redirected/logged
+    run must never be left blocked waiting on input it can never receive, or print a question
+    into a log file. The one definition of "in a terminal" for every prompt."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def confirm(prompt: str, default: bool = False) -> bool:
     """TTY-aware yes/no prompt. Returns `default` immediately, with nothing printed, when stdin
     isn't a real terminal — a script/CI run must never block waiting on input that can't come."""
-    if not sys.stdin.isatty():
+    if not is_interactive():
         return default
     suffix = "[Y/n]" if default else "[y/N]"
     try:
@@ -23,10 +30,10 @@ def confirm(prompt: str, default: bool = False) -> bool:
 
 def prompt_line(prompt: str) -> str | None:
     """TTY-aware single-line free-text prompt. Returns the typed line (possibly empty, meaning
-    "leave as-is" to a caller offering that convention), or None if stdin isn't a real terminal
+    "leave as-is" to a caller offering that convention), or None if there's no real terminal
     or input was cut off (EOF/Ctrl-D) — distinct from "" so a non-interactive caller can tell
     "nothing typed" apart from "not interactive at all"."""
-    if not sys.stdin.isatty():
+    if not is_interactive():
         return None
     try:
         return input(prompt)
@@ -37,7 +44,7 @@ def prompt_line(prompt: str) -> str | None:
 def menu(prompt: str, options: Sequence[tuple[str, str]]) -> str | None:
     """TTY-aware numbered menu. `options` is a list of (key, label) pairs; returns the chosen key,
     or None if not interactive, or the user gave no valid choice (blank input, EOF, out of range)."""
-    if not sys.stdin.isatty():
+    if not is_interactive():
         return None
     print(prompt)
     for i, (_, label) in enumerate(options, start=1):

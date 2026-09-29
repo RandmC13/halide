@@ -77,7 +77,7 @@ def worker_count(value: str) -> int:
 
 
 WORKERS_HELP = (
-    "Number of frames to develop at once (default: chosen from free memory and CPU cores; "
+    "Number of frames to process at once (default: chosen from free memory and CPU cores; "
     "memory, not cores, is usually the limit for full-size scans)"
 )
 

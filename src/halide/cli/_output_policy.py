@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from halide.cli import console
+from halide.cli.console.prompts import is_interactive  # noqa: F401 - re-exported for the commands
 
 
 class OutputPolicy(enum.Enum):
@@ -24,14 +25,17 @@ class OutputPolicy(enum.Enum):
     SKIP_EXISTING = "skip-existing"
 
 
-def add_output_policy_arguments(parser) -> None:
+def add_output_policy_arguments(parser, *, saves_profile: bool = False) -> None:
     """A mutually exclusive `--overwrite` / `--skip-existing` group, shared by every command that
     writes files (and, later, by `--save-profile-as`'s own overwrite check)."""
+    overwrite_help = "Replace output files that already exist"
+    if saves_profile:
+        overwrite_help += " (and a saved profile of the same name)"
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--overwrite",
         action="store_true",
-        help="Replace output files that already exist (and a saved profile of the same name)",
+        help=overwrite_help,
     )
     group.add_argument(
         "--skip-existing",
@@ -46,12 +50,6 @@ def policy_from_args(args) -> OutputPolicy:
     if getattr(args, "skip_existing", False):
         return OutputPolicy.SKIP_EXISTING
     return OutputPolicy.ASK
-
-
-def is_interactive() -> bool:
-    """True only when both stdin and stdout are real terminals — a script or a redirected/logged
-    run must never be left blocked waiting on input it can never receive."""
-    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _same_file(a: Path, b: Path) -> bool:
@@ -75,7 +73,7 @@ def check_not_input(pairs: list[tuple[Path, Path]], *, suggest_suffix: bool = Tr
     first = clashes[0]
     more = f" (and {len(clashes) - 1} more)" if len(clashes) > 1 else ""
     fix = "Choose a different output folder, or add --suffix" if suggest_suffix else "Choose a different output path"
-    raise SystemExit(f"{first} is the scan itself{more} - halide never writes over a scan. {fix}")
+    raise SystemExit(f"{first} is the scan itself{more} — halide never writes over a scan. {fix}")
 
 
 def resolve_existing(
@@ -95,7 +93,7 @@ def resolve_existing(
     n, total = len(existing), len(pairs)
     if total == 1:
         path = existing[0][1]
-        question = f"{path} already exists - overwrite it?"
+        question = f"{path} already exists — overwrite it?"
         refusal = (
             f"{path} already exists. Add --overwrite to replace it, "
             "or --skip-existing to leave it as is"
@@ -103,7 +101,7 @@ def resolve_existing(
         decline_hint = "(--skip-existing leaves it as is.)"
     else:
         where = existing[0][1] if n == 1 else existing[0][1].parent
-        question = f"{n} of {total} outputs already exist in {where} - overwrite them?"
+        question = f"{n} of {total} outputs already exist in {where} — overwrite them?"
         refusal = (
             f"{n} of {total} outputs already exist in {where}. Add --overwrite to replace them, "
             "or --skip-existing to develop only the new frames"
@@ -181,7 +179,7 @@ def prepare_output_folder(folder: Path) -> None:
         pass  # a file by that name: reported just below
     except OSError as exc:
         raise SystemExit(f"halide can't create the output folder {folder} ({exc.strerror or exc}). "
-                         f"Choose a different output folder.") from exc
+                         f"Choose a different output folder") from exc
     _check_writable_folder(folder)
 
 

@@ -54,10 +54,10 @@ def validate_profile_name(name: str) -> str:
         raise ProfileNameError("Profile names can't be empty")
     if "/" in stripped or "\\" in stripped or "\0" in stripped:
         raise ProfileNameError(
-            "Profile names can't contain / or \\ - they name a file in halide's profiles folder"
+            "Profile names can't contain / or \\ — they name a file in halide's profiles folder"
         )
     if stripped.startswith(".") or stripped.startswith("-"):
-        raise ProfileNameError("Profile names can't start with '.' or '-'.")
+        raise ProfileNameError("Profile names can't start with '.' or '-'")
     if len(stripped) > _MAX_NAME_LENGTH:
         raise ProfileNameError(f"Profile names can be at most {_MAX_NAME_LENGTH} characters")
     return stripped
@@ -79,6 +79,8 @@ def find_profile(name: str, profiles_dir: Path | None = None) -> Path | None:
     (`casefold`) match - so 'Portra' and 'portra' resolve to the same file, matching what actually
     happens on macOS's default case-insensitive-but-preserving filesystem (2.2-12). None if no
     file matches either way."""
+    if name.startswith("."):  # never a profile: hidden files are leftover temps
+        return None
     directory = profiles_dir or default_profiles_dir()
     exact = directory / f"{name}.json"
     if exact.exists():
@@ -86,8 +88,8 @@ def find_profile(name: str, profiles_dir: Path | None = None) -> Path | None:
     if not directory.exists():
         return None
     target = name.casefold()
-    for path in directory.glob("*.json"):
-        if path.stem.casefold() == target:
+    for path in sorted(directory.glob("*.json")):
+        if not path.name.startswith(".") and path.stem.casefold() == target:
             return path
     return None
 
@@ -162,6 +164,9 @@ def resolve_profile_path(name_or_path: str | Path, profiles_dir: Path | None = N
     named = directory / (candidate.name if candidate.suffix == ".json" else f"{candidate.name}.json")
     if named.exists():
         return named
+    found = find_profile(candidate.stem if candidate.suffix == ".json" else candidate.name, directory)
+    if found is not None:
+        return found
 
     raise FileNotFoundError(
         f"no such profile file {str(name_or_path)!r}, and no saved profile named "
@@ -240,6 +245,8 @@ def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityPr
         return []
     results: list[tuple[str, DensityProfile | None, str | None]] = []
     for path in sorted(directory.glob("*.json")):
+        if path.name.startswith("."):  # a leftover temp from an interrupted save or rename
+            continue
         try:
             results.append((path.stem, load_profile(path), None))
         except (ValueError, json.JSONDecodeError) as exc:
@@ -254,8 +261,9 @@ def suggest_profile_name(name: str, profiles_dir: Path | None = None) -> str | N
     profile name by string similarity, or None if none is close enough. Shared by every profile
     subcommand (show/rename/edit/delete) and --profile's own not-found error (2.2-7)."""
     names = [stem for stem, profile, problem in list_profiles(profiles_dir) if problem is None]
-    matches = difflib.get_close_matches(name, names, n=1, cutoff=0.6)
-    return matches[0] if matches else None
+    by_folded = {n.casefold(): n for n in names}
+    matches = difflib.get_close_matches(name.casefold(), list(by_folded), n=1, cutoff=0.6)
+    return by_folded[matches[0]] if matches else None
 
 
 def damaged_profile_message(name: str, exc: Exception) -> str:
@@ -263,7 +271,7 @@ def damaged_profile_message(name: str, exc: Exception) -> str:
     hand-edited JSON, a missing required field) - so a raw JSONDecodeError/ValueError never reaches
     the user directly (2.2-5)."""
     return (
-        f"profile {name!r} is damaged and can't be read ({exc}) - re-save it from "
+        f"profile {name!r} is damaged and can't be read ({exc}) — re-save it from "
         f"`halide calibrate --profile {name}`, or delete it with `halide profile delete {name}`"
     )
 
@@ -272,8 +280,8 @@ def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = Non
     old_name = validate_profile_name(old_name)
     new_name = validate_profile_name(new_name)
     directory = profiles_dir or default_profiles_dir()
-    old_path = directory / f"{old_name}.json"
-    if not old_path.exists():
+    old_path = find_profile(old_name, directory)
+    if old_path is None:
         raise FileNotFoundError(f"no saved profile named {old_name!r} in {directory}")
     new_path = directory / f"{new_name}.json"
 
@@ -341,8 +349,8 @@ def update_profile(name: str, profiles_dir: Path | None = None, **fields: str | 
     if unknown:
         raise ValueError(f"not an editable profile field: {', '.join(sorted(unknown))}")
     directory = profiles_dir or default_profiles_dir()
-    path = directory / f"{name}.json"
-    if not path.exists():
+    path = find_profile(name, directory)
+    if path is None:
         raise FileNotFoundError(f"no saved profile named {name!r} in {directory}")
     # Edits the raw JSON rather than round-tripping through DensityProfile (as rename_profile does),
     # so optional sidecars ("tone", "scan", ...) survive an edit - round-tripping dropped them.
@@ -356,7 +364,7 @@ def update_profile(name: str, profiles_dir: Path | None = None, **fields: str | 
 def delete_profile(name: str, profiles_dir: Path | None = None) -> None:
     name = validate_profile_name(name)
     directory = profiles_dir or default_profiles_dir()
-    path = directory / f"{name}.json"
-    if not path.exists():
+    path = find_profile(name, directory)
+    if path is None:
         raise FileNotFoundError(f"no saved profile named {name!r} in {directory}")
     path.unlink()

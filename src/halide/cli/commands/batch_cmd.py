@@ -73,7 +73,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     add_contact_layout_arguments(parser)
     parser.add_argument("--suffix", default="", help="Text to add to each output file name, before .tif")
-    add_output_policy_arguments(parser)
+    add_output_policy_arguments(parser, saves_profile=True)
 
     add_stage_arguments(parser)
     sources = add_calibration_arguments(parser)
