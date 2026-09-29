@@ -368,8 +368,8 @@ def detect_shell() -> str | None:
 
 def _write_if_changed(path: Path, text: str) -> None:
     # A symlinked dotfile (managed by stow, chezmoi...) is written through, not replaced.
-    path = path.resolve()
     try:
+        path = path.resolve()
         if path.read_text(encoding="utf-8") == text:
             return
     except OSError:
@@ -397,7 +397,10 @@ def ensure_completion(
     has just been installed, else None."""
     if not wanted(interactive):
         return None
-    shell = shell or detect_shell()
+    return _install(parser, shell or detect_shell())
+
+
+def _install(parser: argparse.ArgumentParser, shell: str | None) -> str | None:
     if shell not in SHELLS:
         return None
     setup = shell_setup(shell)
@@ -458,7 +461,7 @@ def maybe_install_completion(parser: argparse.ArgumentParser) -> None:
         if not wanted():
             return
         shell = detect_shell()
-        note = ensure_completion(parser, shell=shell)
+        note = _install(parser, shell)
     except Exception:  # noqa: BLE001 -- see docstring
         return
     if note:
