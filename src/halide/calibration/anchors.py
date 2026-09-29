@@ -10,7 +10,7 @@ That's the same one global multiply --match-scan-exposure makes, against the sam
 saved profile records, so a profile fitted here develops the roll correctly with that flag.
 
 Agreement is judged per point against the fit through the *other* points
-(core.density.leave_one_out_residuals) and reported as a colour-printing filter pack ("CC 8Y + 8M": ties are named yellow, magenta, cyan).
+(core.density.leave_one_out_residuals) and reported as a colour-printing filter pack ("CC 8Y + 8M"; equal amounts are listed Y, then M, then C).
 
 How far the fit can be trusted is judged separately (fit_reliability): points that agree with each
 other can still all sit in one narrow band of density, and the line through them is then a guess at

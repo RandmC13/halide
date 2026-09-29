@@ -56,7 +56,7 @@ def manual_calibration_given(args: argparse.Namespace) -> bool:
 
 def add_calibration_arguments(
     parser: argparse.ArgumentParser, *, allow_auto: bool = True, allow_pick: bool = False
-) -> argparse._MutuallyExclusiveGroup:
+):
     """Adds the calibration flags and returns the group of mutually exclusive *sources* (--profile,
     --auto-density, --pick) so a command can add its own (batch's --auto-density-roll). The manual
     --rm/--bm/--rs/--bs values can't join that group: argparse can't tell "typed" from "left at the
@@ -277,11 +277,15 @@ def resolve_density_profile(
     auto_given = getattr(args, "auto_density", False)
     pick_given = getattr(args, "pick", False)
 
-    if sum([bool(args.profile), manual_given, auto_given, pick_given]) > 1:
-        raise SystemExit(
-            "--profile, manual overrides (--rm/--bm/--rs/--bs), --auto-density, and --pick are "
-            "mutually exclusive"
-        )
+    # Source-vs-source clashes are argparse's (the exclusive group); only manual values, which
+    # argparse can't tell from their defaults, are checked here.
+    if manual_given:
+        clashing = [flag for flag, given in (("--profile", args.profile), ("--auto-density", auto_given),
+                                             ("--pick", pick_given)) if given]
+        if clashing:
+            raise SystemExit(
+                f"manual overrides (--rm/--bm/--rs/--bs) can't be combined with {' or '.join(clashing)}"
+            )
 
     if args.profile:
         try:

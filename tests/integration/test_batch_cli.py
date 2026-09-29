@@ -132,7 +132,7 @@ def test_batch_cli_empty_directory_errors(tmp_path):
 
 def test_auto_density_roll_conflicts_with_other_sources(roll_dir, tmp_path):
     out_dir = tmp_path / "out"
-    with pytest.raises(SystemExit, match="cannot be combined"):
+    with pytest.raises(SystemExit, match="can't be combined with --auto-density-roll"):
         main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--rm", "2.0", "--quiet"])
 
 
@@ -261,3 +261,10 @@ def test_run_sheet_advises_picking_points_after_an_automatic_estimate(roll_dir, 
     out = " ".join(capsys.readouterr().out.split())  # a long row wraps with a hanging indent
     advice = "automatic estimate - for the most faithful colour, pick neutral points with `halide calibrate`"
     assert (advice in out) is advised
+
+
+def test_auto_density_roll_with_another_source_is_argparses_refusal(roll_dir, tmp_path, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        main(["batch", str(roll_dir), str(tmp_path / "out"), "--auto-density-roll", "--auto-density", "--quiet"])
+    assert exit_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
