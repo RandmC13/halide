@@ -141,6 +141,13 @@ def test_window_repaints_itself_when_reactivated(monkeypatch, app):
 # --- reliability wording (R16) ----------------------------------------------------------------
 
 
+def test_a_span_under_a_tenth_names_the_spot_not_a_rounded_range():
+    text = anchors.Reliability(worst_cc_at_ends=12.0, reliable_range=(1.03, 1.11)).warning()
+    assert text.startswith("Fit reliable only near D 1.07 - add a point")
+    wide = anchors.Reliability(worst_cc_at_ends=12.0, reliable_range=(0.93, 1.31)).warning()
+    assert wide.startswith("Fit reliable over D 0.9-1.3 only")
+
+
 def test_reliability_says_not_reliable_anywhere_instead_of_a_one_point_range(tmp_path, monkeypatch):
     monkeypatch.setattr(anchors, "ASSUMED_PICK_ERROR", 0.06)  # a fit so loose that no density is within CC 5
     points = [_point(tmp_path / f"{i}.tif", d, deviation=dev) for i, (d, dev) in

@@ -70,12 +70,13 @@ QLabel[role="warning"] {{
 QPushButton {{
     background-color: {AMBER};
     color: {TEXT};
-    border: 2px solid transparent;
+    border: none;
     border-radius: 6px;
-    padding: 4px 12px;
+    padding: 6px 14px;
 }}
 QPushButton:focus {{
     border: 2px solid {TEXT};
+    padding: 4px 12px;  /* the ring's 2 px come out of the padding: the button doesn't change size */
 }}
 QPushButton:hover {{
     background-color: {AMBER_HOVER};
@@ -95,10 +96,11 @@ QPushButton:checked {{
 QPushButton[role="primary"] {{
     background-color: {RED};
     font-weight: bold;
-    padding: 8px 16px;
+    padding: 10px 18px;
 }}
 QPushButton[role="primary"]:focus {{
     border: 2px solid {TEXT};
+    padding: 8px 16px;
 }}
 QPushButton[role="primary"]:hover {{
     background-color: {RED_HOVER};
@@ -123,6 +125,7 @@ QPushButton[role="segment"]:hover {{
 }}
 QPushButton[role="segment"]:focus {{
     border: 1px solid {AMBER_ACTIVE};
+    padding: 4px 14px;
 }}
 QPushButton[role="segment"]:checked {{
     background-color: {AMBER};
@@ -139,6 +142,7 @@ QPushButton[role="remove"] {{
 }}
 QPushButton[role="remove"]:focus {{
     border: none;
+    padding: 0px 5px;
     color: {TEXT};
     background-color: {BORDER};
 }}

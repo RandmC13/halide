@@ -383,7 +383,10 @@ class ProofWindow(QDialog):
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         renderer = self._renderer
         renderer.requestInterruption()
-        renderer.frameDone.disconnect()
+        try:
+            renderer.frameDone.disconnect()
+        except (RuntimeError, TypeError):  # already disconnected (closed twice)
+            pass
         if renderer.isRunning():
             # Stopping is quick (the loop checks every 0.2 s and terminates its workers) but not
             # instant, and this must not block the UI thread: detach the thread from this window,

@@ -106,10 +106,11 @@ class Reliability:
                 "highlights"
             )
         low, high = self.reliable_range
-        return (
-            f"Fit reliable over D {low:.1f}-{high:.1f} only - add a point in the shadows or "
-            "highlights for the ends of the roll"
-        )
+        if high - low < 0.1:  # a span this short rounds to "D 1.0-1.0": name the spot instead
+            where = f"only near D {(low + high) / 2:.2f}"
+        else:
+            where = f"over D {low:.1f}-{high:.1f} only"
+        return f"Fit reliable {where} - add a point in the shadows or highlights for the ends of the roll"
 
 
 def reference_scan(settings: Iterable[ScanSettings | None]) -> ScanSettings | None:
