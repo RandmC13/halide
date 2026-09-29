@@ -1,12 +1,13 @@
 """The picker window's own behaviour, on Qt's offscreen platform (no display needed)."""
 
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QEvent, QRect
+from PySide6.QtCore import QEvent, QRect, QThread, Signal
 from PySide6.QtWidgets import QApplication, QDialog
 
 from halide.calibration import anchors
@@ -190,3 +191,148 @@ def test_a_very_long_frame_name_is_elided_with_the_full_path_as_tooltip(app, tmp
     assert labels and all(label.text().endswith("…") for label in labels)
     assert all("tuesday_afternoon" in label.toolTip() for label in labels)
     window.close()
+
+
+# --- late signals, one load in flight, closing mid-rebuild (Task 12 review, F11) ---------------------
+
+
+def _bare_roll(window, tmp_path, count=3):
+    paths = [tmp_path / f"f{i}.tif" for i in range(count)]
+    window.session.set_roll(paths, [SCAN] * count, tmp_path)
+    window.filmstrip.strip.set_frames([f.number for f in window.session.frames])
+    return paths
+
+
+def test_late_signals_from_a_replaced_roll_are_dropped(tmp_path, app):
+    window = MainWindow()
+    (path, *_) = _bare_roll(window, tmp_path)
+    window._generation = 5  # the roll that started these loads has since been replaced
+    preview = np.full((8, 8, 3), 0.1, dtype=np.float32)
+
+    window._on_preview_ready(4, 0, preview, None, None)
+    assert window.session.frames[0].preview is None  # not stored: it belongs to the old roll
+
+    window._current = 0
+    window._on_frame_loaded(4, path, np.ones((8, 8, 3), dtype=np.float32), None)
+    assert window.full_image is None and window.display is None
+
+    window._on_preview_ready(5, 0, preview, None, None)  # the current generation still lands
+    assert window.session.frames[0].preview is preview
+    window.close()
+
+
+class _BlockedLoader(QThread):
+    """Stands in for FrameLoader: a load that takes as long as the test says."""
+
+    loaded = Signal(int, object, object, object)
+    started_for: list = []
+    release = None
+
+    def __init__(self, path, generation, parent=None):
+        super().__init__(parent)
+        _BlockedLoader.started_for.append(path)
+
+    def run(self):
+        _BlockedLoader.release.wait(30)
+
+
+def test_only_one_frame_load_is_in_flight_and_the_latest_frame_wins(monkeypatch, tmp_path, app):
+    import threading
+
+    _BlockedLoader.started_for, _BlockedLoader.release = [], threading.Event()
+    monkeypatch.setattr(mw, "FrameLoader", _BlockedLoader)
+    window = MainWindow()
+    a, b, c = _bare_roll(window, tmp_path)
+    window._select_frame(0)
+    window._load_current_frame()  # asking again while frame 0 loads starts nothing
+    window._select_frame(1)  # scrubbing along the strip: neither of these starts a load ...
+    window._select_frame(2)
+    assert _BlockedLoader.started_for == [a]
+    _BlockedLoader.release.set()  # ... until the one in flight ends: then only where the user landed
+    deadline = time.monotonic() + 30
+    while (_BlockedLoader.started_for != [a, c] or window._threads) and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert _BlockedLoader.started_for == [a, c]  # frame b was never loaded
+    window.close()
+    assert window._threads == set()
+
+
+class _ParkedRenderer(QThread):
+    """Stands in for ProofRenderer.run: a rebuild that stays busy until the test lets it finish
+    (deliberately ignoring the interruption request, so it is still running when closeEvent looks)."""
+
+    release = None
+
+    def run(self):
+        _ParkedRenderer.release.wait(30)
+
+
+def _real_proof_windows(monkeypatch, tmp_path, app):
+    import threading
+
+    from halide.gui import proof_window
+
+    _ParkedRenderer.release = threading.Event()
+    monkeypatch.setattr(proof_window.ProofRenderer, "run", _ParkedRenderer.run)
+    window = MainWindow()  # the real ProofWindow, unlike _window_with_points
+    paths = _bare_roll(window, tmp_path)
+    for path, density in zip(paths, (0.4, 0.9, 1.5)):
+        window.session.add_point(_point(path, density))
+    window._refresh_points()
+    return window, proof_window
+
+
+def test_closing_a_proof_window_mid_render_hands_its_renderer_to_the_stopping_set(monkeypatch, tmp_path, app):
+    window, proof_window = _real_proof_windows(monkeypatch, tmp_path, app)
+    window._on_proof()
+    first = window._proof
+    renderer = first._renderer
+    deadline = time.monotonic() + 10
+    while not renderer.isRunning() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    late = []
+    monkeypatch.setattr(proof_window.ProofWindow, "_on_frame_done", lambda self, *a: late.append(a))
+    first.close()  # must return at once even though the renderer is still busy
+    assert renderer.isRunning() and renderer in proof_window._STOPPING
+    assert renderer.isInterruptionRequested()
+    renderer.frameDone.emit(0, None, None, "late")  # disconnected: nothing reaches the closed window
+    assert late == []
+    _ParkedRenderer.release.set()
+    proof_window.wait_for_stopping_renderers()
+    assert not renderer.isRunning() and not proof_window._STOPPING
+    window.close()
+
+
+def test_closing_the_picker_mid_rebuild_waits_for_every_renderer(monkeypatch, tmp_path, app):
+    window, proof_window = _real_proof_windows(monkeypatch, tmp_path, app)
+    window._on_proof()
+    first = window._proof._renderer
+    window._on_proof()  # a rebuild: the first sheet is closed and stops in the background
+    second = window._proof._renderer
+    assert first in proof_window._STOPPING and first is not second
+    threading_release = _ParkedRenderer.release
+    import threading
+
+    threading.Timer(0.3, threading_release.set).start()  # the workers wind down while close waits
+    window.close()  # closeEvent: the current sheet closes, then every stopping renderer is waited for
+    assert not first.isRunning() and not second.isRunning()
+    assert not proof_window._STOPPING
+
+
+# --- one red widget per window (R-105) ----------------------------------------------------------
+
+
+def test_only_the_one_primary_button_is_red(app):
+    from PySide6.QtWidgets import QPushButton
+
+    from halide.gui import theme
+
+    # In the stylesheet, RED colours nothing but the primary button's states.
+    blocks = [b for b in theme.STYLESHEET.split("}") if theme.RED in b or theme.RED_HOVER in b or theme.RED_ACTIVE in b]
+    assert blocks and all('QPushButton[role="primary"]' in b for b in blocks)
+    # And each window has exactly one such button.
+    for window in (MainWindow(), MainWindow(is_pick_session=True)):
+        primaries = [b for b in window.findChildren(QPushButton) if b.property("role") == "primary"]
+        assert primaries == [window.primary_button]
+        window.close()
