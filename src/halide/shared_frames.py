@@ -52,7 +52,10 @@ from typing import Iterator
 
 import numpy as np
 
-_NAME_STEM = "halide"
+_NAME_STEM = "hl"  # short on purpose: macOS caps a segment name at 31 characters (F35)
+_PID_DIGITS = 6  # a pid in base 36, zero-padded: 36**6 is over 2 billion, past any real pid_max
+_TOKEN_LENGTH = 4
+_BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 # `SharedMemory(..., track=False)` only exists from Python 3.13 (gh-82300) — passing it on an older
 # interpreter raises TypeError. Without it there is no correct way to attach to another process's
@@ -97,6 +100,14 @@ class SharedFrame:
         return (self.name, self.shape, self.dtype)
 
 
+def _base36(number: int) -> str:
+    digits = ""
+    while number:
+        number, rest = divmod(number, 36)
+        digits = _BASE36[rest] + digits
+    return digits.rjust(_PID_DIGITS, "0")
+
+
 def batch_prefix() -> str:
     """A predictable, batch-scoped name prefix for this batch's shared-memory segments — call this
     once in the orchestrator (the pool's own parent process) and pass the result down to every
@@ -107,14 +118,14 @@ def batch_prefix() -> str:
     picker's contact sheet window, rebuilt), and sweeping one must never unlink the other's live
     frames; nor can a leftover from an earlier, killed run whose pid happens to be reused ever
     match."""
-    return f"{_NAME_STEM}-{os.getpid()}-{uuid.uuid4().hex[:8]}-"
+    return f"{_NAME_STEM}{_base36(os.getpid())}{uuid.uuid4().hex[:_TOKEN_LENGTH]}-"
 
 
 def _standalone_prefix() -> str:
     """`new_frame`'s default prefix when no orchestrator-provided one is given — direct/non-batch
     use, or a unit test. Keyed on this process's own pid, the one that creates (and unlinks) the
     segment: its parent may be anything — a shell — and names nothing useful."""
-    return f"{_NAME_STEM}-{os.getpid()}-"
+    return batch_prefix()
 
 
 def _nbytes(shape: tuple[int, ...], dtype: np.dtype) -> int:
@@ -192,7 +203,7 @@ def new_frame(shape: tuple[int, ...], dtype, *, prefix: str | None = None) -> It
     """
     np_dtype = np.dtype(dtype)
     size = _nbytes(shape, np_dtype)
-    name = f"{prefix or _standalone_prefix()}{uuid.uuid4().hex}"
+    name = f"{prefix or _standalone_prefix()}{uuid.uuid4().hex[:16]}"  # hl+6+4+"-"+16 = 29 <= 30
     try:
         shm = shared_memory.SharedMemory(create=True, size=size, name=name)
     except (OSError, ValueError) as exc:
@@ -309,16 +320,16 @@ def sweep(prefix: str) -> int:
 
 
 def prefix_pid(name: str) -> int | None:
-    """The pid a halide segment name (or prefix) was made by — `halide-<pid>-…`, both
+    """The pid a halide segment name (or prefix) was made by — `hl<pid base36><token>-…`, both
     `batch_prefix()`'s and `_standalone_prefix()`'s format — or None for anything else. One place
     to parse the name, so a change to the prefix format changes it here alone."""
-    stem, sep, rest = name.partition("-")
-    if stem != _NAME_STEM or not sep:
+    head = len(_NAME_STEM) + _PID_DIGITS
+    if not name.startswith(_NAME_STEM) or len(name) <= head + _TOKEN_LENGTH or name[head + _TOKEN_LENGTH] != "-":
         return None
-    digits, sep, _ = rest.partition("-")
-    if not sep or not (digits.isascii() and digits.isdigit()):
+    digits = name[len(_NAME_STEM):head]
+    if not all(c in _BASE36 for c in digits):
         return None
-    return int(digits)
+    return int(digits, 36)
 
 
 def sweep_stale() -> int:
