@@ -16,6 +16,7 @@ from halide.gui import main_window as mw
 from halide.gui.filmstrip import _Strip
 from halide.gui.main_window import ElidedLabel, MainWindow, window_size_for
 from halide.io.scan_metadata import ScanSettings
+from tests.unit._gui_helpers import ParkedLoader, record_started_threads
 
 SCAN = ScanSettings(exposure_time=1 / 30, f_number=8.0, iso=100.0)
 SCALE = (1.12, 1.0, 0.78)
@@ -221,41 +222,41 @@ def test_late_signals_from_a_replaced_roll_are_dropped(tmp_path, app):
     window.close()
 
 
-class _BlockedLoader(QThread):
-    """Stands in for FrameLoader: a load that takes as long as the test says."""
-
-    loaded = Signal(int, object, object, object)
-    started_for: list = []
-    release = None
-
-    def __init__(self, path, generation, parent=None):
-        super().__init__(parent)
-        _BlockedLoader.started_for.append(path)
-
-    def run(self):
-        _BlockedLoader.release.wait(30)
-
-
 def test_only_one_frame_load_is_in_flight_and_the_latest_frame_wins(monkeypatch, tmp_path, app):
     import threading
 
-    _BlockedLoader.started_for, _BlockedLoader.release = [], threading.Event()
-    monkeypatch.setattr(mw, "FrameLoader", _BlockedLoader)
+    ParkedLoader.reset()
+    started = record_started_threads(monkeypatch)
+    monkeypatch.setattr(mw, "FrameLoader", ParkedLoader)
     window = MainWindow()
     a, b, c = _bare_roll(window, tmp_path)
     window._select_frame(0)
     window._load_current_frame()  # asking again while frame 0 loads starts nothing
     window._select_frame(1)  # scrubbing along the strip: neither of these starts a load ...
     window._select_frame(2)
-    assert _BlockedLoader.started_for == [a]
-    _BlockedLoader.release.set()  # ... until the one in flight ends: then only where the user landed
+    assert ParkedLoader.started_for == [a]
+    ParkedLoader.release.set()  # ... until the one in flight ends: then only where the user landed
     deadline = time.monotonic() + 30
-    while (_BlockedLoader.started_for != [a, c] or window._threads) and time.monotonic() < deadline:
+    while (ParkedLoader.started_for != [a, c] or window._threads) and time.monotonic() < deadline:
         app.processEvents()
         time.sleep(0.01)
-    assert _BlockedLoader.started_for == [a, c]  # frame b was never loaded
+    assert ParkedLoader.started_for == [a, c]  # frame b was never loaded
     window.close()
-    assert window._threads == set()
+    assert started and all(not thread.isRunning() for thread in started)
+
+
+def test_closing_the_picker_mid_frame_load_waits_for_the_loader(monkeypatch, tmp_path, app):
+    """Task 12's crash: a window destroyed while a FrameLoader still runs aborts Qt. close() must not
+    return until every thread it started has stopped, including one that is mid-load."""
+    ParkedLoader.reset()
+    started = record_started_threads(monkeypatch)
+    monkeypatch.setattr(mw, "FrameLoader", ParkedLoader)
+    window = MainWindow()
+    _bare_roll(window, tmp_path)
+    window._select_frame(0)
+    assert len(started) == 1 and started[0].isRunning()  # mid-load, and it will not finish by itself
+    window.close()
+    assert all(not thread.isRunning() for thread in started)
 
 
 class _ParkedRenderer(QThread):

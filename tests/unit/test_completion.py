@@ -183,8 +183,10 @@ def test_failures_never_break_a_run(home, monkeypatch, capsys):
 
     monkeypatch.setattr(completion, "wanted", lambda: True)
     monkeypatch.setattr(completion, "detect_shell", lambda: "zsh")
-    monkeypatch.setattr(completion, "_install", boom)  # what maybe_install_completion really calls
+    attempts = []
+    monkeypatch.setattr(completion, "_install", lambda *a, **k: attempts.append(a) or boom())  # the real call
     completion.maybe_install_completion(build_parser())  # must not raise
+    assert len(attempts) == 1  # it did try, and the failure was swallowed
     assert capsys.readouterr().err == ""
 
 
