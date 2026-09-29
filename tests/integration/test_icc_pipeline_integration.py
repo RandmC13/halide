@@ -8,6 +8,7 @@ from halide.core.density import solve_density_balance
 from halide.core.pipeline import run_pipeline
 from halide.io.icc import convert_to_working_space, parse_linear_rgb_profile
 from halide.io.tiff import read_tiff, write_tiff
+from halide.io.lut import load_paper_curve
 from tests.unit.test_icc import LINEAR_TAGS, build_icc
 
 SHADOW_RGB = (0.094, 0.131, 0.050)
@@ -33,7 +34,7 @@ def test_synthetic_scan_with_embedded_icc_through_full_pipeline(tmp_path):
     highlight_working = working_space_image[0, 1]
     density_profile = solve_density_balance(tuple(shadow_working), tuple(highlight_working))
 
-    result = run_pipeline(working_space_image, density_profile)
+    result = run_pipeline(working_space_image, density_profile, None, load_paper_curve())
 
     assert result.shape == negative.shape
     assert np.all(np.isfinite(result))

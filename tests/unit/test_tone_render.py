@@ -3,9 +3,7 @@ import pytest
 
 from halide.core.invert import invert
 from halide.core.tone_render import (
-    _DEFAULT_CURVE_PATH,
     MAX_PRINT_CONTRAST,
-    _load_curve,
     estimate_linear_scale,
     fit_print,
     linear_passthrough,
@@ -15,6 +13,7 @@ from halide.core.tone_render import (
     tone_render,
 )
 from halide.core.types import ToneCurveParams
+from halide.io.lut import load_paper_curve
 
 
 def test_linear_passthrough_itself_is_identity():
@@ -64,7 +63,7 @@ def test_estimate_linear_scale_is_robust_to_a_single_extreme_outlier():
 def test_paper_mode_is_monotonic_increasing_and_bounded():
     # Positive-linear values spanning a very dense to very thin negative.
     x = np.geomspace(1e-2, 1e4, num=200)
-    result = tone_render(x, ToneCurveParams())
+    result = tone_render(x, ToneCurveParams(), load_paper_curve())
     # A small negative tolerance absorbs float noise on the curve's flat toe/shoulder plateaus.
     assert np.all(np.diff(result) >= -1e-9)
     assert np.all(result >= 0.0)
@@ -79,8 +78,8 @@ def test_exposure_parameter_can_recover_a_saturated_point():
     # real darkroom. The same input that saturates under one exposure must be recoverable under
     # another — proving the fix is a real, usable control, not just a differently-shaped constant.
     x = np.array([0.01])
-    saturated = tone_render(invert(x), ToneCurveParams(exposure=0.43, contrast=1.0))
-    recovered = tone_render(invert(x), ToneCurveParams(exposure=-0.5, contrast=1.0))
+    saturated = tone_render(invert(x), ToneCurveParams(exposure=0.43, contrast=1.0), load_paper_curve())
+    recovered = tone_render(invert(x), ToneCurveParams(exposure=-0.5, contrast=1.0), load_paper_curve())
     assert saturated[0] >= 0.999
     assert recovered[0] < 0.999
 
@@ -88,17 +87,17 @@ def test_exposure_parameter_can_recover_a_saturated_point():
 def test_matches_vendored_curve_at_sample_density_points_at_full_contrast():
     # contrast=1.0 reproduces the untouched reference curve exactly (the default, <1.0, deliberately
     # does not — see ToneCurveParams' docstring for why the default is softer).
-    curve = _load_curve(str(_DEFAULT_CURVE_PATH))
+    curve = load_paper_curve()
     exposure = 0.43
     densities = np.linspace(curve.domain_min + 0.1, curve.domain_max - 0.1, num=25)
     positive_linear = 10.0 ** (densities - exposure)
-    result = tone_render(positive_linear, ToneCurveParams(exposure=exposure, contrast=1.0))
+    result = tone_render(positive_linear, ToneCurveParams(exposure=exposure, contrast=1.0), curve)
     expected = curve.lookup(densities)
     assert result == pytest.approx(expected, rel=1e-6)
 
 
 def test_contrast_below_one_compresses_the_response_toward_the_pivot():
-    curve = _load_curve(str(_DEFAULT_CURVE_PATH))
+    curve = load_paper_curve()
     pivot_density = (curve.domain_min + curve.domain_max) / 2.0
     pivot_value = curve.lookup(np.array([pivot_density]))[0]
 
@@ -106,8 +105,8 @@ def test_contrast_below_one_compresses_the_response_toward_the_pivot():
     # inside the curve's domain at full contrast, so compression toward the pivot is observable
     # rather than both ends already being clamped to the domain edge regardless of contrast.
     x = 1.0 / np.array([10.0**0.5, 10.0**2.5])
-    full = tone_render(invert(x), ToneCurveParams(exposure=0.0, contrast=1.0))
-    softer = tone_render(invert(x), ToneCurveParams(exposure=0.0, contrast=0.3))
+    full = tone_render(invert(x), ToneCurveParams(exposure=0.0, contrast=1.0), load_paper_curve())
+    softer = tone_render(invert(x), ToneCurveParams(exposure=0.0, contrast=0.3), load_paper_curve())
 
     # Softer contrast must pull both points closer to the pivot's own output value.
     assert abs(softer[0] - pivot_value) < abs(full[0] - pivot_value)
@@ -115,17 +114,17 @@ def test_contrast_below_one_compresses_the_response_toward_the_pivot():
 
 
 def test_contrast_zero_is_a_flat_constant_at_the_pivot():
-    curve = _load_curve(str(_DEFAULT_CURVE_PATH))
+    curve = load_paper_curve()
     pivot_density = (curve.domain_min + curve.domain_max) / 2.0
     pivot_value = curve.lookup(np.array([pivot_density]))[0]
 
     x = np.geomspace(1e-3, 1e3, num=20)
-    result = tone_render(invert(x), ToneCurveParams(exposure=0.0, contrast=0.0))
+    result = tone_render(invert(x), ToneCurveParams(exposure=0.0, contrast=0.0), load_paper_curve())
     assert result == pytest.approx(np.full_like(result, pivot_value), abs=1e-9)
 
 
 def _curve():
-    return _load_curve(str(_DEFAULT_CURVE_PATH))
+    return load_paper_curve()
 
 
 def _synthetic_positive(d_lo: float, d_hi: float, n: int = 20_000) -> np.ndarray:
@@ -155,7 +154,7 @@ def test_fit_print_fills_the_paper_range_from_the_negatives_own_range():
     assert contrast < MAX_PRINT_CONTRAST  # this range is wide enough not to hit the cap
 
     d_lo, d_hi = negative_density_range(positive)
-    rendered = tone_render(np.array([10.0**d_lo, 10.0**d_hi]), ToneCurveParams(exposure=exposure, contrast=contrast))
+    rendered = tone_render(np.array([10.0**d_lo, 10.0**d_hi]), ToneCurveParams(exposure=exposure, contrast=contrast), load_paper_curve())
     expected = curve.lookup(np.array([shadow, highlight]))
     assert rendered == pytest.approx(expected, rel=1e-5)
 
@@ -169,7 +168,7 @@ def test_fit_print_caps_the_grade_at_the_real_paper_for_a_low_contrast_negative(
     assert contrast == MAX_PRINT_CONTRAST
     shadow, highlight = paper_exposure_range(curve)
     d_lo, d_hi = negative_density_range(positive)
-    rendered = tone_render(np.array([10.0**d_lo, 10.0**d_hi]), ToneCurveParams(exposure=exposure, contrast=contrast))
+    rendered = tone_render(np.array([10.0**d_lo, 10.0**d_hi]), ToneCurveParams(exposure=exposure, contrast=contrast), load_paper_curve())
     assert rendered[1] == pytest.approx(curve.lookup(np.array([highlight]))[0], rel=1e-5)
     assert rendered[0] > curve.lookup(np.array([shadow]))[0] * 10  # well above paper black
 
@@ -179,7 +178,7 @@ def test_fitted_print_keeps_neutral_pixels_exactly_neutral():
     # it can decide where on the paper the image sits, never what colour anything is.
     rng = np.random.default_rng(1)
     positive = 10.0 ** rng.uniform(0.6, 1.7, size=(64, 64, 1)).repeat(3, axis=2)
-    result = tone_render(positive, ToneCurveParams())
+    result = tone_render(positive, ToneCurveParams(), load_paper_curve())
     assert np.array_equal(result[..., 0], result[..., 1])
     assert np.array_equal(result[..., 1], result[..., 2])
 
@@ -189,9 +188,9 @@ def test_fitted_print_is_invariant_to_a_global_exposure_multiply():
     # constant density offset, which the fitted exposure absorbs exactly.
     rng = np.random.default_rng(2)
     positive = 10.0 ** rng.uniform(0.6, 1.7, size=(64, 64, 3))
-    reference = tone_render(positive, ToneCurveParams())
+    reference = tone_render(positive, ToneCurveParams(), load_paper_curve())
     for factor in (0.013, 0.8, 37.0):
-        assert tone_render(positive * factor, ToneCurveParams()) == pytest.approx(reference, rel=1e-6, abs=1e-9)
+        assert tone_render(positive * factor, ToneCurveParams(), load_paper_curve()) == pytest.approx(reference, rel=1e-6, abs=1e-9)
 
 
 def test_pinned_contrast_fits_only_exposure_to_the_highlight_point():
@@ -201,7 +200,7 @@ def test_pinned_contrast_fits_only_exposure_to_the_highlight_point():
     assert contrast == 0.5
     _, highlight = paper_exposure_range(curve)
     _, d_hi = negative_density_range(positive)
-    rendered = tone_render(np.array([10.0**d_hi]), ToneCurveParams(exposure=exposure, contrast=0.5))
+    rendered = tone_render(np.array([10.0**d_hi]), ToneCurveParams(exposure=exposure, contrast=0.5), load_paper_curve())
     assert rendered[0] == pytest.approx(curve.lookup(np.array([highlight]))[0], rel=1e-5)
 
 
@@ -215,11 +214,11 @@ def test_fit_differs_per_image_rather_than_using_one_constant():
 def test_resolve_tone_reports_what_tone_render_uses():
     rng = np.random.default_rng(3)
     positive = 10.0 ** rng.uniform(0.6, 1.7, size=(32, 32, 3))
-    resolved = resolve_tone(positive, ToneCurveParams())
-    explicit = tone_render(positive, ToneCurveParams(exposure=resolved.exposure, contrast=resolved.contrast))
-    assert tone_render(positive, ToneCurveParams()) == pytest.approx(explicit)
+    resolved = resolve_tone(positive, ToneCurveParams(), load_paper_curve())
+    explicit = tone_render(positive, ToneCurveParams(exposure=resolved.exposure, contrast=resolved.contrast), load_paper_curve())
+    assert tone_render(positive, ToneCurveParams(), load_paper_curve()) == pytest.approx(explicit)
 
-    pinned = resolve_tone(positive, ToneCurveParams(exposure=0.3, contrast=0.7))
+    pinned = resolve_tone(positive, ToneCurveParams(exposure=0.3, contrast=0.7), load_paper_curve())
     assert (pinned.exposure, pinned.contrast) == (0.3, 0.7)
 
     linear = resolve_tone(positive, ToneCurveParams(mode="linear"))

@@ -26,6 +26,7 @@ from halide.cli._device_args import (
 )
 from halide.cli._calibration_args import (
     add_calibration_arguments,
+    manual_calibration_given,
     add_scan_arguments,
     add_stage_arguments,
     add_tone_arguments,
@@ -157,8 +158,7 @@ def run(args: argparse.Namespace) -> int:
     if fallback_warning:
         print(console.warning(fallback_warning))
     _maybe_print_gpu_hint(device)
-    manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
-    calibrated_here = stage is not Stage.INVERT_ONLY and not args.profile and not manual_given
+    calibrated_here = stage is not Stage.INVERT_ONLY and not args.profile and not manual_calibration_given(args)
     gain, scan_reference = _resolve_scan_gain(args, calibrated_here)
     maybe_save_profile(args, density_profile, tone=saved_tone, scan=scan_reference)
     tone_params = resolve_tone_params(args, saved_tone=saved_tone)

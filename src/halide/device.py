@@ -246,8 +246,6 @@ def release_memory() -> None:
     redone on the CPU — has no use for the cache. A no-op when CuPy was never imported (nothing to
     release, and importing it here would cost exactly what the module docstring avoids); never
     raises, since it runs on the way out of an error path."""
-    import sys
-
     cupy = sys.modules.get("cupy")
     if cupy is None:
         return

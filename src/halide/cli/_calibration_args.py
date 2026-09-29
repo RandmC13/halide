@@ -48,10 +48,22 @@ def add_stage_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def manual_calibration_given(args: argparse.Namespace) -> bool:
+    """Whether any of --rm/--bm/--rs/--bs was typed. The one definition: the two scales default to
+    1.0 (not None), so "given" means "moved off the default"."""
+    return args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
+
+
 def add_calibration_arguments(
     parser: argparse.ArgumentParser, *, allow_auto: bool = True, allow_pick: bool = False
-) -> None:
-    parser.add_argument(
+) -> argparse._MutuallyExclusiveGroup:
+    """Adds the calibration flags and returns the group of mutually exclusive *sources* (--profile,
+    --auto-density, --pick) so a command can add its own (batch's --auto-density-roll). The manual
+    --rm/--bm/--rs/--bs values can't join that group: argparse can't tell "typed" from "left at the
+    default" for the two scales (default 1.0), so their clash with a source is checked by hand in
+    resolve_density_profile (and in batch, for --auto-density-roll)."""
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument(
         "--profile", help="A saved calibration profile: its name, or a path to its file"
     )
     parser.add_argument(
@@ -71,14 +83,14 @@ def add_calibration_arguments(
         help="Blue density-balance scale, above 0 (manual calibration; default: 1.0)",
     )
     if allow_auto:
-        parser.add_argument(
+        sources.add_argument(
             "--auto-density",
             action="store_true",
             help="Automatically estimate density balance from the image itself (approximate — "
             "prefer a saved --profile from a real calibration when you have one)",
         )
     if allow_pick:
-        parser.add_argument(
+        sources.add_argument(
             "--pick",
             action="store_true",
             help="Interactively pick shadow/highlight neutral points in a small GUI window, then "
@@ -98,6 +110,7 @@ def add_calibration_arguments(
         help="Attach a free-text note to the profile saved via --save-profile-as (e.g. how it "
         "was generated) — ignored without --save-profile-as; edit later with `halide profile edit`",
     )
+    return sources
 
 
 def add_tone_arguments(parser: argparse.ArgumentParser, *, allow_output_mode: bool = True) -> None:
@@ -212,7 +225,7 @@ def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
 
     Non-interactive, or with a source already given, this does nothing; resolve_density_profile
     then raises its actionable "needs a calibration source" error if there's still none."""
-    manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
+    manual_given = manual_calibration_given(args)
     if (
         args.profile
         or manual_given
@@ -260,7 +273,7 @@ def resolve_density_profile(
     Stage.INVERT_ONLY); saved_tone is an optional exposure/contrast override that came bundled with
     the resolved profile (from a saved profile's "tone" sidecar, or from the GUI's Print
     controls during --pick), to be passed into resolve_tone_params."""
-    manual_given = args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
+    manual_given = manual_calibration_given(args)
     auto_given = getattr(args, "auto_density", False)
     pick_given = getattr(args, "pick", False)
 

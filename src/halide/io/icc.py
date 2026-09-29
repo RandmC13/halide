@@ -51,7 +51,7 @@ OUTPUT_PROFILE_PATH = (
 
 def output_profile_bytes() -> bytes:
     """The ICC profile bytes to embed on any output written from the internal ACEScg working
-    space (i.e. anything that has been through core.pipeline.run_pipeline)."""
+    space (i.e. anything that has been through a developed positive)."""
     return OUTPUT_PROFILE_PATH.read_bytes()
 
 

@@ -28,6 +28,7 @@ from halide.core._xp import array_namespace
 from halide.core.density import apply_density_balance, apply_white_balance
 from halide.core.pipeline import negative_to_positive
 from halide.core.tone_render import ResolvedTone, apply_tone, resolve_tone
+from halide.io.lut import load_paper_curve
 from halide.core.types import DensityProfile, Stage, ToneCurveParams  # noqa: F401 -- Stage re-exported
 from halide.device import ComputeDevice
 from halide.io.atomic import atomic_output
@@ -451,6 +452,13 @@ def _shared_frame(input_path, service, shm_prefix: str | None, stack: contextlib
     fails with the same error the CPU path gives."""
     if service is None:
         return None
+    dead_reason = getattr(service, "dead_reason", None)
+    if dead_reason is not None:
+        # The service is gone for good: no point making a shared frame nobody will develop.
+        action = "exported this file" if extra_uint8 else "developed this frame"
+        _warn(on_warning, f"{input_path}: the GPU service is no longer available ({dead_reason}) — {action} "
+                          f"on the CPU instead")
+        return None
     from halide.shared_frames import SharedMemoryUnavailable, new_frame
 
     try:
@@ -569,8 +577,9 @@ def print_request(frame, request: PrintRequest, band_bytes: int | None = None, *
     if request.scale is not None:
         frame /= frame.dtype.type(request.scale)  # a scalar of the frame's dtype: see develop_request
     print_params = request.print_params
-    resolved = _tone_on_host(resolve_tone(frame, print_params))
-    map_in_bands(frame, lambda band: apply_tone(band, resolved, print_params.curve_path), band_bytes=band_bytes)
+    curve = load_paper_curve(print_params.curve_path)
+    resolved = _tone_on_host(resolve_tone(frame, print_params, curve))
+    map_in_bands(frame, lambda band: apply_tone(band, resolved, curve), band_bytes=band_bytes)
     return resolved
 
 
@@ -596,8 +605,9 @@ def _develop_in_place(
     full buffer between the two banded passes, exactly where develop() runs it. Bit-identical to
     develop() (pinned by tests/unit/test_banding.py), at ~1 frame of memory instead of ~9."""
     map_in_bands(image, lambda band: negative_to_positive(band, profile), band_bytes=band_bytes)
-    resolved = _tone_on_host(resolve_tone(image, tone_params))
-    map_in_bands(image, lambda band: apply_tone(band, resolved, tone_params.curve_path), band_bytes=band_bytes)
+    curve = load_paper_curve(tone_params.curve_path)
+    resolved = _tone_on_host(resolve_tone(image, tone_params, curve))
+    map_in_bands(image, lambda band: apply_tone(band, resolved, curve), band_bytes=band_bytes)
     return resolved
 
 

@@ -364,7 +364,7 @@ def test_estimate_worker_device_bytes_is_context_plus_frames(tmp_path):
     job = BatchJob(input_path=tmp_path / "a.tif", output_path=None)
     with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME):
         estimate = estimate_worker_device_bytes([job])
-    assert estimate == orchestrator._DEVICE_CONTEXT_BYTES + orchestrator._DEVICE_FRAME_MULTIPLIER * _FRAME
+    assert estimate == orchestrator._CUDA_CONTEXT_BYTES + orchestrator._DEVICE_FRAME_MULTIPLIER * _FRAME
     # Never less than the frame itself plus a CUDA context: the frame stays resident on the device.
     assert estimate > _FRAME + _CUDA_CONTEXT_BYTES
 

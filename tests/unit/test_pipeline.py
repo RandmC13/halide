@@ -4,6 +4,7 @@ import pytest
 from halide.core.density import solve_density_balance
 from halide.core.pipeline import run_pipeline
 from halide.core.types import ToneCurveParams
+from halide.io.lut import load_paper_curve
 
 SHADOW_RGB = (0.094, 0.131, 0.050)
 HIGHLIGHT_RGB = (0.048, 0.054, 0.016)
@@ -18,7 +19,7 @@ def _synthetic_negative():
 
 def test_run_pipeline_defaults_to_paper_tone_render():
     profile = solve_density_balance(SHADOW_RGB, HIGHLIGHT_RGB)
-    result = run_pipeline(_synthetic_negative(), profile)
+    result = run_pipeline(_synthetic_negative(), profile, None, load_paper_curve())
     assert result.shape == (1, 3, 3)
     assert np.all(result >= 0.0) and np.all(result <= 1.0 + 1e-9)
 

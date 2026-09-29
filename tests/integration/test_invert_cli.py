@@ -123,11 +123,14 @@ def test_pick_cancelled_without_choosing_errors(negative_tiff, tmp_path, monkeyp
         main(["invert", str(negative_tiff), str(output), "--pick"])
 
 
-def test_pick_conflicts_with_other_calibration_sources(negative_tiff, tmp_path, monkeypatch):
+def test_pick_conflicts_with_other_calibration_sources(negative_tiff, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: None)
     output = tmp_path / "positive.tiff"
-    with pytest.raises(SystemExit, match="mutually exclusive"):
+    # argparse itself refuses this (exit 2), so it also shows in the usage line
+    with pytest.raises(SystemExit) as exit_info:
         main(["invert", str(negative_tiff), str(output), "--pick", "--auto-density"])
+    assert exit_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
 
 
 def test_profile_and_manual_override_conflict_errors(negative_tiff, tmp_path):

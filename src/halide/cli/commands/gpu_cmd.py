@@ -17,6 +17,7 @@ import sys
 # status, stays fast and never needs cupy installed. See tests/unit/test_cli_startup.py, which
 # building this command's parser must keep passing.
 from halide import device as halide_device
+from halide.cli import console
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -127,8 +128,7 @@ def _install(args: argparse.Namespace) -> int:
         if not sys.stdin.isatty():
             print("Not installing — pass --yes to install without asking (no terminal to confirm in)")
             return 1
-        reply = input("Install now? [y/N] ").strip().lower()
-        if reply not in ("y", "yes"):
+        if not console.confirm("Install now?", default=False):  # EOF (Ctrl-D) counts as "no"
             print("Not installed")
             return 0
 
