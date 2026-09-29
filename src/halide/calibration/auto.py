@@ -268,8 +268,9 @@ def roll_auto_density_balance(
     typical highlight density are measured across many frames' worth of candidate pixels rather
     than one frame's, at the cost of not adapting to a given frame's individual content.
 
-    Selects neutral candidates *per frame first* (each judged against its own per-channel median),
-    then pools only the resulting candidate pixels before the final shadow/highlight percentiles —
+    Selects neutral candidates *per frame first* (each pixel judged against the per-channel
+    median of the *other pixels of that frame at a similar density* — `_density_local_saturation`,
+    not one frame-wide median), then pools only the resulting candidate pixels before the final shadow/highlight percentiles —
     not the other way around. Concatenating raw pixels from every frame before computing one
     shared median (the original implementation) was a real bug, found via testing on two real
     scans of genuinely different scenes (a warm-toned portrait and a daylight street scene): the

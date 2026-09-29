@@ -168,6 +168,12 @@ class ServiceClient:
         it — so the CPU fallback goes into a buffer the worker owns (processing.export_fallback)."""
         self._request(("export", frame.descriptor(), out.descriptor(), request))
 
+    @property
+    def dead_reason(self) -> str | None:
+        """Why this client gave up on the service, or None while it is still usable. A dead client
+        never recovers, so a worker checks this before preparing a frame the service couldn't take."""
+        return self._dead
+
     def close(self) -> None:
         with self._lock:
             self._drop_connection()
@@ -183,9 +189,11 @@ class ServiceClient:
             if self._dead is not None:
                 raise ServiceUnavailable(self._dead)
             conn = self._connect()
+            sent = False  # once True the service may write into the request's buffers
             try:
                 try:
                     conn.send(message)
+                    sent = True
                     # poll, not a bare recv: a live but stuck service must not hang a worker forever.
                     if not conn.poll(self._timeout):
                         raise TimeoutError(f"no reply within {self._timeout:g} s")
@@ -194,13 +202,14 @@ class ServiceClient:
                     # F06: whatever went wrong — the service died or stuck, or Ctrl-C (any
                     # BaseException) landed while a reply was owed — this connection is out of step:
                     # the next request would read this one's reply and its own frame would be written
-                    # out undeveloped. Marked dead first, before anything else can be interrupted
-                    # (review round 1); none of this request's shared buffers can be trusted either.
+                    # out undeveloped. Marked dead first, before anything else can be interrupted;
+                    # none of this request's shared buffers can be trusted either.
                     self._dead = "the GPU service stopped responding"
                     raise
             except (OSError, EOFError, TimeoutError) as exc:
+                # A send that failed (a broken pipe) never reached the service: the frame is untouched.
                 raise self._give_up(f"the GPU service stopped responding ({_describe(exc)})",
-                                    host_touched=True) from exc
+                                    host_touched=sent) from exc
             except BaseException as exc:
                 # The caller is cancelling, not falling back: the original exception carries on.
                 self._give_up(f"a request to the GPU service was interrupted ({_describe(exc)})",

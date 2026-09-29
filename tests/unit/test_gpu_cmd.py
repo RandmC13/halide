@@ -271,6 +271,21 @@ def test_install_declines_runs_nothing(monkeypatch, capsys, old_driver_absent_cu
     assert "Not installed" in out
 
 
+def test_install_prompt_eof_counts_as_no(monkeypatch, capsys, old_driver_absent_cupy):
+    """Ctrl-D (or a dropped terminal) at "Install now?" is a clean "not installed", not a traceback."""
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append((a, k)) or None)
+
+    def eof(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    assert main(["gpu", "--install"]) == 0
+    assert calls == []
+    assert "Not installed" in _strip(capsys.readouterr().out)
+
+
 def test_install_accepts_runs_pip_install_exactly(monkeypatch, capsys, old_driver_absent_cupy):
     calls = []
 

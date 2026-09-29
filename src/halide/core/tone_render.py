@@ -24,27 +24,26 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from functools import lru_cache
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from halide.core._constants import MIN_TRANSMITTANCE
 from halide.core._xp import array_namespace
 from halide.core.types import ToneCurveParams
-from halide.io.lut import Cube1D, load_1d_cube
 
-_DEFAULT_CURVE_PATH = (
-    Path(__file__).resolve().parents[1] / "assets" / "tone_curves" / "paper_endura.cube"
-)
+if TYPE_CHECKING:
+    # A type only: core/ never reads the curve file. The caller loads it (io.lut.load_paper_curve)
+    # and passes it in, so everything here stays a pure function of its arguments.
+    from halide.io.lut import Cube1D
 
 
-@lru_cache(maxsize=8)
-def _load_curve(path: str) -> Cube1D:
-    cube = load_1d_cube(path)
-    # The raw curve's peak is below 1.0 (real paper doesn't reach maximum theoretical reflectance);
-    # normalizing to 1.0 here matches how the reference `neglut.py` uses this same curve.
-    return Cube1D(values=cube.values / cube.values.max(), domain_min=cube.domain_min, domain_max=cube.domain_max)
+def _require_curve(curve: Cube1D | None) -> Cube1D:
+    if curve is None:
+        raise ValueError(
+            "paper mode needs the paper curve: load it with halide.io.lut.load_paper_curve() and pass it in"
+        )
+    return curve
 
 
 # ACEScg (AP1) luminance weights: the Y row of the ACEScg RGB -> XYZ matrix (ACES spec, S-2014-004).
@@ -119,8 +118,9 @@ def paper_exposure_range(curve: Cube1D) -> tuple[float, float]:
 
 def negative_density_range(positive_linear: np.ndarray) -> tuple[float, float]:
     """(D_lo, D_hi): this frame's robust negative density range, measured on luminance so the fit
-    responds to the image's overall tonal range rather than to any one channel. log10 of the
-    inverted positive is exactly the negative's density (see tone_render)."""
+    responds to the image's overall tonal range rather than to any one channel. Per channel, log10 of
+    the inverted positive is exactly that dye layer's density (see apply_tone); on the luminance mix
+    it is a single tonal measure, not the density of any one layer."""
     xp = array_namespace(positive_linear)
     if positive_linear.ndim == 3 and positive_linear.shape[-1] == 3:
         luminance = positive_linear @ xp.asarray(ACESCG_LUMINANCE, dtype=positive_linear.dtype)
@@ -226,24 +226,26 @@ def estimate_linear_scale(
     return target_value / highlight
 
 
-def resolve_tone(positive_linear: np.ndarray, params: ToneCurveParams) -> ResolvedTone:
+def resolve_tone(
+    positive_linear: np.ndarray, params: ToneCurveParams, curve: Cube1D | None = None
+) -> ResolvedTone:
     """Work out the concrete values tone_render will use for this image: pinned values as given,
-    anything left as None fitted from the image itself (see fit_print / estimate_linear_scale)."""
+    anything left as None fitted from the image itself (see fit_print / estimate_linear_scale).
+    `curve` (the loaded paper curve) is needed only when something has to be fitted."""
     if params.mode == "linear":
         return ResolvedTone(mode="linear", linear_scale=estimate_linear_scale(positive_linear))
     if params.exposure is not None and params.contrast is not None:
         return ResolvedTone(mode="paper", exposure=params.exposure, contrast=params.contrast)
-    curve = _load_curve(params.curve_path or str(_DEFAULT_CURVE_PATH))
-    fitted_exposure, fitted_contrast = fit_print(positive_linear, curve, contrast=params.contrast)
+    fitted_exposure, fitted_contrast = fit_print(positive_linear, _require_curve(curve), contrast=params.contrast)
     exposure = params.exposure if params.exposure is not None else fitted_exposure
     return ResolvedTone(mode="paper", exposure=exposure, contrast=fitted_contrast)
 
 
-def apply_tone(positive_linear: np.ndarray, resolved: ResolvedTone, curve_path: str | None = None) -> np.ndarray:
+def apply_tone(positive_linear: np.ndarray, resolved: ResolvedTone, curve: Cube1D | None = None) -> np.ndarray:
     if resolved.mode == "linear":
         return linear_passthrough(positive_linear * resolved.linear_scale)
 
-    curve = _load_curve(curve_path or str(_DEFAULT_CURVE_PATH))
+    curve = _require_curve(curve)
     # `safe` is a fresh copy of positive_linear (never positive_linear itself), so every step below
     # reuses its buffer via `out=`/in-place ops instead of allocating a new full-size array at each
     # line — positive_linear itself is left untouched throughout.
@@ -264,9 +266,12 @@ def apply_tone(positive_linear: np.ndarray, resolved: ResolvedTone, curve_path: 
     return curve.lookup(density)
 
 
-def tone_render(positive_linear: np.ndarray, params: ToneCurveParams) -> np.ndarray:
-    return apply_tone(positive_linear, resolve_tone(positive_linear, params), params.curve_path)
+def tone_render(positive_linear: np.ndarray, params: ToneCurveParams, curve: Cube1D | None = None) -> np.ndarray:
+    """resolve_tone + apply_tone in one call, for whole-array callers and tests. processing.py runs
+    the two steps separately (the fit on the whole frame, the curve band by band)."""
+    return apply_tone(positive_linear, resolve_tone(positive_linear, params, curve), curve)
 
 
 def linear_passthrough(positive_linear: np.ndarray) -> np.ndarray:
+    """Flat output: the (already scaled) positive as it is — named so apply_tone reads as a choice."""
     return positive_linear

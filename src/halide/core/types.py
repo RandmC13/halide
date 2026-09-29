@@ -75,4 +75,4 @@ class ToneCurveParams:
     mode: Literal["paper", "linear"] = "paper"
     exposure: float | None = None
     contrast: float | None = None
-    curve_path: str | None = None  # override the bundled default curve asset
+    curve_path: str | None = None  # override the bundled paper curve (a .cube path; no CLI flag sets it — an API/test hook)

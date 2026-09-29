@@ -23,6 +23,7 @@ from halide.core.pipeline import develop
 from halide.core.tone_render import apply_tone, resolve_tone
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.io.icc import convert_to_working_space, parse_linear_rgb_profile
+from halide.io.lut import load_paper_curve
 from halide.io.raster import to_srgb_8bit, write_delivery_image
 from halide.io.tiff import read_tiff, write_tiff
 from halide.processing import (
@@ -133,7 +134,7 @@ def test_process_scan_matches_the_whole_array_pipeline(tmp_path, negative_path, 
     if stage is Stage.DENSITY_ONLY:
         expected, expected_tone = apply_density_balance(apply_white_balance(working, used), used), None
     else:
-        expected, expected_tone = develop(working, used, tone)
+        expected, expected_tone = develop(working, used, tone, load_paper_curve())
 
     _assert_identical(read_tiff(out_path).image, expected.astype(np.float32))
     assert resolved == expected_tone
@@ -157,15 +158,15 @@ def test_print_scan_matches_the_whole_array_print(tmp_path, negative_path, band_
 
     scan = read_tiff(flat)
     working = scan.image / np.asarray(read_provenance(scan.description)["linear_scale"], dtype=scan.image.dtype)
-    expected_tone = resolve_tone(working, ToneCurveParams(mode="paper"))
-    expected = apply_tone(working, expected_tone)
+    expected_tone = resolve_tone(working, ToneCurveParams(mode="paper"), load_paper_curve())
+    expected = apply_tone(working, expected_tone, load_paper_curve())
 
     _assert_identical(read_tiff(printed).image, expected.astype(np.float32))
     assert resolved == expected_tone
 
 
 def test_write_delivery_image_matches_whole_frame_conversion(tmp_path, negative_path, band_rows):
-    positive = develop(_whole_working_image(negative_path), PROFILE)[0]
+    positive = develop(_whole_working_image(negative_path), PROFILE, None, load_paper_curve())[0]
     path = tmp_path / "delivery.png"
     write_delivery_image(path, positive)
     assert np.array_equal(np.asarray(Image.open(path)), to_srgb_8bit(positive))

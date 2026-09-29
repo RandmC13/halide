@@ -1,8 +1,8 @@
-"""The GUI's shared visual identity — the Qt equivalent of `cli/console.py`. A QSS stylesheet plus
+"""The GUI's shared visual identity — the Qt equivalent of `cli/console/`. A QSS stylesheet plus
 a couple of raw color constants for anything that needs to be painted by hand (the magnifier, custom
 widgets) rather than styled declaratively.
 
-Palette matches the CLI's own darkroom/film-photography language (see `cli/console.py`'s `Style`
+Palette matches the CLI's own darkroom/film-photography language (see `cli/console/`'s `Style`
 class and the tank/enlarger animations there): a warm dark charcoal background, an amber accent for
 ordinary controls, and — new in this rewrite — a red accent reserved for exactly one "primary action"
 button per window (Save calibration profile / Develop), a cheap nod to the big red button on the

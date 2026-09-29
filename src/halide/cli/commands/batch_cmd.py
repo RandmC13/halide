@@ -28,6 +28,7 @@ from halide.cli._output_policy import (
 )
 from halide.cli._calibration_args import (
     add_calibration_arguments,
+    manual_calibration_given,
     add_scan_arguments,
     add_stage_arguments,
     add_tone_arguments,
@@ -75,8 +76,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_output_policy_arguments(parser)
 
     add_stage_arguments(parser)
-    add_calibration_arguments(parser)
-    parser.add_argument(
+    sources = add_calibration_arguments(parser)
+    sources.add_argument(
         "--auto-density-roll",
         action="store_true",
         help="Estimate one shared density-balance profile from the whole roll, rather than "
@@ -374,8 +375,7 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
          left_out=None) -> int:
     if stage is not Stage.INVERT_ONLY:
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
-    manual_given =args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
-    other_source_given = bool(args.profile) or manual_given or args.auto_density
+    other_source_given = bool(args.profile) or manual_calibration_given(args) or args.auto_density
     if args.auto_density_roll and other_source_given:
         raise SystemExit(
             "--auto-density-roll cannot be combined with --profile/manual overrides/--auto-density"

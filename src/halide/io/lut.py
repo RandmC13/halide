@@ -8,6 +8,7 @@ since color-space conversion is handled by explicit matrices (see io/icc.py), no
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -75,30 +76,63 @@ class Cube1D:
 
 def load_1d_cube(path: str | Path) -> Cube1D:
     """Load a 1D .cube LUT. If the file stores 3 identical columns (as every curve currently
-    vendored in this project does), only the first column is kept."""
+    vendored in this project does), only the first column is kept. A bad or empty file raises a
+    ValueError that says what is wrong with it."""
     domain_min, domain_max = 0.0, 1.0
+    declared_size: int | None = None
     rows: list[list[float]] = []
 
-    for raw_line in Path(path).read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+    try:
+        text = Path(path).read_text()
+    except OSError as error:
+        raise ValueError(f"{path}: couldn't read this LUT file ({error.strerror or error})") from error
+
+    for number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.split("#", 1)[0].strip()  # a trailing "# comment" is not data
+        if not line:
             continue
-        if line.startswith("LUT_1D_SIZE"):
-            continue  # size is inferred from the row count, not needed separately
         if line.startswith("LUT_3D_SIZE"):
             raise ValueError(f"{path} is a 3D LUT; load_1d_cube only supports 1D LUTs")
-        if line.startswith("DOMAIN_MIN"):
-            domain_min = float(line.split()[1])
-            continue
-        if line.startswith("DOMAIN_MAX"):
-            domain_max = float(line.split()[1])
-            continue
-        if line.startswith("TITLE"):
-            continue
-        rows.append([float(v) for v in line.split()])
+        try:
+            if line.startswith("LUT_1D_SIZE"):
+                declared_size = int(line.split()[1])
+                continue
+            if line.startswith("DOMAIN_MIN"):
+                domain_min = float(line.split()[1])
+                continue
+            if line.startswith("DOMAIN_MAX"):
+                domain_max = float(line.split()[1])
+                continue
+            if line.startswith("TITLE"):
+                continue
+            rows.append([float(v) for v in line.split()])
+        except (ValueError, IndexError) as error:
+            raise ValueError(f"{path}, line {number}: couldn't read {raw_line.strip()!r} as part of a 1D LUT") from error
+
+    if not rows:
+        raise ValueError(f"{path}: this LUT file has no data rows")
+    if len({len(row) for row in rows}) != 1:
+        raise ValueError(f"{path}: the data rows don't all have the same number of columns")
+    if declared_size is not None and declared_size != len(rows):
+        raise ValueError(f"{path}: LUT_1D_SIZE says {declared_size} entries but the file has {len(rows)} rows")
+    if not domain_max > domain_min:
+        raise ValueError(f"{path}: DOMAIN_MAX ({domain_max}) must be greater than DOMAIN_MIN ({domain_min})")
 
     table = np.asarray(rows, dtype=np.float64)
     values = table[:, 0]
     if not np.allclose(table, values[:, np.newaxis]):
         raise ValueError(f"{path}: expected identical R/G/B columns, got channel-varying data")
     return Cube1D(values=values, domain_min=domain_min, domain_max=domain_max)
+
+
+DEFAULT_CURVE_PATH = Path(__file__).resolve().parents[1] / "assets" / "tone_curves" / "paper_endura.cube"
+
+
+@lru_cache(maxsize=8)
+def load_paper_curve(path: str | None = None) -> Cube1D:
+    """The print paper's response curve, read once per process (None = the bundled Endura curve).
+    core/ does no file I/O, so whoever runs the pipeline loads the curve here and passes it in."""
+    cube = load_1d_cube(path or DEFAULT_CURVE_PATH)
+    # The raw curve's peak is below 1.0 (real paper doesn't reach maximum theoretical reflectance);
+    # normalizing to 1.0 here matches how the reference `neglut.py` uses this same curve.
+    return Cube1D(values=cube.values / cube.values.max(), domain_min=cube.domain_min, domain_max=cube.domain_max)

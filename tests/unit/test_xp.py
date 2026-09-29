@@ -10,13 +10,12 @@ from halide.core._xp import array_namespace, register_namespace
 from halide.core.pipeline import negative_to_positive
 from halide.core.tone_render import (
     ResolvedTone,
-    _DEFAULT_CURVE_PATH,
-    _load_curve,
     apply_tone,
     estimate_linear_scale,
     negative_density_range,
 )
 from halide.core.types import DensityProfile
+from halide.io.lut import load_paper_curve
 from tests.unit._fake_device import FakeDeviceArray, fake_xp, to_device, to_host
 
 PROFILE = DensityProfile(white_balance=(1.3, 1.0, 0.7), density_scale=(0.9, 1.0, 1.15))
@@ -55,11 +54,11 @@ def test_print_fit_statistics_on_device_equal_cpu():
 )
 def test_apply_tone_on_device_equals_cpu(resolved):
     pos = negative_to_positive(_negative(), PROFILE)
-    assert np.array_equal(to_host(apply_tone(to_device(pos), resolved)), apply_tone(pos, resolved))
+    assert np.array_equal(to_host(apply_tone(to_device(pos), resolved, load_paper_curve())), apply_tone(pos, resolved, load_paper_curve()))
 
 
 def test_curve_lookup_on_device_equals_cpu_and_keeps_host_table():
-    curve = _load_curve(str(_DEFAULT_CURVE_PATH))
+    curve = load_paper_curve()
     x = np.random.default_rng(3).uniform(-3, 3, (40, 9)).astype(np.float32)
     for _ in range(2):  # the second call reuses the uploaded table
         assert np.array_equal(to_host(curve.lookup(to_device(x))), curve.lookup(x))

@@ -103,7 +103,7 @@ def save_profile(
 ) -> None:
     """`tone`, if given, is a GUI-picked exposure/contrast override (the calibration picker's Print
     drawer, gui/drawers.py) saved as an extra "tone" sidecar key alongside the profile's own fields -
-    deliberately not merged into DensityProfile itself (see calibration_args.py/core/types.py: the
+    deliberately not merged into DensityProfile itself (see cli/_calibration_args.py/core/types.py: the
     density profile stays a pure calibration concept, tone stays a separate, optional per-run
     rendering choice that a profile can merely *suggest* a default for). Linear-output mode is
     deliberately never included here - see load_tone_override's docstring.

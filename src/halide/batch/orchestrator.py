@@ -83,8 +83,9 @@ _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 # benchmark's 4-worker batch ran with no CPU fallbacks.
 # Previously PROVISIONAL (768 MiB + 4 x frame = 1492 MiB, from estimates before any real card ran).
 _CUDA_CONTEXT_BYTES = 256 * 1024 * 1024
-_DEVICE_CONTEXT_BYTES = _CUDA_CONTEXT_BYTES
 _DEVICE_FRAME_MULTIPLIER = 5
+# Used only when no file's header can be read: about a real 16-megapixel frame decoded (182 MiB, rounded up).
+_FALLBACK_FRAME_BYTES = 200 * 1024 * 1024
 
 # A GPU worker's *host* memory is much larger than a CPU worker's: the same benchmark measured the
 # largest GPU worker at 1212-1235 MiB RSS against 392-403 MiB for a CPU worker on the same frames
@@ -223,8 +224,8 @@ def estimate_worker_device_bytes(jobs: list[BatchJob]) -> int:
     it too."""
     sizes = [b for b in (_decoded_pixel_bytes(job.input_path) for job in jobs) if b is not None]
     if not sizes:
-        return _FALLBACK_PER_WORKER_BYTES
-    return _DEVICE_CONTEXT_BYTES + max(sizes) * _DEVICE_FRAME_MULTIPLIER
+        return _CUDA_CONTEXT_BYTES + _FALLBACK_FRAME_BYTES * _DEVICE_FRAME_MULTIPLIER  # a video-memory guess, not the RAM one
+    return _CUDA_CONTEXT_BYTES + max(sizes) * _DEVICE_FRAME_MULTIPLIER
 
 
 def device_worker_cap(jobs: list[BatchJob], device: ComputeDevice | None) -> int | None:

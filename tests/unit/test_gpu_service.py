@@ -12,6 +12,7 @@ There is no GPU here, so the service runs in one of three ways:
 Frames are small (/dev/shm is 64 MiB in this sandbox); full-size, real-GPU checks are Task B4.
 """
 
+import contextlib
 import os
 import pickle
 import signal
@@ -701,3 +702,44 @@ def test_an_interrupt_inside_the_failure_handling_still_leaves_the_client_dead(m
 class SimpleFrame:
     def descriptor(self):
         return ("unused", (1, 1, 3), "<f4")
+
+
+def test_a_send_that_fails_never_reached_the_service_so_the_frame_is_untouched():
+    """A broken pipe on send means the service never saw the request: the caller's shared frame is
+    exactly as decoded, so the CPU fallback needs no re-read of the scan. A failure after the send
+    (a dead or stuck service) still counts as touched."""
+
+    class BrokenOnSend:
+        def send(self, message):
+            raise BrokenPipeError("gone")
+
+        def close(self):
+            pass
+
+    class DiesAfterSend(BrokenOnSend):
+        def send(self, message):
+            pass
+
+        def poll(self, timeout):
+            raise EOFError
+
+    for conn, touched in ((BrokenOnSend(), False), (DiesAfterSend(), True)):
+        client = ServiceClient(None)
+        client._conn = conn
+        with pytest.raises(ServiceUnavailable) as unavailable:
+            client._request(("develop",))
+        assert unavailable.value.failure.host_touched is touched
+        assert client.dead_reason is not None
+
+
+def test_no_shared_frame_is_made_for_a_client_whose_service_is_gone(tmp_path):
+    from halide import processing
+
+    class Gone:
+        dead_reason = "the GPU service stopped responding"
+
+    warnings = []
+    with contextlib.ExitStack() as stack:
+        frame = processing._shared_frame(tmp_path / "a.tif", Gone(), None, stack, warnings.append)
+    assert frame is None
+    assert "no longer available" in warnings[0] and "on the CPU" in warnings[0]

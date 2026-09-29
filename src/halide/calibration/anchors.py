@@ -10,7 +10,7 @@ That's the same one global multiply --match-scan-exposure makes, against the sam
 saved profile records, so a profile fitted here develops the roll correctly with that flag.
 
 Agreement is judged per point against the fit through the *other* points
-(core.density.leave_one_out_residuals) and reported as a colour-printing filter pack ("CC 8M + 8Y").
+(core.density.leave_one_out_residuals) and reported as a colour-printing filter pack ("CC 8Y + 8M": ties are named yellow, magenta, cyan).
 
 How far the fit can be trusted is judged separately (fit_reliability): points that agree with each
 other can still all sit in one narrow band of density, and the line through them is then a guess at
@@ -60,7 +60,9 @@ WEDGE_HIGH_PERCENTILE = 99.5
 
 # The error assumed in each picked point's density, per channel, when predicting how far the fit
 # can be trusted (fit_reliability): CC 0.5 - well below the CC 1-5 real "trusted" whites were
-# measured off neutral on Roll 16, so the prediction is the best case, not a worst one.
+# measured off neutral on Roll 16, so this sigma is optimistic. The prediction then sums the red and
+# blue layers' errors as if they always opposed (core.density.predicted_cast_error), which is
+# pessimistic; the two partly offset, so treat the result as a guide to where the fit is thin, not a bound.
 ASSUMED_PICK_ERROR = 0.005
 _RELIABILITY_STEPS = 1001  # D_G samples across the wedge when finding the reliable range
 
