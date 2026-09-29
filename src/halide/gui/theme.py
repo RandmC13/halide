@@ -275,6 +275,20 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
 """
 
 
+def load_fonts() -> None:
+    """Register the vendored DejaVu fonts so "DejaVu Sans" is the same everywhere; a missing file
+    just leaves the system's own choice."""
+    from importlib.resources import files
+
+    from PySide6.QtGui import QFontDatabase
+
+    for name in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf"):
+        path = files("halide.assets") / "fonts" / name
+        if path.is_file():
+            QFontDatabase.addApplicationFont(str(path))
+
+
 def apply(app) -> None:
     """Apply the stylesheet to a QApplication. Call once, right after construction."""
+    load_fonts()
     app.setStyleSheet(STYLESHEET)
