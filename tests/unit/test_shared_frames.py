@@ -401,7 +401,7 @@ def _dead_segment_name(pid: int, token: str) -> str:
     """A segment name in the current format for a creator with this pid."""
     from halide.shared_frames import _base36
 
-    return f"hl{_base36(pid)}{token.rjust(6, "0")}-{time.time_ns():x}"[:30]
+    return f"hl{_base36(pid)}{token.rjust(6, '0')}-{time.time_ns():x}"[:30]
 
 
 def _dead_pid() -> int:
