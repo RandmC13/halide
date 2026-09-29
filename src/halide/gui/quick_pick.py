@@ -22,10 +22,12 @@ from halide.gui import theme
 from halide.gui.main_window import MainWindow
 
 
-def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None] | None:
+def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None, str | None] | None:
     """Open a standalone picker window pre-loaded with `path`, block until the user either clicks
-    "Develop" (returns the picked (DensityProfile, tone_override) - tone_override is None unless
-    the Print drawer pinned exposure/grade) or closes the window without doing so (returns None).
+    "Develop" (returns the picked (DensityProfile, tone_override, reliability warning) -
+    tone_override is None unless the Print drawer pinned exposure/grade; the warning is the
+    picker's "Fit reliable over D … only" note, None when the fit holds over the whole frame) or
+    closes the window without doing so (returns None).
 
     Runs a local QEventLoop rather than a full QApplication.exec() so this function can return a
     value once the user's done, rather than exiting the process - new territory for this codebase's
@@ -38,7 +40,7 @@ def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None] |
     window.setWindowTitle("halide · quick calibrate")
     window.load_files([Path(path)])
 
-    result_holder: list[tuple[DensityProfile, ToneCurveParams | None] | None] = [None]
+    result_holder: list[tuple[DensityProfile, ToneCurveParams | None, str | None] | None] = [None]
     loop = QEventLoop()
 
     def on_completed(value: object) -> None:

@@ -350,7 +350,8 @@ class SaveProfileDialog(QDialog):
 class MainWindow(QWidget):
     """`is_pick_session=True` is the one-shot `invert --pick` variant (see quick_pick.py): one frame,
     so no filmstrip, roll loading or contact sheet; the red button reads "Develop" and emits
-    `pickCompleted` with (DensityProfile, tone override) - or None if the window is closed first."""
+    `pickCompleted` with (DensityProfile, tone override, reliability warning or None) - or None if the
+    window is closed first."""
 
     pickCompleted = Signal(object)
 
@@ -476,6 +477,12 @@ class MainWindow(QWidget):
         panel.addWidget(coverage_title)
         self.wedge = StepWedge()
         panel.addWidget(self.wedge)
+        # Only while the fit can't be trusted over the whole roll (D-2): Save stays allowed.
+        self.reliability_note = QLabel("")
+        self.reliability_note.setWordWrap(True)
+        self.reliability_note.setStyleSheet(f"color: {theme.TEXT_WARNING};")
+        self.reliability_note.setVisible(False)
+        panel.addWidget(self.reliability_note)
 
         points_header = QHBoxLayout()
         points_title = QLabel("NEUTRAL POINTS  (?)")
@@ -963,7 +970,12 @@ class MainWindow(QWidget):
             WedgeTick(v.index + 1, v.green_density, agreement_colour(v), v.index == self.session.selected)
             for v in views
         ]
-        self.wedge.set_state(self.session.wedge_range(), ticks)
+        wedge = self.session.wedge_range()
+        reliability = self.session.reliability(wedge)
+        note = reliability.warning() if reliability is not None else None
+        self.wedge.set_state(wedge, ticks, reliability.reliable_range if note else None)
+        self.reliability_note.setText(note or "")
+        self.reliability_note.setVisible(note is not None)
 
     def _refresh_notice(self, views: list[PointView]) -> None:
         worst = self.session.worst()
@@ -1087,7 +1099,9 @@ class MainWindow(QWidget):
                 print(console.warning(view.note))
         if self.is_pick_session:
             self._pick_result_emitted = True
-            self.pickCompleted.emit((profile, self.session.tone_override))
+            reliability = self.session.reliability()
+            note = reliability.warning() if reliability is not None else None
+            self.pickCompleted.emit((profile, self.session.tone_override, note))
             self.close()
             return
         dialog = SaveProfileDialog(self, self.session.profile_to_save(), self.session.sidecars(), self._profile_name)

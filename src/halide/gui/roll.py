@@ -218,6 +218,13 @@ class CalibrationSession:
             return str(exc)
         return None
 
+    def reliability(self, wedge: tuple[float, float] | None = None) -> anchors.Reliability | None:
+        """How far the live fit can be trusted over the roll's density range (`wedge`, if the
+        caller already has wedge_range()) - None until there's a fit (fit_problem's refusals
+        included) and the roll's previews have been measured."""
+        wedge = self.wedge_range() if wedge is None else wedge
+        return anchors.fit_reliability(self.points, self.reference, wedge)
+
     def views(self) -> list[PointView]:
         reference = self.reference
         agreements = anchors.agreement(self.points, reference)

@@ -175,6 +175,12 @@ def _destination(args: argparse.Namespace) -> str:
     return f"{destination} + contact sheet {args.contact_sheet}" if args.contact_sheet else destination
 
 
+# R-050: the automatic tiers are approximate (CLAUDE.md, auto calibration's limits); say what's better.
+AUTO_CALIBRATION_ADVICE = (
+    "automatic estimate - for the most faithful colour, pick neutral points with `halide calibrate`"
+)
+
+
 def _calibration_text(args: argparse.Namespace, profile, saved_tone) -> str:
     if profile is None:
         return f"auto{_SEP}estimated separately for each frame"
@@ -332,9 +338,12 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
             sheet.warn("Calibration", f"skipped unreadable {name}")
         for caught_warning in caught:
             sheet.warn("Calibration", str(caught_warning.message))
+        sheet.note("Calibration", AUTO_CALIBRATION_ADVICE)
     else:
         density_profile, saved_tone = resolve_density_profile(args)  # profile may be None -> per-frame auto
         sheet.row("Calibration", _calibration_text(args, density_profile, saved_tone))
+        if density_profile is None:
+            sheet.note("Calibration", AUTO_CALIBRATION_ADVICE)
 
     saved_path = maybe_save_profile(args, density_profile, tone=saved_tone, scan=scan_reference, announce=False)
     if saved_path is not None:

@@ -8,6 +8,7 @@ import pytest
 
 from halide.calibration.profile_store import load_profile
 from halide.cli.main import main
+from halide.core.types import DensityProfile
 from halide.io.tiff import write_tiff
 from tests.unit.test_icc import LINEAR_TAGS, build_icc
 
@@ -468,3 +469,23 @@ def test_profile_delete_with_slash_is_rejected_before_touching_anything(negative
     with pytest.raises(SystemExit):
         main(["profile", "delete", "../roll16"])
     assert (isolated_profiles_dir / "roll16.json").exists()
+
+
+def test_saving_narrow_picks_warns_where_the_fit_holds(negative_tiff, tmp_path, monkeypatch, capsys, isolated_profiles_dir):
+    # D-2: picks that only pin the fit down over part of the frame are still saved, with the
+    # picker's own "Fit reliable over …" note as a warning.
+    picked = DensityProfile(white_balance=(1.5, 1.0, 0.7), density_scale=(1.1, 1.0, 0.9), source="manual")
+    note = "Fit reliable over D 0.9-1.3 only - add a point in the shadows or highlights for the ends of the roll"
+    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: (picked, None, note))
+    assert main(["invert", str(negative_tiff), str(tmp_path / "p.tiff"), "--pick", "--save-profile-as", "narrow"]) == 0
+    assert (isolated_profiles_dir / "narrow.json").exists()
+    out = capsys.readouterr().out
+    assert "⚠ Warning: " + note in out
+
+    # A fit that holds over the whole frame saves quietly; so does a pick without saving.
+    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: (picked, None, None))
+    assert main(["invert", str(negative_tiff), str(tmp_path / "q.tiff"), "--pick", "--save-profile-as", "wide"]) == 0
+    assert "Fit reliable" not in capsys.readouterr().out
+    monkeypatch.setattr("halide.gui.quick_pick.run_quick_pick", lambda path: (picked, None, note))
+    assert main(["invert", str(negative_tiff), str(tmp_path / "r.tiff"), "--pick"]) == 0
+    assert "Fit reliable" not in capsys.readouterr().out

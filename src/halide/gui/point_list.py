@@ -17,10 +17,10 @@ ROW_HEIGHT = 24
 
 CC_EXPLANATION = (
     "How far each point is from what the other points agree neutral is, as a colour-printing filter "
-    "value: CC is Kodak's Colour Compensating scale (density × 100, so CC 10 = 0.10), the unit of a "
-    "dichroic enlarger head's filter dials. The letter is the colour the point would print "
-    "(R/G/B, or C/M/Y for a lack of red/green/blue). Measured on the density-balanced negative, "
-    "before the paper curve. Shown from 3 points: with 2, the line passes through both.\n\n"
+    "pack: CC is Kodak's Colour Compensating scale (density × 100, so CC 10 = 0.10), the unit of a "
+    "dichroic enlarger head's filter dials. The pack is the cast the point would print, in Y/M/C "
+    "dials as you'd set them on the head - a red cast reads as M + Y, and CC 20Y + 10M is an "
+    "orange-yellow. Measured on the density-balanced negative, before the paper curve. Shown from 3 points: with 2, the line passes through both.\n\n"
     "Around CC 5 or more, check the object really was neutral (a cream wall, a sunlit cloud edge, "
     "skin...). Deal with the worst point first: one bad point makes the others read a few CC off too."
 )
@@ -66,7 +66,7 @@ class _Row(QFrame):
 
         agreement = QLabel(f"● {view.agreement.label()}" if view.agreement else "·")
         agreement.setStyleSheet(f"color: {colour};")
-        agreement.setFixedWidth(76)
+        agreement.setFixedWidth(104)  # "● CC 20Y + 10M"
         layout.addWidget(agreement)
 
         remove = QPushButton("✕")
