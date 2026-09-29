@@ -31,6 +31,11 @@ def _default_device_is_cpu_in_tests(monkeypatch):
     # Likewise a developer's own HALIDE_GPU_SERVICE=0 (the troubleshooting switch back to per-worker
     # GPU mode) mustn't change which mode the service tests get; tests that want it set it.
     monkeypatch.delenv("HALIDE_GPU_SERVICE", raising=False)
+    # And the shell's colour settings mustn't decide what the output tests see: FORCE_COLOR makes
+    # halide (and Python 3.14's argparse help) emit escape codes into captured output, which broke
+    # 12 wording/help tests in a shell that had FORCE_COLOR=3. Tests about colour set them.
+    for name in ("FORCE_COLOR", "NO_COLOR"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
