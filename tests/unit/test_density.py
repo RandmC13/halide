@@ -128,13 +128,13 @@ def test_leave_one_out_exposes_a_bad_point_that_the_full_fit_hides():
     # ...judged against the others, it shows its true size and direction and is the largest.
     loo = [describe_cast(r) for r in leave_one_out_residuals(points)]
     assert loo[-1][0] == pytest.approx(0.05 * AXIS_SCALE[2] * 100, rel=1e-6)
-    assert loo[-1][1] == "Y"
+    assert loo[-1][1] == "CC 4Y"
     assert max(cc for cc, _ in loo[:-1]) < loo[-1][0]
     # Only one good point (D 1.6) shares its tone range, and without that point the bad one alone
     # defines the top of the line - so the neighbour reads as disagreeing in the *opposite*
     # direction. Two points disagreeing is the honest answer until a third object of similar tone
     # settles which one is off; points far from the disagreement stay small.
-    assert loo[4][1] == "B" and loo[4][0] > 1.5
+    assert loo[4][1].endswith("M + 2C") and loo[4][0] > 1.5  # blue: magenta + cyan
     assert max(cc for cc, _ in loo[:3]) < 1.0
 
 
@@ -157,25 +157,43 @@ def test_residuals_flag_an_off_axis_point_with_its_colour():
     cc, direction = describe_cast(residuals[-1])
     # balanced deviation = scale * deviation: R +0.0672, B -0.0468 -> spread 0.114 -> CC 11.4
     assert cc == pytest.approx((0.06 * AXIS_SCALE[0] + 0.06 * AXIS_SCALE[2]) * 100, rel=1e-6)
-    assert direction == "R"
+    assert direction == "CC 11Y + 7M"  # warm: short of blue, extra red
     assert all(describe_cast(r)[0] < 1e-6 for r in residuals[:4])
 
 
 @pytest.mark.parametrize(
     "deviation, expected",
     [
-        ((0.10, -0.05, -0.05), (15.0, "R")),
-        ((-0.05, 0.10, -0.05), (15.0, "G")),
-        ((-0.05, -0.05, 0.10), (15.0, "B")),
-        ((-0.10, 0.05, 0.05), (15.0, "C")),
-        ((0.05, -0.10, 0.05), (15.0, "M")),
-        ((0.05, 0.05, -0.10), (15.0, "Y")),
+        # R/G/B are made from pairs of dials, as on a dichroic head - never a filter of the colour itself
+        ((0.10, -0.05, -0.05), (15.0, "CC 15Y + 15M")),  # red
+        ((-0.05, 0.10, -0.05), (15.0, "CC 15Y + 15C")),  # green
+        ((-0.05, -0.05, 0.10), (15.0, "CC 15M + 15C")),  # blue
+        ((-0.10, 0.05, 0.05), (15.0, "CC 15C")),  # cyan: short of red
+        ((0.05, -0.10, 0.05), (15.0, "CC 15M")),  # magenta: short of green
+        ((0.05, 0.05, -0.10), (15.0, "CC 15Y")),  # yellow: short of blue
+        # two filters of different size, largest first (review 2.1-9: this used to read "CC 20 R")
+        ((0.10, 0.0, -0.10), (20.0, "CC 20Y + 10M")),
+        ((0.10, -0.03, -0.07), (17.0, "CC 17Y + 13M")),
+        # neutral density is removed: a uniform offset is no cast at all
+        ((0.07, 0.07, 0.07), (0.0, "neutral")),
+        ((0.0, 0.0, 0.0), (0.0, "neutral")),
+        ((0.002, 0.0, -0.002), (0.4, "neutral")),  # rounds to nothing
     ],
 )
-def test_describe_cast_names_filter_value_and_direction(deviation, expected):
-    cc, direction = describe_cast(deviation)
+def test_describe_cast_names_a_filter_pack(deviation, expected):
+    cc, pack = describe_cast(deviation)
     assert cc == pytest.approx(expected[0])
-    assert direction == expected[1]
+    assert pack == expected[1]
+
+
+def test_describe_cast_largest_dial_is_the_agreement_magnitude():
+    # The bands (CC 5 / 10) are judged on the magnitude, which the filter naming didn't change.
+    rng = np.random.default_rng(3)
+    for d in rng.normal(0, 0.05, (200, 3)):
+        cc, pack = describe_cast(d)
+        assert cc == pytest.approx((d.max() - d.min()) * 100)
+        if pack != "neutral":
+            assert int(pack.removeprefix("CC ").split(" + ")[0][:-1]) == int(np.floor(cc + 0.5))
 
 
 def test_fit_rejects_too_few_or_flat_points():

@@ -153,7 +153,11 @@ def test_batch_cli_prints_its_settings_as_one_run_sheet_before_developing(roll_d
     assert list(rows) == ["Roll", "Scans", "Calibration", "Output", "Compute", "Workers"]
     nbsp = "\u00a0"  # RunSheet.SEP's non-breaking space
     assert rows["Roll"].replace(" ", "") == f"in{nbsp}·4frames→{out_dir}"  # the long tmp path wraps
-    assert rows["Calibration"] == f"auto{nbsp}· one profile for the whole roll, from 4 frames"
+    # R-050: the automatic tiers point to the faithful one, on a dimmed line of their own
+    assert rows["Calibration"] == (
+        f"auto{nbsp}· one profile for the whole roll, from 4 frames automatic estimate - for the most "
+        "faithful colour, pick neutral points with `halide calibrate`"
+    )
     assert rows["Output"] == f"print{nbsp}· grade 0.80{nbsp}· exposure fitted per frame"
     assert rows["Workers"] == "1 (--workers)"
 
@@ -246,3 +250,14 @@ def test_batch_skip_existing_contact_sheet_covers_new_and_old_frames(roll_dir, t
     assert main(["contact", str(out_dir), str(reference), "--frame-width", "60", "--quiet", "--workers", "1"]) == 0
     with Image.open(reference) as a, Image.open(sheet) as b:
         assert a.size == b.size  # covers all 5 frames, not just the newly-developed one
+
+
+@pytest.mark.parametrize(
+    "source, advised",
+    [(["--auto-density-roll"], True), (["--auto-density"], True), (["--rm", "2.0", "--bm", "1.4"], False)],
+)
+def test_run_sheet_advises_picking_points_after_an_automatic_estimate(roll_dir, tmp_path, capsys, source, advised):
+    assert main(["batch", str(roll_dir), str(tmp_path / "out"), *source, "--workers", "1"]) == 0
+    out = " ".join(capsys.readouterr().out.split())  # a long row wraps with a hanging indent
+    advice = "automatic estimate - for the most faithful colour, pick neutral points with `halide calibrate`"
+    assert (advice in out) is advised

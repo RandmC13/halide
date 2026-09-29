@@ -305,7 +305,9 @@ def resolve_density_profile(
         result = run_quick_pick(args.input)
         if result is None:
             raise SystemExit("no calibration picked — closed without using a calibration")
-        return result
+        profile, tone, reliability_warning = result
+        args.pick_reliability_warning = reliability_warning  # shown if the picks are saved (maybe_save_profile)
+        return profile, tone
 
     # Interactive runs were already asked (choose_calibration_source); this is the non-interactive
     # (or cancelled) path.
@@ -360,4 +362,9 @@ def maybe_save_profile(
             )
     if announce:
         print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))
+    # Picked points that only pin the fit down over part of the frame (D-2): saved all the same,
+    # but a profile is meant for the whole roll, so say where it holds.
+    reliability_warning = getattr(args, "pick_reliability_warning", None)
+    if reliability_warning:
+        print(console.warning(reliability_warning))
     return path

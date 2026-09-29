@@ -168,22 +168,58 @@ def leave_one_out_residuals(rgbs: Sequence[tuple[float, float, float]]) -> np.nd
     return out
 
 
-_PRIMARY = "RGB"
-_COMPLEMENT = "CMY"  # cyan = minus red, magenta = minus green, yellow = minus blue
+def predicted_cast_error(
+    neutral_rgbs: Sequence[tuple[float, float, float]],
+    profile: DensityProfile,
+    green_densities: Sequence[float],
+    pick_error: float,
+) -> np.ndarray:
+    """How far off neutral (in CC, the same scale describe_cast measures) a true neutral at each of
+    `green_densities` is predicted to print with `profile` - the fit_density_balance of
+    `neutral_rgbs` - if every picked point's density was off by a random `pick_error` per channel.
+
+    The least-squares line's own uncertainty: each non-green channel's fitted density at D_G has
+    variance pick_error^2 * [1, D_G] (A^T A)^-1 [1, D_G]^T, A being the fit's [1, D_G] design
+    matrix (the same for red and blue). In print terms that's density_scale_c times as much, and
+    the two layers' errors are independent, so the prediction is their sum - the cast when they
+    err in opposite directions. Small near the points' own densities, it grows with distance from
+    them: extrapolating a line fitted over a narrow band is what goes wrong (a simulation of three
+    points 0.1 D apart, tests/unit/test_anchors.py, matches this to within ~25%)."""
+    rgb = np.maximum(np.asarray(neutral_rgbs, dtype=np.float64).reshape(-1, 3), MIN_TRANSMITTANCE)
+    green = np.log10(1.0 / rgb[:, _REFERENCE_CHANNEL])
+    design = np.column_stack([np.ones_like(green), green])
+    covariance = np.linalg.inv(design.T @ design)
+    at = np.column_stack([np.ones(len(np.atleast_1d(green_densities))), np.atleast_1d(green_densities)])
+    line_sd = pick_error * np.sqrt(np.einsum("ij,jk,ik->i", at, covariance, at))
+    scale = profile.density_scale
+    return 100.0 * (scale[0] + scale[2]) * line_sd
+
+
+_FILTER_ORDER = "YMC"  # a dichroic head's dials; ties are named in this order
 
 
 def describe_cast(deviation: Sequence[float]) -> tuple[float, str]:
-    """A per-channel deviation row (see neutral_residuals) as a colour-printing filter value:
-    (CC units, direction letter). CC is Kodak's Colour Compensating filter scale — density x 100,
-    so CC10 = 0.10 — the unit of a dichroic enlarger head's filter dials. The value is the spread
-    between the most and least dense channel; the direction is the channel that deviates most,
-    named as a primary (R/G/B) if it's in excess or as its complement (C/M/Y) if it's lacking. A
-    0.15 blue deficit reads "CC 15 Y", a 0.15 red excess "CC 15 R"."""
+    """A per-channel deviation row (see neutral_residuals) as a colour-printing filter pack:
+    (CC units, "CC 20Y + 10M"). CC is Kodak's Colour Compensating scale - density x 100, so
+    CC10 = 0.10 - the unit of a dichroic enlarger head's filter dials.
+
+    The cast is expressed as cyan/magenta/yellow filter densities (a point short of blue reads as
+    yellow; a point with extra red as magenta + yellow, the way a dichroic head makes red), then
+    neutral density - the smallest of the three - is removed, as a printer clears the unused dial.
+    What's left is one or two filters, largest first, each rounded to whole CC:
+    (+0.1, 0, -0.1) -> "CC 20Y + 10M". The value returned is the largest dial - the spread between
+    the most and least dense channel, which the agreement bands are judged on. A pack that rounds
+    to nothing is "neutral"."""
     d = np.asarray(deviation, dtype=np.float64)
     magnitude = float((d.max() - d.min()) * 100.0)
-    channel = int(np.argmax(np.abs(d)))
-    direction = _PRIMARY[channel] if d[channel] > 0 else _COMPLEMENT[channel]
-    return magnitude, direction
+    # A filter absorbs its complement: C holds back red, M green, Y blue. Excess red density on the
+    # print = less cyan; so filter density c = max(d) - d_c (zero for the most-present channel).
+    dials = {"C": d.max() - d[0], "M": d.max() - d[1], "Y": d.max() - d[2]}
+    rounded = [(int(np.floor(dials[f] * 100.0 + 0.5)), f) for f in _FILTER_ORDER]  # half up
+    pack = sorted(((cc, f) for cc, f in rounded if cc > 0), key=lambda item: -item[0])
+    if not pack:
+        return magnitude, "neutral"
+    return magnitude, "CC " + " + ".join(f"{cc}{f}" for cc, f in pack)
 
 
 def apply_white_balance(img: np.ndarray, profile: DensityProfile) -> np.ndarray:
