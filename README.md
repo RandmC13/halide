@@ -123,24 +123,28 @@ whether you did.
 
 **darktable** (check your version for exact names)
 
-1. In the darkroom, look at the history stack: filmic rgb, sigmoid, base curve, tone curve,
+1. In the darkroom, look at the history stack. The scene-referred workflow applies exposure and
+   filmic rgb or sigmoid automatically to raw files, so turn those off for the export (check your
+   version). Also filmic rgb, sigmoid, base curve, tone curve,
    rgb curve, local contrast, and colour balance should not be active. Basic exposure, crop, lens
    correction, denoise and spot removal are fine.
 2. In the darkroom's *output color profile* module, set the profile to *linear Rec2020 RGB*.
 3. In the lighttable's *export* module, set *target storage* to *file on disk* and *format* to
    *TIFF*. Set *bit depth* to *32 bit (float)* (or 16 bit), *compression* to *uncompressed* or
    *deflate*, and *profile* to *linear Rec2020 RGB*.
-4. Export. Some darktable versions have written the wrong profile into TIFFs; halide notices
-   (see Troubleshooting).
+4. Export. If the profile embedded in the TIFF isn't linear, halide rejects the file with a message
+   saying so (see Troubleshooting).
 
 **RawTherapee** (check your version for exact names)
 
-1. In the *Color Management* tab of the editor, set *Output profile* to *RTv4_Rec2020*, and
-   *Output profile > TRC* to linear (gamma 1.0, slope 0). If your version has no linear TRC option
-   for it, choose a linear Rec2020 profile in *Preferences > Color Management > Output profile*
-   instead.
-2. In the *Exposure* and *Tone Mapping* panels leave curves, tone mapping and local contrast off.
-3. In *Save* (Ctrl+S), choose *TIFF* with *32-bit floating-point* (or 16-bit), and save.
+1. Choose a **linear** Rec.2020 (or other linear, wide-gamut) output profile and embed it in the
+   TIFF. The exact menu path is unverified and differs between versions: look for the output
+   profile in the *Color Management* tab, or in *Preferences*. The name *RTv4_Rec2020* may not be
+   linear, so don't assume it is.
+2. Leave curves, tone mapping and local contrast off.
+3. Save (Ctrl+S) as *TIFF*, 32-bit floating point if offered (or 16-bit).
+4. To check the result: halide rejects a non-linear profile with a specific message, and
+   `exiftool -icc_profile:all file.tif` shows what's embedded.
 
 If a file isn't suitable (gamma-encoded, no profile, the wrong kind of profile), halide rejects it
 and explains why. It will say, for example, "this profile is gamma-encoded (e.g. for display use).
@@ -230,8 +234,6 @@ all, so a cancelled run leaves no half-written file.
   set). Each profile is a small JSON file you can back up or copy to another machine.
 - **Plain output for logs.** `NO_COLOR=1`, or piping halide's output to a file, gives plain text
   lines with no colour or moving progress display.
-
-
 
 ## GPU acceleration (optional)
 
