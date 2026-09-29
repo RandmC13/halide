@@ -188,17 +188,19 @@ def test_failures_never_break_a_run(home, monkeypatch, capsys):
 
 def test_opt_out_skips_shell_detection_and_psutil(home, monkeypatch):
     import sys
+    import types
 
     monkeypatch.setenv("HALIDE_NO_COMPLETION", "1")
-    monkeypatch.delitem(sys.modules, "psutil", raising=False)
-
-    def no_detect():
-        raise AssertionError("detect_shell must not run")
-
-    monkeypatch.setattr(completion, "detect_shell", no_detect)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    touched = []
+    fake_psutil = types.ModuleType("psutil")
+    fake_psutil.Process = lambda *a, **k: touched.append("psutil.Process") or (_ for _ in ()).throw(OSError)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)  # real detect_shell would use this
+    real_detect = completion.detect_shell
+    monkeypatch.setattr(completion, "detect_shell", lambda: touched.append("detect_shell") or real_detect())
     completion.maybe_install_completion(build_parser())
-    assert "psutil" not in sys.modules
+    assert touched == []
 
 
 def test_failed_rc_edit_is_retried_next_run(home, monkeypatch):
