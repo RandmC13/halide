@@ -438,7 +438,15 @@ class MainWindow(QWidget):
 
         self._magnifier = Magnifier(self)
         self._build_ui()
-        self.setFixedSize(_compute_window_size())
+        size = _compute_window_size()
+        self.setFixedSize(size)
+        if size.height() <= _WINDOW_MIN.height():
+            # The smallest window only: with the reliability note showing and a drawer open the panel
+            # is otherwise ~50 px too tall, so it gives up its 9 px bottom margin and 2 px of spacing per gap (the point list
+            # gives up rows first, see point_list.py). Bigger windows keep the default margin.
+            margins = self._panel.contentsMargins()
+            self._panel.setContentsMargins(margins.left(), margins.top(), margins.right(), 0)
+            self._panel.setSpacing(4)
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self._remove_selected)
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, activated=self._remove_selected)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._deselect)
@@ -514,11 +522,6 @@ class MainWindow(QWidget):
         # right panel: wedge, points, notice, proof, drawers, primary
         panel = QVBoxLayout()
         panel.setSpacing(6)
-        # No bottom margin, so the Save button's lower edge lines up with the status line on the left
-        # (and the panel gets the 9 px back: with the reliability note showing and a drawer open the
-        # panel is otherwise ~50 px too tall for the smallest window).
-        margins = panel.contentsMargins()
-        panel.setContentsMargins(margins.left(), margins.top(), margins.right(), 0)
         panel_widget = QWidget()
         panel_widget.setFixedWidth(_PANEL_WIDTH)
         panel_widget.setLayout(panel)
@@ -533,6 +536,7 @@ class MainWindow(QWidget):
         self.reliability_note.setWordWrap(True)
         self.reliability_note.setStyleSheet(f"color: {theme.TEXT_WARNING};")
         self.reliability_note.setVisible(False)
+        self.reliability_note.setContentsMargins(0, 0, 0, 4)  # a gap above the NEUTRAL POINTS title
         panel.addWidget(self.reliability_note)
 
         points_header = QHBoxLayout()
