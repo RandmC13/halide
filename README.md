@@ -176,6 +176,10 @@ picker, or an automatic estimate. For a single frame:
 halide invert IMG_0158.tif IMG_0158-positive.tif --pick    # click neutrals on this frame
 ```
 
+Want to see what a run would do first? Add `--dry-run` to `batch` (or to `print`/`export` on a folder):
+halide shows the frames, outputs, calibration and worker count it would use, instantly, and develops,
+writes and asks nothing.
+
 Want to try settings before committing disk space? `halide batch roll16/ --contact-sheet
 preview.jpg` develops every frame at full quality but keeps only the contact sheet.
 

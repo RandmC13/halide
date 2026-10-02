@@ -514,6 +514,42 @@ def _size(n: int) -> str:
     return f"{n / 2**20:.0f} MiB" if n >= 2**20 else f"{n / 2**10:.0f} KiB"
 
 
+def _service_decision(jobs: list[BatchJob], device: ComputeDevice | None,
+                      workload: str) -> tuple[BatchCompute | None, int | None]:
+    """The checks that decide whether a batch can use the shared GPU service, with no side effects:
+    (the BatchCompute to use *instead* — CPU, or per-worker GPU with its fallback_reason — or None
+    when the service can be used, then the /dev/shm worker cap). One function, so a dry run's plan
+    (plan_compute) and a real run (batch_compute) can't disagree about which mode they'd take."""
+    if device is None or device.kind != "gpu":
+        return BatchCompute(device=device, workload=workload), None
+    if not _service_python_supported():
+        return BatchCompute(device=device, workload=workload,
+                            fallback_reason="the shared GPU service needs Python 3.13 or newer"), None
+    if not gpu_service_enabled():
+        value = os.environ.get(SERVICE_ENV, "").strip()
+        return BatchCompute(device=device, workload=workload,
+                            fallback_reason=f"turned off by {SERVICE_ENV}={value}"), None
+    shm_cap = shared_memory_worker_cap(jobs, workload)
+    if shm_cap == 0:
+        free = _shared_memory_free() or 0
+        needed = _shared_frame_bytes(jobs, workload) or 0
+        reason = (f"shared memory ({_SHM_DIR}) has {_size(free)} free, too little for one "
+                  f"{_size(needed)} frame")
+        return BatchCompute(device=device, workload=workload, fallback_reason=reason), None
+    return None, shm_cap
+
+
+def plan_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: str = "develop") -> BatchCompute:
+    """What batch_compute would give this batch, without starting anything (--dry-run): no GPU
+    service, no sweeping of old frames. When the service would be used the result has a placeholder
+    `service` (nothing is listening there) so `mode` and service_worker_count read as they would
+    in a real run; it must never be handed to a worker pool."""
+    fallback, shm_cap = _service_decision(jobs, device, workload)
+    if fallback is not None:
+        return fallback
+    return BatchCompute(device=device, workload=workload, service=GpuService(None, ""), shm_cap=shm_cap)
+
+
 @contextlib.contextmanager
 def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: str = "develop",
                   cancel: Callable[[], bool] | None = None) -> Iterator[BatchCompute]:
@@ -532,29 +568,15 @@ def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: 
     contact sheet window, closed mid-startup) isn't stuck waiting out the service's full startup
     timeout on a hung driver probe. CLI callers don't have anything to cancel on, so they pass
     nothing."""
-    if device is None or device.kind != "gpu":
-        yield BatchCompute(device=device, workload=workload)
-        return
-    from halide.shared_frames import sweep_stale
+    if device is not None and device.kind == "gpu":
+        from halide.shared_frames import sweep_stale
 
-    # F12: frames a batch killed outright left behind (nothing of it survived to sweep them) —
-    # first, so the /dev/shm cap below counts the space they held as free.
-    sweep_stale()
-    if not _service_python_supported():
-        yield BatchCompute(device=device, workload=workload,
-                           fallback_reason="the shared GPU service needs Python 3.13 or newer")
-        return
-    if not gpu_service_enabled():
-        value = os.environ.get(SERVICE_ENV, "").strip()
-        yield BatchCompute(device=device, workload=workload, fallback_reason=f"turned off by {SERVICE_ENV}={value}")
-        return
-    shm_cap = shared_memory_worker_cap(jobs, workload)
-    if shm_cap == 0:
-        free = _shared_memory_free() or 0
-        needed = _shared_frame_bytes(jobs, workload) or 0
-        reason = (f"shared memory ({_SHM_DIR}) has {_size(free)} free, too little for one "
-                  f"{_size(needed)} frame")
-        yield BatchCompute(device=device, workload=workload, fallback_reason=reason)
+        # F12: frames a batch killed outright left behind (nothing of it survived to sweep them) —
+        # first, so the /dev/shm cap below counts the space they held as free.
+        sweep_stale()
+    fallback, shm_cap = _service_decision(jobs, device, workload)
+    if fallback is not None:
+        yield fallback
         return
     from halide.shared_frames import batch_prefix, sweep
 

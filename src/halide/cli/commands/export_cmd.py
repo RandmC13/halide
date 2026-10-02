@@ -10,6 +10,7 @@ from pathlib import Path
 
 from halide.batch.orchestrator import (
     BatchJob,
+    plan_compute,
     default_export_worker_count,
     export_memory_budget_warning,
     run_export_batch,
@@ -19,7 +20,11 @@ from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 from halide.cli._help import add_workers_argument
 from halide.cli._output_policy import (
+    add_dry_run_argument,
     add_output_policy_arguments,
+    check_output_folder,
+    plan_bulk_jobs,
+    refuse_dry_run_for_single_file,
     check_input_file,
     check_not_input,
     check_output_parent,
@@ -34,7 +39,9 @@ from halide.cli._run_log import RunRecord, add_log_arguments
 from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
+    dry_run_line,
     frame_count,
+    outputs_row,
     roll_row,
     skipped_row,
     start_compute,
@@ -56,6 +63,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "when `input` is a folder",
     )
     add_output_policy_arguments(parser)
+    add_dry_run_argument(parser)
     add_log_arguments(parser)
     parser.add_argument(
         "--quality", type=int, default=95, help="JPEG quality, 1-100 (default: 95, ignored for PNG)"
@@ -81,6 +89,7 @@ def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
     from halide import device as halide_device
     from halide.processing import ScanColorError, export_delivery_image
 
+    refuse_dry_run_for_single_file(args)
     check_input_file(input_path)
 
     output_path = Path(args.output)
@@ -127,7 +136,11 @@ def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
 
 def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
     output_dir = Path(args.output)
-    prepare_output_folder(output_dir)
+    dry = args.dry_run
+    if dry:
+        check_output_folder(output_dir)  # a dry run creates nothing
+    else:
+        prepare_output_folder(output_dir)
 
     files, left_out = list_scans(input_dir)
     if not files:
@@ -140,22 +153,33 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
     ]
 
     all_jobs = jobs
-    jobs, skipped, _ = resolve_bulk_jobs(jobs, args, interactive=is_interactive())
+    existing = 0
+    if dry:  # never asks, never refuses for want of a terminal
+        jobs, skipped, _, existing = plan_bulk_jobs(jobs, args)
+    else:
+        jobs, skipped, _ = resolve_bulk_jobs(jobs, args, interactive=is_interactive())
     developing = {j.output_path for j in jobs}
     kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
     if not jobs:
+        if dry:
+            print(console.success(f"Dry run — nothing {console.VERB_PAST['export'].lower()}. Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
+            return 0
         print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
         return 0
 
     # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
     with contextlib.ExitStack() as stack:
         with console.RunSheet(quiet=args.quiet) as sheet:
-            roll_row(sheet, input_dir, len(jobs), str(output_dir))
+            destination = f"{output_dir} (would be created)" if dry and not output_dir.exists() else str(output_dir)
+            roll_row(sheet, input_dir, len(jobs), destination)
             skipped_row(sheet, left_out)
             if skipped:
                 sheet.row("Skipping", f"{frame_count(skipped)} already developed")
-            compute = start_compute(stack, sheet, jobs, device, "export")
-            compute_row(sheet, device, compute)
+            if dry:
+                outputs_row(sheet, policy_from_args(args), existing)
+            # A dry run only plans: the GPU service is never started.
+            compute = plan_compute(jobs, device, "export") if dry else start_compute(stack, sheet, jobs, device, "export")
+            compute_row(sheet, device, compute, planned=dry)
             workers = choose_workers(
                 args, jobs, sheet,
                 default_count=lambda jobs: default_export_worker_count(jobs, device=device),
@@ -163,6 +187,11 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
                 device=device,
                 compute=compute,
             )
+
+        if dry:
+            print(dry_run_line("export", len(jobs), str(output_dir), kept=len(kept), existing=existing,
+                               policy=policy_from_args(args)))
+            return 0
 
         record = RunRecord(args, "export", output_dir)
         record.start(sheet, jobs, list(kept))

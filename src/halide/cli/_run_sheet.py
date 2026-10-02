@@ -50,14 +50,17 @@ def start_compute(stack: contextlib.ExitStack, sheet: RunSheet, jobs: list[Batch
         return stack.enter_context(batch_compute(jobs, device, workload))
 
 
-def compute_row(sheet: RunSheet, device: ComputeDevice, compute: BatchCompute | None = None) -> None:
+def compute_row(sheet: RunSheet, device: ComputeDevice, compute: BatchCompute | None = None, *,
+                planned: bool = False) -> None:
     """The run sheet's Compute row (see cli/_device_args.py::device_row), plus, when there's
     something to add: how a GPU batch's workers share the card (`compute`), why an `auto` choice
     fell back from GPU to CPU, or (Task 6b) that an NVIDIA card was found but GPU support isn't
-    installed."""
+    installed. `planned` (--dry-run, `compute` from orchestrator.plan_compute): nothing was started,
+    so the sharing is worded as what a real run would do."""
     text = device_row(device)
     if compute is not None and compute.mode == "service":
-        text = f"{text}{RunSheet.SEP}one GPU process shared by all workers"
+        shared = "would share one GPU process between the workers" if planned else "one GPU process shared by all workers"
+        text = f"{text}{RunSheet.SEP}{shared}"
     elif compute is not None and compute.mode == "per_worker":
         text = f"{text}{RunSheet.SEP}one GPU context per worker"
     hint = gpu_hint(device)
@@ -122,3 +125,40 @@ def _choose_service_workers(args: argparse.Namespace, jobs: list[BatchJob], shee
         reason = "auto-selected from free memory and CPU cores"
     sheet.row("Workers", f"{workers}{RunSheet.SEP}{reason} (--workers N overrides)")
     return workers
+
+
+def outputs_row(sheet: RunSheet, policy, existing: int) -> None:
+    """A dry run's row for outputs that already exist: what the real run would do about them. Nothing
+    for --skip-existing (the "Skipping" row says it) or when nothing exists."""
+    from halide.cli._output_policy import OutputPolicy
+
+    if not existing or policy is OutputPolicy.SKIP_EXISTING:
+        return
+    if policy is OutputPolicy.OVERWRITE:
+        sheet.row("Outputs", f"{existing} would be replaced")
+    else:
+        sheet.warn("Outputs", f"{existing} already exist — a real run would ask (or --overwrite / --skip-existing)")
+
+
+def dry_run_line(verb: str, n_frames: int, destination: str, *, kept: int, existing: int, policy,
+                 preview_sheet: str | None = None) -> str:
+    """The one line a dry run ends with: "Dry run — nothing developed. 25 frames would be developed
+    → out/, 12 kept." `verb` is the command's key in console.VERB_PAST/NOUN ("batch", "print",
+    "export"); `existing` only counts when it needs saying (the default policy asks, --overwrite
+    replaces); `preview_sheet` is a batch preview's contact sheet, which has no output folder."""
+    from halide.cli._output_policy import OutputPolicy
+
+    past = console.VERB_PAST[verb].lower()
+    what = console.plural(n_frames, console.NOUN[verb])
+    if preview_sheet is not None:
+        head = f"{what} would be {past} for the contact sheet {preview_sheet}"
+    else:
+        head = f"{what} would be {past} → {destination}"
+    extras = []
+    if kept:
+        extras.append(f"{kept} kept")
+    if existing and policy is OutputPolicy.OVERWRITE:
+        extras.append(f"{existing} would be replaced")
+    elif existing and policy is OutputPolicy.ASK:
+        extras.append(f"{existing} already exist (a real run would ask)")
+    return console.success(f"Dry run — nothing {past}. {', '.join([head, *extras])}.")

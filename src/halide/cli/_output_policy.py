@@ -44,6 +44,23 @@ def add_output_policy_arguments(parser, *, saves_profile: bool = False) -> None:
     )
 
 
+DRY_RUN_HELP = (
+    "Show what this run would do — frames, outputs, calibration, workers — without developing "
+    "anything or writing any file"
+)
+
+
+def add_dry_run_argument(parser) -> None:
+    """`--dry-run`, shared by batch and the folder form of print/export."""
+    parser.add_argument("--dry-run", action="store_true", help=DRY_RUN_HELP)
+
+
+def refuse_dry_run_for_single_file(args) -> None:
+    """print/export take a file or a folder; only a folder run has anything to plan."""
+    if getattr(args, "dry_run", False):
+        raise SystemExit("--dry-run plans a folder run; a single file has nothing to plan")
+
+
 def policy_from_args(args) -> OutputPolicy:
     if getattr(args, "overwrite", False):
         return OutputPolicy.OVERWRITE
@@ -141,6 +158,30 @@ def resolve_bulk_jobs(
     return kept_jobs, skipped, kept_outputs
 
 
+def plan_bulk_jobs(
+    jobs: list,
+    args,
+    *,
+    extra_pairs: list[tuple[Path, Path]] | None = None,
+) -> tuple[list, int, set[Path], int]:
+    """resolve_bulk_jobs for a dry run: the same refusal to write over a scan and the same
+    --overwrite / --skip-existing filtering, but the default (ASK) never prompts and never refuses
+    for want of a terminal — every frame stays in the plan and the caller reports how many a real
+    run would ask about. Returns (jobs, skipped under --skip-existing, surviving output paths,
+    how many of the *jobs'* outputs already exist)."""
+    pairs = [(job.input_path, job.output_path) for job in jobs]
+    check_not_input(pairs)
+    existing = sum(1 for _, out in pairs if out.exists())
+    all_pairs = pairs + list(extra_pairs or [])
+    policy = policy_from_args(args)
+    if policy is OutputPolicy.SKIP_EXISTING:
+        kept_outputs = {out for _, out in all_pairs if not out.exists()}
+    else:
+        kept_outputs = {out for _, out in all_pairs}
+    kept_jobs = [job for job in jobs if job.output_path in kept_outputs]
+    return kept_jobs, len(jobs) - len(kept_jobs), kept_outputs, existing
+
+
 # --- Pre-flight checks (F25): before any work starts, each a plain error naming the path ----------
 
 
@@ -167,6 +208,14 @@ def _check_writable_folder(folder: Path) -> None:
     if not os.access(folder, os.W_OK | os.X_OK):
         raise SystemExit(f"halide can't write to {folder} (permission denied). "
                          f"Choose a different output folder, or fix its permissions")
+
+
+def check_output_folder(folder: Path) -> None:
+    """A dry run's version of prepare_output_folder: nothing is created. A folder that exists must
+    be writable, exactly as in a real run; one that doesn't is left for the run sheet to say
+    "(would be created)" — its parent isn't checked, as a real run would just make it."""
+    if folder.exists() or folder.is_symlink():
+        _check_writable_folder(folder)
 
 
 def prepare_output_folder(folder: Path) -> None:

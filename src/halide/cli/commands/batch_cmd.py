@@ -13,15 +13,26 @@ from pathlib import Path
 
 from halide import ignore_colour_matplotlib_warning
 from halide.io.roll import list_scans
-from halide.batch.orchestrator import BatchJob, default_worker_count, jobs_for_files, memory_budget_warning, run_batch
+from halide.batch.orchestrator import (
+    BatchJob,
+    default_worker_count,
+    jobs_for_files,
+    memory_budget_warning,
+    plan_compute,
+    run_batch,
+)
 from halide.batch.progress import cancel_notice, make_renderer
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.cli._device_args import add_device_argument, resolve_device_arg
 from halide.cli._help import add_workers_argument
 from halide.cli._output_policy import (
+    add_dry_run_argument,
     add_output_policy_arguments,
     check_input_folder,
+    check_output_folder,
+    OutputPolicy,
+    plan_bulk_jobs,
     is_interactive,
     policy_from_args,
     prepare_output_folder,
@@ -45,7 +56,9 @@ from halide.cli._run_log import RunRecord, add_log_arguments
 from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
+    dry_run_line,
     frame_count,
+    outputs_row,
     roll_row,
     skipped_row,
     start_compute,
@@ -76,6 +89,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_contact_layout_arguments(parser)
     parser.add_argument("--suffix", default="", help="Text to add to each output file name, before .tif")
     add_output_policy_arguments(parser, saves_profile=True)
+    add_dry_run_argument(parser)
     add_log_arguments(parser)
 
     add_stage_arguments(parser)
@@ -172,10 +186,12 @@ def _unknown_reference_warning(args: argparse.Namespace) -> str | None:
     )
 
 
-def _destination(args: argparse.Namespace) -> str:
+def _destination(args: argparse.Namespace, would_create: bool = False) -> str:
     if args.output_dir is None:
         return f"contact sheet {args.contact_sheet} only (a preview — no full-size TIFFs kept)"
     destination = f"{args.output_dir}"
+    if would_create:
+        destination += " (would be created)"
     return f"{destination} + contact sheet {args.contact_sheet}" if args.contact_sheet else destination
 
 
@@ -195,6 +211,49 @@ def _calibration_text(args: argparse.Namespace, profile, saved_tone) -> str:
         return text
     (rm, _, bm), (rs, _, bs) = profile.white_balance, profile.density_scale
     return f"manual{_SEP}white balance R ×{rm:g} B ×{bm:g}, density scale R {rs:g} B {bs:g}"
+
+
+def _no_calibration_text() -> str:
+    """The Calibration row of a dry run given no calibration source: a real run would ask (in a
+    terminal) or refuse; a dry run does neither, so it lists what the real prompt would offer."""
+    from halide.calibration.profile_store import list_profiles
+
+    readable = [(stem, profile) for stem, profile, problem in list_profiles() if problem is None]
+    newest = sorted(readable, key=lambda item: item[1].created_at or "", reverse=True)[:3]
+    text = "none given — a real run would ask you to choose"
+    if newest:
+        return f"{text} (saved: {', '.join(stem for stem, _ in newest)})"
+    return f"{text} — no saved profiles yet: halide calibrate ROLL_DIR"
+
+
+def _check_profile_exists(name: str) -> None:
+    from halide.calibration.profile_store import resolve_profile_path, suggest_profile_name
+
+    try:
+        resolve_profile_path(name)
+    except FileNotFoundError as exc:
+        suggestion = suggest_profile_name(name)
+        hint = f" — did you mean '{suggestion}'?" if suggestion else ""
+        raise SystemExit(f"{exc}{hint}") from exc
+
+
+def _dry_save_profile_row(args: argparse.Namespace, sheet: console.RunSheet, profile, no_source: bool) -> None:
+    """--save-profile-as in a dry run: nothing is saved, but the same refusal a real run would make
+    (nothing single to save) still stops it, and a name already taken is warned about."""
+    name = args.save_profile_as
+    if not name:
+        return
+    if not no_source and profile is None and not args.auto_density_roll:
+        maybe_save_profile(args, None)  # raises the real run's explanation
+    from halide.calibration.profile_store import find_profile, validate_profile_name
+
+    try:
+        validate_profile_name(name)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    sheet.row("Calibration", f"would save as {name!r} — reuse with --profile {name}")
+    if find_profile(name) is not None and policy_from_args(args) is not OutputPolicy.OVERWRITE:
+        sheet.warn("Calibration", f"a profile named {name!r} already exists — a real run would ask (or --overwrite)")
 
 
 def _output_text(stage: Stage, tone_params) -> str:
@@ -225,7 +284,10 @@ def run(args: argparse.Namespace) -> int:
 
     if args.output_dir is not None:
         output_dir = Path(args.output_dir)
-        prepare_output_folder(output_dir)
+        if args.dry_run:
+            check_output_folder(output_dir)  # a dry run creates nothing
+        else:
+            prepare_output_folder(output_dir)
         files, left_out = list_scans(input_dir)
         jobs = jobs_for_files(files, output_dir, suffix=args.suffix)
     else:
@@ -243,12 +305,16 @@ def run(args: argparse.Namespace) -> int:
     # A preview run's jobs (output_dir is None) keep nothing but a temp thumbnail, so there's
     # nothing there to protect; only real per-frame outputs and the contact sheet itself go
     # through the overwrite policy — combined into one decision, one prompt for the whole roll.
+    existing = 0
     if output_dir is not None:
         extra = [(sheet_path, sheet_path)] if sheet_path is not None else None
         all_jobs = jobs
-        jobs, skipped_frames, kept_outputs = resolve_bulk_jobs(
-            jobs, args, interactive=is_interactive(), extra_pairs=extra
-        )
+        if args.dry_run:  # never asks, never refuses for want of a terminal
+            jobs, skipped_frames, kept_outputs, existing = plan_bulk_jobs(jobs, args, extra_pairs=extra)
+        else:
+            jobs, skipped_frames, kept_outputs = resolve_bulk_jobs(
+                jobs, args, interactive=is_interactive(), extra_pairs=extra
+            )
         developing = {j.output_path for j in jobs}
         kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
         build_sheet = sheet_path is None or sheet_path in kept_outputs
@@ -257,10 +323,16 @@ def run(args: argparse.Namespace) -> int:
         kept = []
         # output_dir is None only reaches here with a contact sheet requested (checked above) — no
         # single "input" for a sheet, so only its own existence matters.
-        build_sheet = bool(
-            resolve_existing([(sheet_path, sheet_path)], policy_from_args(args), interactive=is_interactive())
-        )
+        if args.dry_run:
+            build_sheet = not (policy_from_args(args) is OutputPolicy.SKIP_EXISTING and sheet_path.exists())
+        else:
+            build_sheet = bool(
+                resolve_existing([(sheet_path, sheet_path)], policy_from_args(args), interactive=is_interactive())
+            )
 
+    if args.dry_run and not jobs:
+        print(console.success(f"Dry run — nothing developed. Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
+        return 0
     if output_dir is not None and not jobs:
         if sheet_path is None or not build_sheet:
             print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
@@ -275,13 +347,14 @@ def run(args: argparse.Namespace) -> int:
         print(console.success(f"Nothing to do — {sheet_path} already exists (--skip-existing)."))
         return 0
 
-    thumbnails = Path(tempfile.mkdtemp(prefix="halide-contact-")) if build_sheet else None
+    thumbnails = Path(tempfile.mkdtemp(prefix="halide-contact-")) if build_sheet and not args.dry_run else None
     try:
         if thumbnails is not None:
             jobs = [replace(job, thumbnail_path=thumbnails / f"{i:04d}.png") for i, job in enumerate(jobs)]
         return _run(
             args, stage, input_dir, jobs, roll_jobs=roll_jobs, output_dir=output_dir,
             skipped_frames=skipped_frames, build_sheet=build_sheet, left_out=left_out, kept=kept,
+            existing=existing,
         )
     finally:
         if thumbnails is not None:
@@ -290,21 +363,27 @@ def run(args: argparse.Namespace) -> int:
 
 def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], sheet: console.RunSheet,
              stack: contextlib.ExitStack, skipped_frames: int = 0, left_out=None,
-             roll_jobs: list[BatchJob] | None = None):
+             roll_jobs: list[BatchJob] | None = None, existing: int = 0):
     """Everything decided before developing starts — scan checks, scan-exposure matching,
     calibration, print settings, how the GPU is used, worker count — each reported on the run sheet
     as it's decided. On a GPU the shared GPU service starts here and runs until `stack` closes.
     `jobs` are the frames to develop; `roll_jobs` (default: the same) are every frame of the roll,
     which the roll-wide decisions are made from — they differ when resuming a roll.
+    With --dry-run the same decisions are made from headers and small files only: nothing is
+    created, saved, estimated or started, and what a real run would do reads as "would".
     Returns (jobs, density_profile, tone_params, scan_reference, workers, device, compute)."""
     from halide.processing import ScanColorError, estimate_roll_density_profile, read_roll_scan_metadata
 
     if roll_jobs is None:
         roll_jobs = jobs
-    roll_row(sheet, input_dir, len(jobs), _destination(args))
+    dry = args.dry_run
+    would_create = dry and args.output_dir is not None and not Path(args.output_dir).exists()
+    roll_row(sheet, input_dir, len(jobs), _destination(args, would_create))
     skipped_row(sheet, left_out)
     if skipped_frames:
         sheet.row("Skipping", f"{frame_count(skipped_frames)} already developed")
+    if dry:
+        outputs_row(sheet, policy_from_args(args), existing)
 
     per_frame_auto = args.auto_density and not args.auto_density_roll
     matching = args.match_scan_exposure and not (stage is Stage.INVERT_ONLY or per_frame_auto)
@@ -334,9 +413,20 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
             gains = {job.input_path: job.scan_gain for job in roll_jobs}
             jobs = [replace(job, scan_gain=gains[job.input_path]) for job in jobs]
 
+    no_source = dry and not (
+        args.profile or manual_calibration_given(args) or args.auto_density or args.auto_density_roll
+    )
     if stage is Stage.INVERT_ONLY:
         density_profile, saved_tone = None, None  # unused by process_scan for this stage
         sheet.row("Calibration", "none — density balance skipped (--invert-only)")
+    elif no_source:
+        density_profile, saved_tone = None, None
+        sheet.row("Calibration", _no_calibration_text())
+    elif args.auto_density_roll and dry:
+        density_profile, saved_tone = None, None
+        sheet.row("Calibration", f"auto{_SEP}would estimate one profile for the whole roll from all "
+                                 f"{frame_count(len(roll_jobs))}")
+        sheet.note("Calibration", AUTO_CALIBRATION_ADVICE)
     elif args.auto_density_roll:
         skipped: list[str] = []
         with warnings.catch_warnings(record=True) as caught:
@@ -360,12 +450,18 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
             sheet.warn("Calibration", str(caught_warning.message))
         sheet.note("Calibration", AUTO_CALIBRATION_ADVICE)
     else:
+        if dry and args.profile:
+            _check_profile_exists(args.profile)  # the real error, without the real run's "did you mean?" prompt
         density_profile, saved_tone = resolve_density_profile(args)  # profile may be None -> per-frame auto
         sheet.row("Calibration", _calibration_text(args, density_profile, saved_tone))
         if density_profile is None:
             sheet.note("Calibration", AUTO_CALIBRATION_ADVICE)
 
-    saved_path = maybe_save_profile(args, density_profile, tone=saved_tone, scan=scan_reference, announce=False)
+    if dry:
+        _dry_save_profile_row(args, sheet, density_profile, no_source)
+        saved_path = None
+    else:
+        saved_path = maybe_save_profile(args, density_profile, tone=saved_tone, scan=scan_reference, announce=False)
     if saved_path is not None:
         sheet.ok("Calibration", f"saved as {args.save_profile_as!r} — reuse with --profile {args.save_profile_as}")
     tone_params = resolve_tone_params(args, saved_tone=saved_tone)
@@ -376,8 +472,9 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     # develop on it (run_batch): on a GPU through the shared GPU service, or — if it can't be used —
     # with a CUDA context per worker, whose default count also fits the card's memory.
     device = resolve_device_arg(args, isolated=True)  # the parent never computes on the card (2.4-7)
-    compute = start_compute(stack, sheet, jobs, device)
-    compute_row(sheet, device, compute)
+    # A dry run only plans: the GPU service is never started.
+    compute = plan_compute(jobs, device, "develop") if dry else start_compute(stack, sheet, jobs, device)
+    compute_row(sheet, device, compute, planned=dry)
 
     workers = choose_workers(
         args, jobs, sheet,
@@ -392,8 +489,8 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], *,
          roll_jobs: list[BatchJob] | None = None, output_dir: Path | None = None, skipped_frames: int = 0,
          build_sheet: bool = True,
-         left_out=None, kept: Sequence[str] = ()) -> int:
-    if stage is not Stage.INVERT_ONLY:
+         left_out=None, kept: Sequence[str] = (), existing: int = 0) -> int:
+    if stage is not Stage.INVERT_ONLY and not args.dry_run:  # a dry run never asks
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
     # --auto-density-roll vs --profile/--auto-density is argparse's (exclusive group); only the
     # manual values need this hand check.
@@ -405,8 +502,16 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
         with console.RunSheet(quiet=args.quiet) as sheet:
             jobs, density_profile, tone_params, scan_reference, workers, device, compute = _prepare(
                 args, stage, input_dir, jobs, sheet, stack, skipped_frames=skipped_frames, left_out=left_out,
-                roll_jobs=roll_jobs,
+                roll_jobs=roll_jobs, existing=existing,
             )
+
+        if args.dry_run:
+            print(dry_run_line(
+                "batch", len(jobs), str(output_dir), kept=len(kept), existing=existing,
+                policy=policy_from_args(args),
+                preview_sheet=str(args.contact_sheet) if output_dir is None else None,
+            ))
+            return 0
 
         record = RunRecord(args, "develop", output_dir)
         record.start(sheet, jobs, list(kept))
