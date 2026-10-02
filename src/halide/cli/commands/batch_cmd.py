@@ -232,6 +232,10 @@ def run(args: argparse.Namespace) -> int:
         output_dir = None
         files, left_out = list_scans(input_dir)
         jobs = [BatchJob(input_path=f, output_path=None) for f in files]
+    # Roll-wide decisions (scan checks, the scan-exposure reference, the --auto-density-roll
+    # estimate) are made from every frame of the roll, never from just the ones left to develop
+    # when resuming — or the resumed frames would get a different profile from the rest of the roll.
+    roll_jobs = jobs
     if not jobs:
         print(f"No TIFF files found in {input_dir}")
         return 1
@@ -276,7 +280,7 @@ def run(args: argparse.Namespace) -> int:
         if thumbnails is not None:
             jobs = [replace(job, thumbnail_path=thumbnails / f"{i:04d}.png") for i, job in enumerate(jobs)]
         return _run(
-            args, stage, input_dir, jobs, output_dir=output_dir, skipped_frames=skipped_frames, build_sheet=build_sheet,
+            args, stage, input_dir, jobs, roll_jobs=roll_jobs, output_dir=output_dir, skipped_frames=skipped_frames, build_sheet=build_sheet,
             left_out=left_out, kept=kept,
         )
     finally:
@@ -285,13 +289,18 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], sheet: console.RunSheet,
-             stack: contextlib.ExitStack, skipped_frames: int = 0, left_out=None):
+             stack: contextlib.ExitStack, skipped_frames: int = 0, left_out=None,
+             roll_jobs: list[BatchJob] | None = None):
     """Everything decided before developing starts — scan checks, scan-exposure matching,
     calibration, print settings, how the GPU is used, worker count — each reported on the run sheet
     as it's decided. On a GPU the shared GPU service starts here and runs until `stack` closes.
+    `jobs` are the frames to develop; `roll_jobs` (default: the same) are every frame of the roll,
+    which the roll-wide decisions are made from — they differ when resuming a roll.
     Returns (jobs, density_profile, tone_params, scan_reference, workers, device, compute)."""
     from halide.processing import ScanColorError, estimate_roll_density_profile, read_roll_scan_metadata
 
+    if roll_jobs is None:
+        roll_jobs = jobs
     roll_row(sheet, input_dir, len(jobs), _destination(args))
     skipped_row(sheet, left_out)
     if skipped_frames:
@@ -300,7 +309,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     per_frame_auto = args.auto_density and not args.auto_density_roll
     matching = args.match_scan_exposure and not (stage is Stage.INVERT_ONLY or per_frame_auto)
 
-    metadata = read_roll_scan_metadata([job.input_path for job in jobs])
+    metadata = read_roll_scan_metadata([job.input_path for job in roll_jobs])
     report = assess_roll({Path(path).name: meta for path, meta in metadata.items()})
     issues = report.summary_lines(exposure_corrected=matching)
     for line in issues:
@@ -319,9 +328,11 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
                 f"from {Path(args.scan_reference).name}" if args.scan_reference
                 else "the profile's calibration scan"
             )
-            jobs, scan_reference = _match_scan_exposure(
-                jobs, metadata, scan_reference, origin, _unknown_reference_warning(args), sheet
+            roll_jobs, scan_reference = _match_scan_exposure(
+                roll_jobs, metadata, scan_reference, origin, _unknown_reference_warning(args), sheet
             )
+            gains = {job.input_path: job.scan_gain for job in roll_jobs}
+            jobs = [replace(job, scan_gain=gains[job.input_path]) for job in jobs]
 
     if stage is Stage.INVERT_ONLY:
         density_profile, saved_tone = None, None  # unused by process_scan for this stage
@@ -331,17 +342,17 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             ignore_colour_matplotlib_warning()  # "always" would bring back colour's plotting notice
-            with sheet.working("Calibration", f"estimating one profile from all {frame_count(len(jobs))}…"):
+            with sheet.working("Calibration", f"estimating one profile from all {frame_count(len(roll_jobs))}…"):
                 try:
                     density_profile = estimate_roll_density_profile(
-                        [job.input_path for job in jobs],
-                        scan_gains={str(job.input_path): job.scan_gain for job in jobs},
+                        [job.input_path for job in roll_jobs],
+                        scan_gains={str(job.input_path): job.scan_gain for job in roll_jobs},
                         on_skip=lambda path, exc: skipped.append(f"{path.name} ({exc})"),
                     )
                 except ScanColorError as exc:
                     raise SystemExit(str(exc))
         saved_tone = None
-        used = len(jobs) - len(skipped)
+        used = len(roll_jobs) - len(skipped)
         sheet.row("Calibration", f"auto{_SEP}one profile for the whole roll, from {frame_count(used)}")
         for name in skipped:
             sheet.warn("Calibration", f"skipped unreadable {name}")
@@ -379,7 +390,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
 
 
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], *,
-         output_dir: Path | None = None, skipped_frames: int = 0, build_sheet: bool = True,
+         roll_jobs: list[BatchJob] | None = None, output_dir: Path | None = None, skipped_frames: int = 0, build_sheet: bool = True,
          left_out=None, kept: Sequence[str] = ()) -> int:
     if stage is not Stage.INVERT_ONLY:
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
@@ -392,7 +403,8 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
     with contextlib.ExitStack() as stack:
         with console.RunSheet(quiet=args.quiet) as sheet:
             jobs, density_profile, tone_params, scan_reference, workers, device, compute = _prepare(
-                args, stage, input_dir, jobs, sheet, stack, skipped_frames=skipped_frames, left_out=left_out
+                args, stage, input_dir, jobs, sheet, stack, skipped_frames=skipped_frames, left_out=left_out,
+                roll_jobs=roll_jobs,
             )
 
         record = RunRecord(args, "develop", output_dir)

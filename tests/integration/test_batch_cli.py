@@ -2,6 +2,8 @@
 robustness property called out in the build plan: one frame's failure must not corrupt or block
 the rest of the batch."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -308,3 +310,60 @@ def test_flat_results_carry_their_scale(roll_dir, tmp_path):
     results = run_batch(discover_jobs(roll_dir, out_dir), Stage.FULL, density_profile=None,
                         tone_params=ToneCurveParams(mode="linear"))
     assert all(r.linear_scale > 0 and r.contrast is None and r.grade_fitted is None for r in results)
+
+
+def _resumed_roll(tmp_path, monkeypatch):
+    """A 6-frame roll developed with --auto-density-roll, two outputs deleted, then resumed with
+    --skip-existing. Returns (out_dir, paths the estimate saw on the resume, resumed names, kept mtimes)."""
+    import os
+
+    in_dir = tmp_path / "roll"
+    in_dir.mkdir()
+    for i in range(6):
+        _write_negative(in_dir / f"f{i}.tiff", seed=i)
+    out_dir = tmp_path / "out"
+    args = ["batch", str(in_dir), str(out_dir), "--auto-density-roll", "--quiet"]
+    assert main(args) == 0
+    gone = ["f1.tiff", "f4.tiff"]
+    for name in gone:
+        (out_dir / name).unlink()
+    kept = {p.name: os.stat(p).st_mtime_ns for p in out_dir.glob("*.tiff")}
+
+    import halide.processing as processing
+
+    seen: list[list] = []
+    real = processing.estimate_roll_density_profile
+
+    def spy(paths, *a, **kw):
+        seen.append([str(p) for p in paths])
+        return real(paths, *a, **kw)
+
+    monkeypatch.setattr(processing, "estimate_roll_density_profile", spy)
+    assert main(args + ["--skip-existing"]) == 0
+    return out_dir, in_dir, seen, gone, kept
+
+
+def test_resuming_estimates_the_roll_profile_from_every_frame(tmp_path, monkeypatch):
+    import os
+
+    out_dir, in_dir, seen, gone, kept = _resumed_roll(tmp_path, monkeypatch)
+    assert len(seen) == 1
+    assert sorted(Path(p).name for p in seen[0]) == [f"f{i}.tiff" for i in range(6)]
+    assert sorted(p.name for p in out_dir.glob("*.tiff")) == [f"f{i}.tiff" for i in range(6)]
+    # Only the two missing outputs were developed again.
+    assert {n: os.stat(out_dir / n).st_mtime_ns for n in kept} == kept
+
+
+def test_resumed_frames_use_the_same_profile_as_the_rest_of_the_roll(tmp_path, monkeypatch):
+    from halide.io.tiff import read_tiff_description
+    from halide.processing import read_provenance
+
+    out_dir, _, _, gone, kept = _resumed_roll(tmp_path, monkeypatch)
+
+    def profile(name):
+        record = read_provenance(read_tiff_description(out_dir / name))
+        return record["white_balance"], record["density_scale"]
+
+    reference = profile(next(iter(kept)))
+    for name in gone:
+        assert profile(name) == reference
