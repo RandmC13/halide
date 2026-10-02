@@ -13,6 +13,8 @@ TIFF_SUFFIXES = (".tif", ".tiff")
 RAW_SUFFIXES = (".nef", ".cr2", ".cr3", ".arw", ".raf", ".dng", ".orf", ".rw2")
 _PICTURE_SUFFIXES = (".jpg", ".jpeg", ".png")
 _MACOS_JUNK = ("._", ".ds_store")
+# halide's own run log (batch/runlog.py), written into output folders; never a frame.
+RUN_LOG_NAME = "halide-log.txt"
 
 
 @dataclass
