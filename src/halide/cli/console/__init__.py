@@ -67,6 +67,7 @@ from halide.cli.console.screens import (  # noqa: F401
 
 from halide.cli.console.runsheet import (  # noqa: F401
     RunSheet,
+    print_rows,
 )
 
 from halide.cli.console.animation import (  # noqa: F401

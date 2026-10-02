@@ -324,3 +324,33 @@ def test_verbs_name_what_each_command_does():
     assert console.VERB["export"] == "Exporting" and console.VERB_PAST["export"] == "Exported"
     assert console.VERB["print"] == "Printing" and console.VERB_PAST["print"] == "Printed"
     assert console.VERB["invert"] == console.VERB["batch"] == "Developing"
+
+
+def test_run_sheet_keeps_plain_rows_including_quiet_warnings(capsys):
+    from halide.cli.console import RunSheet
+
+    with RunSheet(quiet=True) as sheet:
+        sheet.row("Roll", "r · 2 frames")
+        sheet.warn("Scans", "exposures differ")
+        sheet.note("Scans", "details: halide check r")
+        sheet.ok("Calibration", "saved")
+    assert sheet.plain_rows == [
+        ("row", "Roll", "r · 2 frames"),
+        ("warn", "Scans", "exposures differ"),
+        ("note", "Scans", "details: halide check r"),
+        ("ok", "Calibration", "saved"),
+    ]
+    assert "\033[" not in "".join(t for _, _, t in sheet.plain_rows)
+
+
+def test_print_rows_prints_no_rules_and_quiet_keeps_only_warnings(capsys, monkeypatch):
+    from halide.cli.console import print_rows
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    rows = [("row", "Prints", "grade 0.90"), ("warn", "Check", "a.tif  grade 0.40")]
+    print_rows(rows)
+    out = capsys.readouterr().out
+    assert "▫" not in out and "Prints" in out and "Check" in out
+    print_rows(rows, quiet=True)
+    out = capsys.readouterr().out
+    assert "Prints" not in out and "a.tif  grade 0.40" in out

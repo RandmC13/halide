@@ -346,3 +346,28 @@ def test_quiet_renderer_prints_only_the_end_line_and_failures(capsys):
     out = _ANSI.sub("", capsys.readouterr().out).splitlines()
     assert out[0].startswith("Developed 1 of 2 frames (1 failed) in")
     assert out[1] == "  ✗ f1.tif: boom"
+
+
+def test_end_text_is_the_end_line_without_colour(monkeypatch, capsys):
+    from pathlib import Path
+
+    from halide.batch.orchestrator import BatchJob, BatchResult
+    from halide.batch.progress import PlainProgressRenderer
+
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    r = PlainProgressRenderer(2, "invert")
+    r.start()
+    r.report(0, BatchResult(job=BatchJob(Path("a.tif"), Path("o/a.tif")), error=None))
+    r.report(1, BatchResult(job=BatchJob(Path("b.tif"), Path("o/b.tif")), error="bad"))
+    r.finish()
+    assert r.end_text.startswith("Developed 1 of 2 frames (1 failed) in ")
+    assert "\033[" not in r.end_text
+    ok = PlainProgressRenderer(1, "invert")
+    ok.start()
+    ok.report(0, BatchResult(job=BatchJob(Path("a.tif"), Path("o/a.tif")), error=None))
+    ok.finish()
+    assert ok.end_text.startswith("✓ Developed 1 frame in ")
+    c = PlainProgressRenderer(3, "invert")
+    c.start()
+    c.finish(cancelled=True)
+    assert c.end_text == "✗ Cancelled - 0 of 3 frames developed; nothing half-written"

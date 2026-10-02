@@ -38,11 +38,16 @@ class RunSheet:
     _INDENT = "  "
     _MAX_TEXT_WIDTH = 100  # long prose past this is hard to read, whatever the terminal width
 
-    def __init__(self, *, quiet: bool = False):
+    def __init__(self, *, quiet: bool = False, framed: bool = True):
         self.quiet = quiet
+        self.framed = framed
         self._held: list[str] = []
-        self._streaming = False  # True once the top rule is out and rows print as they come
+        # Unframed (print_rows): rows print as they come, with no sprocket rules around them.
+        self._streaming = not framed
         self._last_label: str | None = None
+        # Every row as plain (style, label, text), whatever `quiet` hid: the run log
+        # (batch/runlog.py) records the full sheet.
+        self.plain_rows: list[tuple[str, str, str]] = []
 
     def _lines(self, label: str, text: str, icon: str = "", icon_style: str = "", text_style: str = "") -> list[str]:
         width = min(shutil.get_terminal_size((80, 24)).columns, self._MAX_TEXT_WIDTH)
@@ -67,24 +72,31 @@ class RunSheet:
 
     def _start_streaming(self) -> None:
         if not self._streaming:
-            print("\n".join([full_width_rule(), *self._held]))
+            if self.framed:
+                print("\n".join([full_width_rule(), *self._held]))
+            else:
+                print("\n".join(self._held))
             self._held = []
             self._streaming = True
 
     def row(self, label: str, text: str) -> None:
+        self.plain_rows.append(("row", label, text))
         if not self.quiet:
             self._add(label, text)
 
     def note(self, label: str, text: str) -> None:
         """A dim, secondary row — a pointer to more detail, not a setting in its own right."""
+        self.plain_rows.append(("note", label, text))
         if not self.quiet:
             self._add(label, text, text_style=Style.DIM)
 
     def ok(self, label: str, text: str) -> None:
+        self.plain_rows.append(("ok", label, text))
         if not self.quiet:
             self._add(label, text, icon=ICON_OK, icon_style=Style.GREEN)
 
     def warn(self, label: str, text: str) -> None:
+        self.plain_rows.append(("warn", label, text))
         if self.quiet:
             print(warning(text))
         else:
@@ -103,13 +115,22 @@ class RunSheet:
 
     def close(self) -> None:
         if self._streaming:
-            print(full_width_rule())
+            if self.framed:
+                print(full_width_rule())
         elif self._held:
             print(framed(self._held))
-        self._held, self._streaming, self._last_label = [], False, None
+        self._held, self._streaming, self._last_label = [], not self.framed, None
 
     def __enter__(self) -> "RunSheet":
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
+
+
+def print_rows(rows, *, quiet: bool = False) -> None:
+    """Rows in the run sheet's label column, without its sprocket rules — the end-of-run summary
+    under the end line. `quiet` keeps only the warnings, as plain warning lines (like the sheet)."""
+    sheet = RunSheet(quiet=quiet, framed=False)
+    for style, label, text in rows:
+        getattr(sheet, style)(label, text)

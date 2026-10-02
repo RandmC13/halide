@@ -83,6 +83,7 @@ class _Renderer:
         self.failures: list[tuple[str, str]] = []  # (filename, error message)
         self._start_time: float | None = None
         self._note: str | None = None  # one line under the status line (note())
+        self.end_text: str | None = None
 
     @property
     def succeeded(self) -> int:
@@ -110,12 +111,16 @@ class _Renderer:
     def _finish_lines(self, cancelled: bool, noun: str | None, list_failures: bool = True) -> None:
         elapsed = time.monotonic() - self._start_time if self._start_time is not None else 0.0
         if cancelled:
-            print(console.cancelled(console.cancelled_message(self.verb, self.succeeded, self.total, noun)))
+            message = console.cancelled_message(self.verb, self.succeeded, self.total, noun)
+            self.end_text = f"{ICON_FAIL} {message}"
+            print(console.cancelled(message))
         else:
             message = console.finish_message(self.verb, self.succeeded, self.total, len(self.failures), elapsed, noun)
             if self.failures:
+                self.end_text = message
                 print(f"{Style.YELLOW}{Style.BOLD}{message}{Style.RESET}")
             else:
+                self.end_text = f"{ICON_OK} {message}"
                 print(f"{Style.GREEN}{Style.BOLD}{ICON_OK} {message}{Style.RESET}")
         if list_failures:
             for name, err in self.failures:
