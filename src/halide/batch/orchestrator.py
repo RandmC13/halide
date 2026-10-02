@@ -160,6 +160,12 @@ class BatchResult:
     warning: str | None = None  # non-fatal, e.g. export's "doesn't look like ACEScg" notice
     detail: str | None = None  # the printing decision, e.g. "grade 0.88 exp +0.39" (plain progress lines)
     seconds: float | None = None  # how long the frame took in its worker
+    # The print decision as numbers, for the end-of-run summary and the run log (batch/summary.py,
+    # batch/runlog.py); `detail` is the same decision as words. Set only when the frame developed.
+    contrast: float | None = None
+    exposure: float | None = None
+    linear_scale: float | None = None
+    grade_fitted: bool | None = None  # False when the grade was pinned (--contrast or a profile's)
 
 
 def discover_jobs(input_dir: str | Path, output_dir: str | Path, suffix: str = "") -> list[BatchJob]:
@@ -715,6 +721,17 @@ def _tone_detail(resolved) -> str | None:
     return f"grade {resolved.contrast:.2f} exp {resolved.exposure:+.2f}"
 
 
+def _tone_fields(resolved, tone_params: ToneCurveParams) -> dict:
+    """The print decision as BatchResult fields. A grade is "fitted" exactly when nothing pinned
+    it: the resolved ToneCurveParams the worker was given has no contrast."""
+    if resolved is None:
+        return {}
+    if resolved.mode == "linear":
+        return {"linear_scale": resolved.linear_scale}
+    return {"contrast": resolved.contrast, "exposure": resolved.exposure,
+            "grade_fitted": tone_params.contrast is None}
+
+
 def _worker(
     job: BatchJob,
     stage: Stage,
@@ -738,7 +755,7 @@ def _worker(
             device=device, on_warning=warnings, service=client, shm_prefix=shm_prefix,
         )
         return BatchResult(job=job, error=None, warning=warnings.text(), detail=_tone_detail(resolved),
-                           seconds=time.monotonic() - started)
+                           seconds=time.monotonic() - started, **_tone_fields(resolved, tone_params))
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 
@@ -776,7 +793,7 @@ def _print_worker(
                                 service=client, shm_prefix=shm_prefix)
         warnings(warning)
         return BatchResult(job=job, error=None, warning=warnings.text(), detail=_tone_detail(resolved),
-                           seconds=time.monotonic() - started)
+                           seconds=time.monotonic() - started, **_tone_fields(resolved, tone_params))
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)
 

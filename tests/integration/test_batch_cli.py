@@ -279,3 +279,32 @@ def test_batch_has_no_pick_option(roll_dir, tmp_path, capsys):
     with pytest.raises(SystemExit):
         main(["batch", "--help"])
     assert "--pick" not in capsys.readouterr().out
+
+
+def test_results_carry_the_print_decision(roll_dir, tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    results = run_batch(discover_jobs(roll_dir, out_dir), Stage.FULL, density_profile=None,
+                        tone_params=ToneCurveParams())
+    for r in results:
+        assert r.error is None
+        assert 0.0 < r.contrast <= 1.0
+        assert r.exposure is not None
+        assert r.grade_fitted is True
+        assert r.linear_scale is None
+
+
+def test_a_pinned_grade_is_marked_not_fitted(roll_dir, tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    results = run_batch(discover_jobs(roll_dir, out_dir), Stage.FULL, density_profile=None,
+                        tone_params=ToneCurveParams(contrast=0.7))
+    assert all(r.contrast == pytest.approx(0.7) and r.grade_fitted is False for r in results)
+
+
+def test_flat_results_carry_their_scale(roll_dir, tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    results = run_batch(discover_jobs(roll_dir, out_dir), Stage.FULL, density_profile=None,
+                        tone_params=ToneCurveParams(mode="linear"))
+    assert all(r.linear_scale > 0 and r.contrast is None and r.grade_fitted is None for r in results)
