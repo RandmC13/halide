@@ -61,6 +61,7 @@ from halide.cli import console
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.device import ComputeDevice
 from halide.gui.render import positive_display
+from halide.interrupts import exit_with_parent
 from halide.io.contact_sheet import SheetLayout, Tile, caption_from_provenance, load_thumbnail, render_sheet, write_sheet
 from halide.processing import Stage
 
@@ -132,7 +133,8 @@ class ProofRenderer(QThread):
             shutil.rmtree(folder, ignore_errors=True)
 
     def _develop(self, jobs: list[BatchJob], device_args: tuple, workers: int) -> None:
-        executor = ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context())
+        executor = ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context(),
+                                       initializer=exit_with_parent)
         pending: dict = {}
         try:
             pending = {

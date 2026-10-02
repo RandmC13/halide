@@ -16,6 +16,7 @@ from PySide6.QtCore import QThread, Signal
 
 from halide.batch.orchestrator import BatchJob, _pool_context, default_export_worker_count
 from halide.gui.roll import load_frame_preview
+from halide.interrupts import exit_with_parent
 
 
 class PreviewLoader(QThread):
@@ -40,7 +41,8 @@ class PreviewLoader(QThread):
         workers = default_export_worker_count([BatchJob(input_path=p, output_path=None) for p in self._paths])
         if self.isInterruptionRequested():  # sizing the pool reads every frame's header
             return
-        executor = ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context())
+        executor = ProcessPoolExecutor(max_workers=workers, mp_context=_pool_context(),
+                                       initializer=exit_with_parent)
         try:
             pending = {executor.submit(load_frame_preview, str(p)): i for i, p in enumerate(self._paths)}
             while pending and not self.isInterruptionRequested():

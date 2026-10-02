@@ -33,7 +33,7 @@ from typing import Callable
 from halide.cli.console import plural
 from halide.core.types import DensityProfile, Stage, ToneCurveParams
 from halide.device import ComputeDevice
-from halide.interrupts import cancel_on_hangup_and_term, children_ignore_terminal_signals, ignore_terminal_signals
+from halide.interrupts import cancel_on_hangup_and_term, children_ignore_terminal_signals, pool_worker_init
 from halide.io.contact_sheet_defaults import DEFAULT_FRAME_WIDTH
 from halide.io.roll import TIFF_SUFFIXES, list_scans  # noqa: F401 -- TIFF_SUFFIXES re-exported
 
@@ -916,7 +916,7 @@ def _run_pool(
                 _start_forkserver(context)
                 # Workers ignore Ctrl-C and SIGHUP (2.4-9): the parent owns cancelling, below.
                 with ProcessPoolExecutor(max_workers=max_workers, mp_context=context,
-                                         initializer=ignore_terminal_signals) as executor:
+                                         initializer=pool_worker_init) as executor:
                     try:
                         pending = list(jobs)
 
