@@ -41,6 +41,7 @@ class RunRecord:
         self.command = getattr(args, "command_line", "halide")
         self.log = RunLog(path, kind) if path is not None else None
         self.results: list = []
+        self._closed = False  # finish and abort each close the log block, once between them
 
     def start(self, sheet: console.RunSheet, jobs, kept: list[str]) -> None:
         if self.log is not None:
@@ -59,8 +60,9 @@ class RunRecord:
         from halide.processing import service_stopped
 
         rows = summary_rows(RollSummary.from_results(self.results, self.kind, stopped=service_stopped))
+        self._closed = True
         if self.log is not None:
-            self.log.finish(getattr(renderer, "end_text", None), rows)
+            self.log.finish(renderer.end_text, rows)
             if self.log.error is not None:
                 rows.append(("warn", "Log", f"not written — {self.log.error}"))
             else:
@@ -68,5 +70,6 @@ class RunRecord:
         console.print_rows(rows, quiet=self.quiet)
 
     def abort(self, exc: BaseException) -> None:
-        if self.log is not None:
+        if self.log is not None and not self._closed:
+            self._closed = True
             self.log.finish(None, [], error=str(exc) or type(exc).__name__)

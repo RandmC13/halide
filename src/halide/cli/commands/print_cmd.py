@@ -174,32 +174,32 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
 
         record = RunRecord(args, "print", output_dir)
         record.start(sheet, jobs, list(kept))
-        renderer = make_renderer(len(jobs), "print", quiet=args.quiet)
-        job_index = {job: i for i, job in enumerate(jobs)}
-
-        def on_start(job):
-            renderer.mark_processing(job_index[job])
-
-        def on_result(result):
-            record.add(result)
-            renderer.report(job_index[result.job], result)
-
-        renderer.start()
         try:
+            renderer = make_renderer(len(jobs), "print", quiet=args.quiet)
+            job_index = {job: i for i, job in enumerate(jobs)}
+
+            def on_start(job):
+                renderer.mark_processing(job_index[job])
+
+            def on_result(result):
+                record.add(result)
+                renderer.report(job_index[result.job], result)
+
+            renderer.start()
             results = run_print_batch(
                 jobs, tone_params, max_workers=workers, on_result=on_result, on_start=on_start, device=device,
                 on_cancel=cancel_notice(renderer), compute=compute,
             )
+
+            cancelled = len(results) < len(jobs)
+            if cancelled:
+                done_indices = {job_index[r.job] for r in results}
+                renderer.cancel([i for i in range(len(jobs)) if i not in done_indices])
+            renderer.finish(cancelled=cancelled)
+            record.finish(renderer)
         except BaseException as exc:
             record.abort(exc)
             raise
-
-    cancelled = len(results) < len(jobs)
-    if cancelled:
-        done_indices = {job_index[r.job] for r in results}
-        renderer.cancel([i for i in range(len(jobs)) if i not in done_indices])
-    renderer.finish(cancelled=cancelled)
-    record.finish(renderer)
 
     failures = [r for r in results if r.error]
 

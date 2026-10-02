@@ -7,6 +7,7 @@ import contextlib
 import shutil
 import tempfile
 import warnings
+from typing import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -377,7 +378,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
 
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], *,
          output_dir: Path | None = None, skipped_frames: int = 0, build_sheet: bool = True,
-         left_out=None, kept: list[str] = ()) -> int:
+         left_out=None, kept: Sequence[str] = ()) -> int:
     if stage is not Stage.INVERT_ONLY:
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
     # --auto-density-roll vs --profile/--auto-density is argparse's (exclusive group); only the
@@ -394,33 +395,33 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
 
         record = RunRecord(args, "develop", output_dir)
         record.start(sheet, jobs, list(kept))
-        renderer = make_renderer(len(jobs), "invert", quiet=args.quiet)
-        job_index = {job: i for i, job in enumerate(jobs)}
-
-        def on_start(job):
-            renderer.mark_processing(job_index[job])
-
-        def on_result(result):
-            record.add(result)
-            renderer.report(job_index[result.job], result)
-
-        renderer.start()
         try:
+            renderer = make_renderer(len(jobs), "invert", quiet=args.quiet)
+            job_index = {job: i for i, job in enumerate(jobs)}
+
+            def on_start(job):
+                renderer.mark_processing(job_index[job])
+
+            def on_result(result):
+                record.add(result)
+                renderer.report(job_index[result.job], result)
+
+            renderer.start()
             results = run_batch(
                 jobs, stage, density_profile, tone_params, max_workers=workers, on_result=on_result,
                 on_start=on_start, on_cancel=cancel_notice(renderer), thumbnail_long_edge=args.frame_width,
                 device=device, compute=compute,
             )
+
+            cancelled = len(results) < len(jobs)
+            if cancelled:
+                done_indices = {job_index[r.job] for r in results}
+                renderer.cancel([i for i in range(len(jobs)) if i not in done_indices])
+            renderer.finish(cancelled=cancelled)
+            record.finish(renderer)
         except BaseException as exc:
             record.abort(exc)
             raise
-
-    cancelled = len(results) < len(jobs)
-    if cancelled:
-        done_indices = {job_index[r.job] for r in results}
-        renderer.cancel([i for i in range(len(jobs)) if i not in done_indices])
-    renderer.finish(cancelled=cancelled)
-    record.finish(renderer)
 
     failures = [r for r in results if r.error]
 

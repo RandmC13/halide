@@ -145,3 +145,19 @@ def test_print_on_a_batch_output_folder_does_not_report_the_log(roll, tmp_path, 
     capsys.readouterr()
     assert main(["print", str(flat), str(tmp_path / "prints"), "--workers", "1"]) == 0
     assert "Skipped" not in _ANSI.sub("", capsys.readouterr().out)
+
+
+def test_a_cancelled_batch_still_closes_its_log(roll, tmp_path, monkeypatch):
+    import halide.cli.commands.batch_cmd as batch_cmd
+    from halide.batch.orchestrator import BatchResult
+
+    def cancelled(jobs, *args, on_result=None, **kwargs):
+        result = BatchResult(job=jobs[0], error=None)
+        on_result(result)
+        return [result]
+
+    monkeypatch.setattr(batch_cmd, "run_batch", cancelled)
+    out = tmp_path / "out"
+    assert _batch(roll, out) == 130
+    text = (out / RUN_LOG_NAME).read_text(encoding="utf-8")
+    assert "Cancelled" in text and "━━ finished" in text

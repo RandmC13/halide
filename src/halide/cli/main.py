@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("batch", "Invert a folder of negative scans in parallel", batch_cmd,
         'halide batch roll16/ roll16-developed/ --profile "Portra 400"',
         "halide batch roll16/ --contact-sheet preview.jpg",
-        "halide batch roll16/ roll16-developed/ --log ~/darkroom-notes.txt")
+        "halide batch roll16/ roll16-developed/ --skip-existing")
     add("print", "Print a flat positive (from `invert --output flat`, optionally edited in "
         "darktable) onto the paper curve", print_cmd,
         "halide print flat_edited.tif print.tif",
