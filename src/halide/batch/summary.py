@@ -39,7 +39,9 @@ class RollSummary:
     service_stopped: str | None  # the reason, said once
 
     @classmethod
-    def from_results(cls, results, kind: str, stopped: Callable[[str], str | None] = lambda w: None) -> "RollSummary":
+    def from_results(
+        cls, results, kind: str, stopped: Callable[[str], str | None] = lambda w: None
+    ) -> "RollSummary":
         """`stopped` recognises a "the GPU service stopped" frame warning and returns its reason
         (processing.service_stopped; passed in so this module stays free of the pipeline)."""
         developed = [r for r in results if r.error is None]
@@ -55,6 +57,11 @@ class RollSummary:
         stopped_reason = None
         for r in results:
             for part in (r.warning or "").split("; "):
+                # Not every source strips the frame's own name; grouping needs it gone.
+                for own in (f"{r.job.input_path}: ", f"{r.job.input_path.name}: "):
+                    if part.startswith(own):
+                        part = part[len(own):]
+                        break
                 if not part:
                     continue
                 reason = stopped(part)

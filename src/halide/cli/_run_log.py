@@ -72,4 +72,7 @@ class RunRecord:
     def abort(self, exc: BaseException) -> None:
         if self.log is not None and not self._closed:
             self._closed = True
-            self.log.finish(None, [], error=str(exc) or type(exc).__name__)
+            if isinstance(exc, KeyboardInterrupt):  # also what SIGTERM/SIGHUP become
+                self.log.finish(None, [], interrupted=True)
+            else:
+                self.log.finish(None, [], error=str(exc) or type(exc).__name__)

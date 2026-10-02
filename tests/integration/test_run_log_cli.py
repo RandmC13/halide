@@ -76,6 +76,29 @@ def test_quiet_keeps_warnings_but_not_prints_or_log_rows(roll, tmp_path, capsys)
     screen = _ANSI.sub("", capsys.readouterr().out)
     assert "Prints" not in screen and "Log " not in screen
     assert (tmp_path / "out" / RUN_LOG_NAME).exists()  # the log ignores --quiet
+    # An unwritable log is a warning row, and warnings survive --quiet.
+    assert _batch(roll, tmp_path / "out2", "--quiet", "--log", str(tmp_path / "nope" / "log.txt")) == 0
+    screen = _ANSI.sub("", capsys.readouterr().out)
+    assert "⚠ Warning: not written" in screen and "Prints" not in screen
+
+
+def test_colour_science_matplotlib_notice_is_not_a_calibration_row(roll, tmp_path, capsys, monkeypatch):
+    import warnings
+
+    import halide.processing as processing
+    from halide import COLOUR_MATPLOTLIB_MESSAGE
+    from halide.core.types import DensityProfile
+
+    def fake_estimate(paths, **kwargs):
+        warnings.warn(COLOUR_MATPLOTLIB_MESSAGE.replace("\\", ""), UserWarning)
+        warnings.warn("a genuine halide warning", UserWarning)
+        return DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78))
+
+    monkeypatch.setattr(processing, "estimate_roll_density_profile", fake_estimate)
+    assert main(["batch", str(roll), str(tmp_path / "out"), "--auto-density-roll", "--workers", "1"]) == 0
+    screen = _ANSI.sub("", capsys.readouterr().out)
+    assert "Matplotlib" not in screen
+    assert "a genuine halide warning" in screen
 
 
 def test_skip_existing_logs_kept_frames_and_appends(roll, tmp_path):

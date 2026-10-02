@@ -9,6 +9,7 @@ in `error` (shown on the summary's Log row) and later writes are skipped."""
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -35,9 +36,16 @@ def plain_row_lines(rows) -> list[str]:
     for style, label, text in rows:
         shown = "" if label == last else label
         icon = f"{_ICONS[style]} " if style in _ICONS else ""
-        lines.append(f"  {shown:<{LABEL_WIDTH}}{icon}{text}")
+        first, *rest = str(text).splitlines() or [""]
+        lines.append(f"  {shown:<{LABEL_WIDTH}}{icon}{first}")
+        lines += [f"  {'':<{LABEL_WIDTH}}{' ' * len(icon)}{more}" for more in rest]
         last = label
     return lines
+
+
+def _one_line(text: str) -> str:
+    """A frame line is one line: fold line breaks in a message into " / "."""
+    return " / ".join(part.strip() for part in str(text).splitlines() if part.strip())
 
 
 def previous_unfinished(path: Path) -> str | None:
@@ -74,12 +82,14 @@ class RunLog:
         self.error: str | None = None
         self._width = len("Frame")
 
-    def _write(self, lines: list[str]) -> None:
+    def _write(self, lines: list[str], sync: bool = False) -> None:
         if self._file is None:
             return
         try:
             self._file.write("".join(f"{line.rstrip()}\n" for line in lines))
             self._file.flush()
+            if sync:  # a power cut should leave every finished frame on disk
+                os.fsync(self._file.fileno())
         except (OSError, ValueError) as exc:
             self.error = _reason(self.path, exc)
             self._close()
@@ -115,7 +125,7 @@ class RunLog:
                              "it stopped after the frames listed above.")
             lines += [command, *plain_row_lines(sheet_rows), "",
                       self._line("Frame", "Result", "Grade", "Exposure", "Scan gain", "Time", "Notes")]
-            lines += [self._line(name, "kept", notes="already there (--skip-existing)") for name in kept]
+            lines += [self._line(name, "kept", notes="already there, kept") for name in kept]
             self._write(lines)
         except Exception as exc:
             if self.error is None:
@@ -127,7 +137,8 @@ class RunLog:
             name = result.job.input_path.name
             time = human_time(result.seconds) if result.seconds is not None else "—"
             if result.error:
-                self._write([self._line(name, "failed", time=time, notes=result.error)])
+                notes = "; ".join(_one_line(t) for t in (result.error, result.warning) if t)
+                self._write([self._line(name, "failed", time=time, notes=notes)], sync=True)
                 return
             grade, exposure = "—", "—"
             if result.linear_scale is not None:
@@ -136,19 +147,22 @@ class RunLog:
                 grade = f"{result.contrast:.2f}" + ("" if result.grade_fitted else " (pinned)")
                 exposure = f"{result.exposure:+.2f}" if result.exposure is not None else "—"
             gain = f"{result.job.scan_gain:.2f}"
-            self._write([self._line(name, _RESULT_WORD[self.kind], grade, exposure, gain, time, result.warning or "")])
+            self._write([self._line(name, _RESULT_WORD[self.kind], grade, exposure, gain, time, _one_line(result.warning or ""))], sync=True)
         except Exception as exc:
             if self.error is None:
                 self.error = _reason(self.path, exc)
             self._close()
 
-    def finish(self, end_text: str | None, summary_rows, error: str | None = None) -> None:
+    def finish(self, end_text: str | None, summary_rows, error: str | None = None,
+               interrupted: bool = False) -> None:
         try:
             lines = [""]
             if end_text:
                 lines.append(end_text)
             lines += plain_row_lines(summary_rows)
-            if error:
+            if interrupted:
+                lines.append(f"{ICON_FAIL} Stopped — interrupted")
+            elif error:
                 lines.append(f"{ICON_FAIL} Stopped by an error: {error}")
             lines += [_rule(f"finished {self._now():%H:%M}"), ""]
             self._write(lines)

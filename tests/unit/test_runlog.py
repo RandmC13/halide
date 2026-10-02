@@ -101,7 +101,7 @@ def test_kept_failed_pinned_and_warned_frames(tmp_path):
          kept=["old.tif"])
     text = path.read_text(encoding="utf-8")
     kept_line = next(line for line in text.splitlines() if line.startswith("old.tif"))
-    assert kept_line.split() == ["old.tif", "kept", "—", "—", "—", "—", "already", "there", "(--skip-existing)"]
+    assert kept_line.split() == ["old.tif", "kept", "—", "—", "—", "—", "already", "there,", "kept"]
     pinned = next(line for line in text.splitlines() if line.startswith("p.tif"))
     assert "0.70 (pinned)" in pinned and "1.26" in pinned and pinned.endswith("metadata not copied")
     bad = next(line for line in text.splitlines() if line.startswith("bad.tif"))
@@ -186,3 +186,57 @@ def test_unknown_kind_does_not_raise_and_sets_error(tmp_path):
     log.frame(_ok("a.tif"))
     log.finish("end", [])
     assert log.error is not None and "KeyError" in log.error
+
+
+def test_multi_line_row_text_is_indented_under_the_text_column():
+    lines = plain_row_lines([("warn", "Calibration", "first\nsecond\nthird"), ("row", "Log", "x")])
+    pad = " " * (2 + 15 + 2)  # indent, label column, the icon and its space
+    assert lines[0].endswith("first") and lines[1] == pad + "second" and lines[2] == pad + "third"
+    assert lines[3].startswith("  Log")
+
+
+def test_newlines_in_a_frame_note_are_folded_onto_one_line(tmp_path):
+    path = tmp_path / "halide-log.txt"
+    _run(path, [_ok("a.tif", warning="line one\nline two"), _ok("b.tif")])
+    text = path.read_text(encoding="utf-8")
+    line = next(x for x in text.splitlines() if x.startswith("a.tif"))
+    assert line.endswith("line one / line two")
+    assert "line two" not in [x.strip() for x in text.splitlines()]
+
+
+def test_a_failed_frame_shows_its_error_then_its_warnings(tmp_path):
+    path = tmp_path / "halide-log.txt"
+    bad = BatchResult(job=BatchJob(Path("bad.tif"), Path("out/bad.tif")), error="boom", warning="w1; w2")
+    _run(path, [bad])
+    line = next(x for x in path.read_text(encoding="utf-8").splitlines() if x.startswith("bad.tif"))
+    assert line.endswith("boom; w1; w2")
+
+
+def test_an_interrupt_is_logged_as_interrupted_not_as_an_error(tmp_path):
+    path = tmp_path / "halide-log.txt"
+    log = RunLog(path, "develop", now=_clock(T0, T1))
+    log.start("halide batch in out", ROWS, [], [], "0.1.0")
+    log.finish(None, [], interrupted=True)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    i = lines.index("✗ Stopped — interrupted")
+    assert lines[i + 1].startswith("━━ finished") and "error" not in "\n".join(lines[i:])
+
+
+def test_each_frame_line_is_fsynced(tmp_path, monkeypatch):
+    import os
+
+    synced = []
+    monkeypatch.setattr(os, "fsync", lambda fd: synced.append(fd))
+    _run(tmp_path / "halide-log.txt", [_ok("a.tif"), _ok("b.tif")])
+    assert len(synced) == 2
+
+
+def test_a_failing_fsync_stays_inside_the_never_raise_contract(tmp_path, monkeypatch):
+    import os
+
+    def nope(fd):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(os, "fsync", nope)
+    log = _run(tmp_path / "halide-log.txt", [_ok("a.tif")])
+    assert log.error is not None

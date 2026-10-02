@@ -11,6 +11,7 @@ from typing import Sequence
 from dataclasses import replace
 from pathlib import Path
 
+from halide import ignore_colour_matplotlib_warning
 from halide.io.roll import list_scans
 from halide.batch.orchestrator import BatchJob, default_worker_count, jobs_for_files, memory_budget_warning, run_batch
 from halide.batch.progress import cancel_notice, make_renderer
@@ -329,6 +330,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
         skipped: list[str] = []
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
+            ignore_colour_matplotlib_warning()  # "always" would bring back colour's plotting notice
             with sheet.working("Calibration", f"estimating one profile from all {frame_count(len(jobs))}…"):
                 try:
                     density_profile = estimate_roll_density_profile(

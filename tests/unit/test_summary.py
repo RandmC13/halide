@@ -132,3 +132,23 @@ def test_other_warnings_survive_next_to_the_service_one():
     texts = [r[2] for r in _rows([_ok("a.tif", 1.0, warning=both)], stopped=service_stopped)]
     assert "a.tif: the exif copy failed" in texts
     assert any("couldn't connect: OSError" in t for t in texts)
+
+
+def test_warnings_group_after_removing_the_frames_own_name():
+    from halide.processing import DeviceFailure
+
+    failure = DeviceFailure(type_name="OutOfMemoryError", message="oom", out_of_memory=True, host_touched=False)
+    results = []
+    for name in ("a.tif", "b.tif", "c.tif"):
+        path = Path("/roll") / name
+        job = BatchJob(path, Path("out") / name)
+        # a full path for two frames, a bare name for the third: both are the frame's own name
+        warning = failure.warning(path if name != "c.tif" else name)
+        results.append(BatchResult(job=job, error=None, warning=warning, contrast=0.9, exposure=0.1,
+                                   grade_fitted=True))
+    s = RollSummary.from_results(results, "develop")
+    assert s.warning_groups == [
+        ("out of GPU memory — developed this frame on the CPU instead", ["a.tif", "b.tif", "c.tif"])]
+    row = [r for r in summary_rows(s) if r[1] == "Warnings"]
+    assert row == [("warn", "Warnings",
+                    "3 frames: out of GPU memory — developed this frame on the CPU instead — a.tif, b.tif, c.tif")]
