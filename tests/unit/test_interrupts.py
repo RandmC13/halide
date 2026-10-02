@@ -1,6 +1,11 @@
 """halide.interrupts: the signal helpers behind orderly cancelling (F12, review 2.4-9)."""
 
+import os
+import selectors
 import signal
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -31,6 +36,9 @@ def test_a_handler_installed_from_c_is_left_alone_on_restore(monkeypatch):
     assert all(handler is interrupts._raise_interrupt for _, handler in calls)
 
 
+# Liveness is read from /proc, so these run where that exists rather than pass vacuously elsewhere.
+LINUX_ONLY = pytest.mark.skipif(sys.platform != "linux", reason="reads /proc")
+
 _POOL_SCRIPT = """
 import multiprocessing, sys, time
 from concurrent.futures import ProcessPoolExecutor
@@ -57,8 +65,6 @@ if __name__ == "__main__":
 
 
 def _alive(pid: int) -> bool:
-    import os
-
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -80,6 +86,9 @@ def _run_and_kill_owner(mode: str, script) -> list[int]:
     owner = subprocess.Popen([sys.executable, str(script), mode], stdout=subprocess.PIPE, text=True)
     pids: list[int] = []
     try:
+        ready = selectors.DefaultSelector()
+        ready.register(owner.stdout, selectors.EVENT_READ)
+        assert ready.select(timeout=60), "the pool's workers never reported their pids"
         pids = [int(p) for p in owner.stdout.readline().split()]
         assert pids
         owner.kill()
@@ -90,16 +99,17 @@ def _run_and_kill_owner(mode: str, script) -> list[int]:
         return [p for p in pids if _alive(p)]
     finally:
         owner.kill()
+        owner.stdout.close()
         for p in pids:
             if _alive(p):
                 os.kill(p, signal.SIGKILL)
 
 
-@pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals")
+@LINUX_ONLY
 def test_pool_workers_exit_when_the_owner_is_killed(tmp_path):
     assert _run_and_kill_owner("init", tmp_path / "owner.py") == []
 
 
-@pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals")
+@LINUX_ONLY
 def test_control_pool_workers_without_initializer_are_orphaned(tmp_path):
     assert _run_and_kill_owner("none", tmp_path / "owner.py") != []

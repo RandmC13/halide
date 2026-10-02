@@ -2,6 +2,7 @@
 robustness property called out in the build plan: one frame's failure must not corrupt or block
 the rest of the batch."""
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -11,8 +12,9 @@ from PIL import Image
 from halide.batch.orchestrator import discover_jobs, run_batch
 from halide.cli.main import main
 from halide.core.types import ToneCurveParams
-from halide.io.tiff import read_tiff, write_tiff
-from halide.processing import Stage
+import halide.processing as processing
+from halide.io.tiff import read_tiff, read_tiff_description, write_tiff
+from halide.processing import Stage, read_provenance
 from tests.unit.test_icc import LINEAR_TAGS, build_icc
 
 SHADOW_RGB = (0.094, 0.131, 0.050)
@@ -315,8 +317,6 @@ def test_flat_results_carry_their_scale(roll_dir, tmp_path):
 def _resumed_roll(tmp_path, monkeypatch):
     """A 6-frame roll developed with --auto-density-roll, two outputs deleted, then resumed with
     --skip-existing. Returns (out_dir, paths the estimate saw on the resume, resumed names, kept mtimes)."""
-    import os
-
     in_dir = tmp_path / "roll"
     in_dir.mkdir()
     for i in range(6):
@@ -328,8 +328,6 @@ def _resumed_roll(tmp_path, monkeypatch):
     for name in gone:
         (out_dir / name).unlink()
     kept = {p.name: os.stat(p).st_mtime_ns for p in out_dir.glob("*.tiff")}
-
-    import halide.processing as processing
 
     seen: list[list] = []
     real = processing.estimate_roll_density_profile
@@ -344,8 +342,6 @@ def _resumed_roll(tmp_path, monkeypatch):
 
 
 def test_resuming_estimates_the_roll_profile_from_every_frame(tmp_path, monkeypatch):
-    import os
-
     out_dir, in_dir, seen, gone, kept = _resumed_roll(tmp_path, monkeypatch)
     assert len(seen) == 1
     assert sorted(Path(p).name for p in seen[0]) == [f"f{i}.tiff" for i in range(6)]
@@ -355,9 +351,6 @@ def test_resuming_estimates_the_roll_profile_from_every_frame(tmp_path, monkeypa
 
 
 def test_resumed_frames_use_the_same_profile_as_the_rest_of_the_roll(tmp_path, monkeypatch):
-    from halide.io.tiff import read_tiff_description
-    from halide.processing import read_provenance
-
     out_dir, _, _, gone, kept = _resumed_roll(tmp_path, monkeypatch)
 
     def profile(name):
@@ -367,3 +360,27 @@ def test_resumed_frames_use_the_same_profile_as_the_rest_of_the_roll(tmp_path, m
     reference = profile(next(iter(kept)))
     for name in gone:
         assert profile(name) == reference
+
+
+def test_resumed_minority_exposure_frame_is_matched_to_the_rolls_most_common_setting(tmp_path):
+    from halide.calibration.scan_consistency import scan_gain
+    from halide.io.scan_metadata import read_scan_metadata
+    from tests.integration.test_check_cli import _frame
+
+    in_dir = tmp_path / "roll"
+    in_dir.mkdir()
+    for i in range(5):
+        _frame(in_dir / f"f{i}.tiff", exposure=(1, 50), seed=i)
+    _frame(in_dir / "f5.tiff", exposure=(1, 25), seed=5)  # the minority exposure
+    out_dir = tmp_path / "out"
+    args = ["batch", str(in_dir), str(out_dir), "--auto-density-roll", "--match-scan-exposure", "--quiet"]
+    assert main(args) == 0
+    (out_dir / "f5.tiff").unlink()
+    assert main(args + ["--skip-existing"]) == 0
+
+    common, _ = read_scan_metadata(in_dir / "f0.tiff")
+    own, _ = read_scan_metadata(in_dir / "f5.tiff")
+    expected = scan_gain(own, common)
+    assert expected != 1.0
+    record = read_provenance(read_tiff_description(out_dir / "f5.tiff"))
+    assert record["scan_gain"] == pytest.approx(expected)

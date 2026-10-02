@@ -280,8 +280,8 @@ def run(args: argparse.Namespace) -> int:
         if thumbnails is not None:
             jobs = [replace(job, thumbnail_path=thumbnails / f"{i:04d}.png") for i, job in enumerate(jobs)]
         return _run(
-            args, stage, input_dir, jobs, roll_jobs=roll_jobs, output_dir=output_dir, skipped_frames=skipped_frames, build_sheet=build_sheet,
-            left_out=left_out, kept=kept,
+            args, stage, input_dir, jobs, roll_jobs=roll_jobs, output_dir=output_dir,
+            skipped_frames=skipped_frames, build_sheet=build_sheet, left_out=left_out, kept=kept,
         )
     finally:
         if thumbnails is not None:
@@ -390,7 +390,8 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
 
 
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], *,
-         roll_jobs: list[BatchJob] | None = None, output_dir: Path | None = None, skipped_frames: int = 0, build_sheet: bool = True,
+         roll_jobs: list[BatchJob] | None = None, output_dir: Path | None = None, skipped_frames: int = 0,
+         build_sheet: bool = True,
          left_out=None, kept: Sequence[str] = ()) -> int:
     if stage is not Stage.INVERT_ONLY:
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
