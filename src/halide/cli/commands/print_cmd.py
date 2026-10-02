@@ -100,7 +100,6 @@ def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCur
     from halide import device as halide_device
     from halide.processing import PrintInputError, ScanColorError, print_scan
 
-    refuse_dry_run_for_single_file(args)
     check_input_file(input_path)
 
     output_path = Path(args.output)
@@ -238,8 +237,10 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
 
 
 def run(args: argparse.Namespace) -> int:
-    tone_params = _resolve_tone(args)
     input_path = Path(args.input)
+    if not input_path.is_dir():
+        refuse_dry_run_for_single_file(args)  # before anything is resolved
+    tone_params = _resolve_tone(args)
     device = resolve_device_arg(args, isolated=input_path.is_dir())  # a bulk run's parent never computes
     if input_path.is_dir():
         return _run_bulk(args, input_path, tone_params, device)

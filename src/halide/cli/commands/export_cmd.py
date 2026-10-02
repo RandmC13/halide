@@ -89,7 +89,6 @@ def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
     from halide import device as halide_device
     from halide.processing import ScanColorError, export_delivery_image
 
-    refuse_dry_run_for_single_file(args)
     check_input_file(input_path)
 
     output_path = Path(args.output)
@@ -234,6 +233,8 @@ def run(args: argparse.Namespace) -> int:
     # CuPy/a driver and every command's Compute row behaves the same way (Ruling R7). Both modes
     # export on it: the single file in this process, a directory in the worker pool.
     input_path = Path(args.input)
+    if not input_path.is_dir():
+        refuse_dry_run_for_single_file(args)  # before the device is resolved
     device = resolve_device_arg(args, isolated=input_path.is_dir())  # a bulk run's parent never computes
     if input_path.is_dir():
         return _run_bulk(args, input_path, device)

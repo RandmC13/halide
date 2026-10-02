@@ -127,38 +127,65 @@ def _choose_service_workers(args: argparse.Namespace, jobs: list[BatchJob], shee
     return workers
 
 
-def outputs_row(sheet: RunSheet, policy, existing: int) -> None:
-    """A dry run's row for outputs that already exist: what the real run would do about them. Nothing
-    for --skip-existing (the "Skipping" row says it) or when nothing exists."""
+def _exist_phrase(existing: int, sheet: str | None, policy) -> str:
+    """What already exists, worded for the policy that will deal with it (frames' outputs, and the
+    contact sheet when that exists too)."""
     from halide.cli._output_policy import OutputPolicy
 
-    if not existing or policy is OutputPolicy.SKIP_EXISTING:
-        return
     if policy is OutputPolicy.OVERWRITE:
-        sheet.row("Outputs", f"{existing} would be replaced")
+        if existing and sheet:
+            return f"{existing} would be replaced, and the contact sheet {sheet}"
+        return f"{existing} would be replaced" if existing else f"the contact sheet {sheet} would be replaced"
+    if existing and sheet:
+        return f"{existing} already exist, and so does the contact sheet {sheet}"
+    return f"{existing} already exist" if existing else f"the contact sheet {sheet} already exists"
+
+
+def outputs_row(sheet: RunSheet, policy, existing: int, contact_sheet: str | None = None) -> None:
+    """A dry run's row for outputs that already exist (frames, and the contact sheet when `contact_sheet`
+    names an existing one): what the real run would do about them. Under --skip-existing the frames
+    have their own "Skipping" row, so only an existing sheet is mentioned (it's kept)."""
+    from halide.cli._output_policy import OutputPolicy
+
+    if policy is OutputPolicy.SKIP_EXISTING:
+        if contact_sheet:
+            sheet.row("Outputs", f"the contact sheet {contact_sheet} is kept (--skip-existing)")
+        return
+    if not existing and not contact_sheet:
+        return
+    text = _exist_phrase(existing, contact_sheet, policy)
+    if policy is OutputPolicy.OVERWRITE:
+        sheet.row("Outputs", text)
     else:
-        sheet.warn("Outputs", f"{existing} already exist — a real run would ask (or --overwrite / --skip-existing)")
+        sheet.warn("Outputs", f"{text} — a real run would ask (or --overwrite / --skip-existing)")
 
 
 def dry_run_line(verb: str, n_frames: int, destination: str, *, kept: int, existing: int, policy,
-                 preview_sheet: str | None = None) -> str:
+                 sheet: str | None = None, preview_sheet: str | None = None) -> str:
     """The one line a dry run ends with: "Dry run — nothing developed. 25 frames would be developed
-    → out/, 12 kept." `verb` is the command's key in console.VERB_PAST/NOUN ("batch", "print",
-    "export"); `existing` only counts when it needs saying (the default policy asks, --overwrite
-    replaces); `preview_sheet` is a batch preview's contact sheet, which has no output folder."""
+    → out; 12 kept." `verb` is the command's key in console.VERB_PAST/NOUN ("batch", "print",
+    "export"); `n_frames` is every frame in the plan, `existing` how many of those already have an
+    output (the default policy asks about them, so they aren't "new"), `sheet` an existing contact
+    sheet, `preview_sheet` a batch preview's contact sheet, which has no output folder."""
     from halide.cli._output_policy import OutputPolicy
 
     past = console.VERB_PAST[verb].lower()
-    what = console.plural(n_frames, console.NOUN[verb])
-    if preview_sheet is not None:
-        head = f"{what} would be {past} for the contact sheet {preview_sheet}"
+    noun = console.NOUN[verb]
+    asking = policy is OutputPolicy.ASK and (existing or sheet)
+    count = n_frames - existing if asking and not preview_sheet else n_frames
+    if count:
+        what = console.plural(count, f"new {noun}" if asking and existing else noun)
     else:
-        head = f"{what} would be {past} → {destination}"
-    extras = []
+        what = f"no new {noun}s"
+    where = f"for the contact sheet {preview_sheet}" if preview_sheet is not None else f"→ {destination}"
+    parts = [f"{what} would be {past} {where}"]
     if kept:
-        extras.append(f"{kept} kept")
-    if existing and policy is OutputPolicy.OVERWRITE:
-        extras.append(f"{existing} would be replaced")
-    elif existing and policy is OutputPolicy.ASK:
-        extras.append(f"{existing} already exist (a real run would ask)")
-    return console.success(f"Dry run — nothing {past}. {', '.join([head, *extras])}.")
+        parts.append(f"{kept} kept")
+    if policy is OutputPolicy.OVERWRITE and (existing or sheet):
+        parts.append(_exist_phrase(existing, sheet, policy))
+    elif asking:
+        plural_them = "them" if existing + bool(sheet) > 1 else "it"
+        parts.append(
+            f"{_exist_phrase(existing, sheet, policy)} (a real run would ask whether to replace {plural_them})"
+        )
+    return console.success(f"Dry run — nothing {past}. {'; '.join(parts)}.")

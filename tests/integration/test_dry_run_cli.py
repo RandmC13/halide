@@ -88,7 +88,8 @@ def test_existing_outputs_never_prompt_and_say_would_ask(roll, tmp_path, capsys,
     code, out = _run(capsys, "batch", str(roll), str(out_dir), *MANUAL, "--dry-run")
     assert code == 0 and _snapshot(tmp_path) == before
     assert "3 already exist — a real run would ask" in out
-    assert "3 already exist (a real run would ask)" in out
+    assert "3 already exist (a real run would ask whether to replace them)" in out
+    assert "no new frames would be developed" in out
 
 
 def test_existing_outputs_non_interactive_does_not_refuse(roll, tmp_path, capsys, monkeypatch):
@@ -133,7 +134,7 @@ def test_no_calibration_lists_saved_profiles_without_asking(roll, tmp_path, caps
 def test_no_calibration_and_no_saved_profiles(roll, tmp_path, capsys):
     code, out = _run(capsys, "batch", str(roll), str(tmp_path / "out"), "--dry-run")
     assert code == 0
-    assert "no saved profiles yet: halide calibrate" in out
+    assert "no saved profiles yet (make one with: halide calibrate" in out and "choose; no saved" in out
 
 
 def test_auto_density_roll_reads_no_pixels(roll, tmp_path, capsys, monkeypatch):
@@ -163,7 +164,9 @@ def test_the_gpu_service_is_never_started(roll, tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(device_args, "resolve_device", lambda requested, isolated=False: gpu)
     monkeypatch.setattr(orchestrator, "_start_service", lambda *a, **k: pytest.fail("service started"))
     monkeypatch.setattr(orchestrator, "_service_python_supported", lambda: True)
-    monkeypatch.setattr(orchestrator, "sweep_stale", lambda: pytest.fail("swept"), raising=False)
+    import halide.shared_frames as shared_frames
+
+    monkeypatch.setattr(shared_frames, "sweep_stale", lambda: pytest.fail("swept"))
     code, out = _run(capsys, "batch", str(roll), str(tmp_path / "out"), *MANUAL, "--dry-run")
     assert code == 0
     assert "GPU — Fake GPU" in out and "would share one GPU process between the workers" in out
@@ -237,3 +240,64 @@ def test_help_lists_dry_run(capsys):
     with pytest.raises(SystemExit):
         main(["batch", "--help"])
     assert "--dry-run" in capsys.readouterr().out
+
+
+def test_existing_contact_sheet_is_reported_in_each_policy(roll, tmp_path, capsys):
+    sheet = tmp_path / "s.jpg"
+    sheet.write_bytes(b"x")
+    out_dir = tmp_path / "out"
+    code, out = _run(capsys, "batch", str(roll), str(out_dir), *MANUAL, "--dry-run", "--contact-sheet", str(sheet))
+    assert code == 0 and "the contact sheet" in out and "already exists — a real run would ask" in out
+    assert "3 frames would be developed" in out and "whether to replace it" in out
+    code, out = _run(capsys, "batch", str(roll), str(out_dir), *MANUAL, "--dry-run", "--contact-sheet", str(sheet),
+                     "--overwrite")
+    assert "the contact sheet" in out and "would be replaced" in out
+    code, out = _run(capsys, "batch", str(roll), str(out_dir), *MANUAL, "--dry-run", "--contact-sheet", str(sheet),
+                     "--skip-existing")
+    assert "is kept (--skip-existing)" in out
+    assert sheet.read_bytes() == b"x"
+
+
+def test_existing_contact_sheet_in_a_preview(roll, tmp_path, capsys):
+    sheet = tmp_path / "s.jpg"
+    sheet.write_bytes(b"x")
+    code, out = _run(capsys, "batch", str(roll), "--contact-sheet", str(sheet), *MANUAL, "--dry-run")
+    assert code == 0 and "already exists — a real run would ask" in out
+    code, out = _run(capsys, "batch", str(roll), "--contact-sheet", str(sheet), *MANUAL, "--dry-run", "--skip-existing")
+    assert code == 0 and out.rstrip().endswith("already exists (--skip-existing).")
+    assert "Dry run — nothing developed. Nothing to do" in out
+
+
+def test_invert_only_with_save_profile_as_errors_like_a_real_run(roll, tmp_path):
+    with pytest.raises(SystemExit, match="needs a single resolved profile"):
+        main(["batch", str(roll), str(tmp_path / "out"), "--invert-only", "--save-profile-as", "x", "--dry-run"])
+
+
+def test_everything_present_but_the_sheet_would_build_it_from_the_folder(roll, tmp_path, capsys):
+    out_dir = tmp_path / "out"
+    _develop(roll, out_dir)
+    capsys.readouterr()
+    code, out = _run(capsys, "batch", str(roll), str(out_dir), *MANUAL, "--dry-run", "--skip-existing",
+                     "--contact-sheet", str(tmp_path / "s.jpg"))
+    assert code == 0 and "Dry run — nothing developed. Nothing to develop" in out
+    assert "would be built from the folder" in out
+
+
+def test_ask_mode_counts_new_frames_once(roll, tmp_path, capsys):
+    out_dir = tmp_path / "out"
+    _develop(roll, out_dir)
+    (out_dir / "frame_00.tif").unlink()
+    capsys.readouterr()
+    code, out = _run(capsys, "batch", str(roll), str(out_dir), *MANUAL, "--dry-run")
+    assert "1 new frame would be developed" in out and "2 already exist (a real run would ask" in out
+
+
+def test_single_file_dry_run_refuses_before_resolving_the_device(tmp_path, monkeypatch):
+    import halide.cli._device_args as device_args
+
+    monkeypatch.setattr(device_args, "resolve_device", lambda *a, **k: pytest.fail("device resolved"))
+    f = tmp_path / "a.tif"
+    _negative(f, 0)
+    for command in ("print", "export"):
+        with pytest.raises(SystemExit, match="plans a folder run"):
+            main([command, str(f), str(tmp_path / "o.tif"), "--dry-run"])

@@ -265,6 +265,14 @@ def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
         args.auto_density_roll = True
 
 
+def missing_profile_message(name: str, exc: Exception) -> str:
+    """The error for a --profile that doesn't exist, with a "did you mean" hint when a saved name
+    is close. One place, shared by a real run and a dry run (which must not ask the question)."""
+    suggestion = suggest_profile_name(name)
+    hint = f" — did you mean '{suggestion}'?" if suggestion else ""
+    return f"{exc}{hint}"
+
+
 def resolve_density_profile(
     args: argparse.Namespace,
 ) -> tuple[DensityProfile | None, ToneCurveParams | None]:
@@ -295,8 +303,7 @@ def resolve_density_profile(
             if suggestion and console.confirm(f"No profile named '{args.profile}' — did you mean '{suggestion}'?"):
                 path = resolve_profile_path(suggestion)
             else:
-                hint = f" — did you mean '{suggestion}'?" if suggestion else ""
-                raise SystemExit(f"{exc}{hint}") from exc
+                raise SystemExit(missing_profile_message(args.profile, exc)) from exc
         try:
             return load_profile(path), load_tone_override(path)
         except (ValueError, json.JSONDecodeError) as exc:
