@@ -333,3 +333,30 @@ def test_an_unreadable_header_is_still_listed_as_a_scan(tmp_path):
     (tmp_path / "broken.tif").write_bytes(b"not a tiff")
     files, skipped = list_scans(tmp_path, skip_positives=True)
     assert [f.name for f in files] == ["broken.tif"] and not skipped
+
+
+# --- natural order ----------------------------------------------------------------------------------
+
+
+def test_natural_key_orders_numbers_as_numbers():
+    from halide.io.roll import natural_key
+
+    names = ["frame_10.tif", "frame_2.tif", "frame_1.tif", "IMG_0138.tif", "IMG_0139.tif"]
+    assert sorted(names, key=natural_key) == [
+        "IMG_0138.tif", "IMG_0139.tif", "frame_1.tif", "frame_2.tif", "frame_10.tif"]
+
+
+def test_zero_padded_names_keep_their_old_order():
+    from halide.io.roll import natural_key
+
+    names = [f"IMG_{i:04d}.tif" for i in (175, 9, 138, 1000)]
+    assert sorted(names, key=natural_key) == sorted(names)
+
+
+def test_list_scans_uses_natural_order(tmp_path):
+    from halide.io.roll import list_scans
+
+    for n in (10, 2, 1):
+        (tmp_path / f"f{n}.tif").write_bytes(b"")
+    files, _ = list_scans(tmp_path)
+    assert [f.name for f in files] == ["f1.tif", "f2.tif", "f10.tif"]

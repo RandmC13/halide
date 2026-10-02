@@ -6,6 +6,7 @@ the CLI's start-up path."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,6 +16,16 @@ _PICTURE_SUFFIXES = (".jpg", ".jpeg", ".png")
 _MACOS_JUNK = ("._", ".ds_store")
 # halide's own run log (batch/runlog.py), written into output folders; never a frame.
 RUN_LOG_NAME = "halide-log.txt"
+
+_DIGITS = re.compile(r"(\d+)")
+
+
+def natural_key(name: str) -> tuple:
+    """Sort key that compares the numbers inside a name as numbers, so `frame_2` comes before
+    `frame_10` — the frame order `{n}`, contact sheets and logs all follow. Zero-padded camera names
+    (IMG_0138) sort exactly as plain text did. The plain name breaks ties ("f01" vs "f1")."""
+    parts = tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in _DIGITS.split(name) if p)
+    return parts, name
 
 
 @dataclass
@@ -71,7 +82,7 @@ def _kind(suffix: str) -> str:
 def list_scans(
     folder: Path | str, *, extra_suffixes: tuple[str, ...] = (), skip_positives: bool = False
 ) -> tuple[list[Path], Skipped]:
-    """The scans in `folder` (`.tif`/`.tiff`, any case), sorted by name, and what was skipped and why.
+    """The scans in `folder` (`.tif`/`.tiff`, any case), sorted in natural order, and what was skipped and why.
 
     Skipped: names starting with "." (which covers macOS's `._*` copies and halide's own
     partial-write files), halide's contact sheets, other files, and subfolders. `extra_suffixes`
@@ -83,7 +94,7 @@ def list_scans(
     accepted = TIFF_SUFFIXES + tuple(extra_suffixes)
     scans: list[Path] = []
     skipped = Skipped()
-    for entry in sorted(folder.iterdir(), key=lambda p: p.name):
+    for entry in sorted(folder.iterdir(), key=lambda p: natural_key(p.name)):
         name = entry.name
         if name.startswith("."):
             skipped.hidden += 1
