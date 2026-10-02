@@ -162,3 +162,27 @@ def test_plain_row_lines_stack_labels():
         "                 ⚠ b",
         "  Calibration    ✓ saved",
     ]
+
+
+def test_surrogate_escape_file_names_are_written_legibly(tmp_path):
+    path = tmp_path / "halide-log.txt"
+    # A filename with surrogate escapes (as seen on Linux with non-UTF-8 bytes in filenames)
+    bad_name = "bad\udcff.tif"
+    r = BatchResult(job=BatchJob(Path(bad_name), Path("o/bad.tif")), error=None, contrast=0.88,
+                    exposure=0.39, grade_fitted=True, seconds=4.1)
+    log = RunLog(path, "develop", now=_clock(T0, T1))
+    log.start("halide batch in out", ROWS, [bad_name], [], "0.1.0")
+    log.frame(r)
+    log.finish("✓ Developed 1 frame in 4.1s", [], error=None)
+    assert log.error is None
+    text = path.read_text(encoding="utf-8")
+    assert "bad\\udcff.tif" in text
+
+
+def test_unknown_kind_does_not_raise_and_sets_error(tmp_path):
+    path = tmp_path / "halide-log.txt"
+    log = RunLog(path, "nonsense", now=_clock(T0, T1))
+    log.start("halide batch in out", ROWS, ["a.tif"], [], "0.1.0")
+    log.frame(_ok("a.tif"))
+    log.finish("end", [])
+    assert log.error is not None and "KeyError" in log.error
