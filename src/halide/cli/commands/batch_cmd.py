@@ -39,11 +39,11 @@ from halide.cli._calibration_args import (
     resolve_stage,
     resolve_tone_params,
 )
+from halide.cli._run_log import RunRecord, add_log_arguments
 from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
     frame_count,
-    print_frame_warnings,
     roll_row,
     skipped_row,
     start_compute,
@@ -74,6 +74,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_contact_layout_arguments(parser)
     parser.add_argument("--suffix", default="", help="Text to add to each output file name, before .tif")
     add_output_policy_arguments(parser, saves_profile=True)
+    add_log_arguments(parser)
 
     add_stage_arguments(parser)
     sources = add_calibration_arguments(parser)
@@ -238,12 +239,16 @@ def run(args: argparse.Namespace) -> int:
     # through the overwrite policy — combined into one decision, one prompt for the whole roll.
     if output_dir is not None:
         extra = [(sheet_path, sheet_path)] if sheet_path is not None else None
+        all_jobs = jobs
         jobs, skipped_frames, kept_outputs = resolve_bulk_jobs(
             jobs, args, interactive=is_interactive(), extra_pairs=extra
         )
+        developing = {j.output_path for j in jobs}
+        kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
         build_sheet = sheet_path is None or sheet_path in kept_outputs
     else:
         skipped_frames = 0
+        kept = []
         # output_dir is None only reaches here with a contact sheet requested (checked above) — no
         # single "input" for a sheet, so only its own existence matters.
         build_sheet = bool(
@@ -270,7 +275,7 @@ def run(args: argparse.Namespace) -> int:
             jobs = [replace(job, thumbnail_path=thumbnails / f"{i:04d}.png") for i, job in enumerate(jobs)]
         return _run(
             args, stage, input_dir, jobs, output_dir=output_dir, skipped_frames=skipped_frames, build_sheet=build_sheet,
-            left_out=left_out,
+            left_out=left_out, kept=kept,
         )
     finally:
         if thumbnails is not None:
@@ -372,7 +377,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
 
 def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], *,
          output_dir: Path | None = None, skipped_frames: int = 0, build_sheet: bool = True,
-         left_out=None) -> int:
+         left_out=None, kept: list[str] = ()) -> int:
     if stage is not Stage.INVERT_ONLY:
         choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
     # --auto-density-roll vs --profile/--auto-density is argparse's (exclusive group); only the
@@ -387,45 +392,35 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
                 args, stage, input_dir, jobs, sheet, stack, skipped_frames=skipped_frames, left_out=left_out
             )
 
+        record = RunRecord(args, "develop", output_dir)
+        record.start(sheet, jobs, list(kept))
         renderer = make_renderer(len(jobs), "invert", quiet=args.quiet)
         job_index = {job: i for i, job in enumerate(jobs)}
 
         def on_start(job):
-            if renderer:
-                renderer.mark_processing(job_index[job])
+            renderer.mark_processing(job_index[job])
 
         def on_result(result):
-            if renderer:
-                renderer.report(job_index[result.job], result)
+            record.add(result)
+            renderer.report(job_index[result.job], result)
 
-        if renderer:
-            renderer.start()
-
-        results = run_batch(
-            jobs,
-            stage,
-            density_profile,
-            tone_params,
-            max_workers=workers,
-            on_result=on_result,
-            on_start=on_start,
-            on_cancel=cancel_notice(renderer),
-            thumbnail_long_edge=args.frame_width,
-            device=device,
-            compute=compute,
-        )
+        renderer.start()
+        try:
+            results = run_batch(
+                jobs, stage, density_profile, tone_params, max_workers=workers, on_result=on_result,
+                on_start=on_start, on_cancel=cancel_notice(renderer), thumbnail_long_edge=args.frame_width,
+                device=device, compute=compute,
+            )
+        except BaseException as exc:
+            record.abort(exc)
+            raise
 
     cancelled = len(results) < len(jobs)
-    if renderer:
-        if cancelled:
-            done_indices = {job_index[r.job] for r in results}
-            not_started = [i for i in range(len(jobs)) if i not in done_indices]
-            renderer.cancel(not_started)
-        renderer.finish(cancelled=cancelled)
-
-    # Printed even with --quiet, like every run-sheet warning: e.g. a frame the GPU couldn't develop
-    # and the CPU redid (same result, within the GPU tolerance, but the user should know).
-    print_frame_warnings(results)
+    if cancelled:
+        done_indices = {job_index[r.job] for r in results}
+        renderer.cancel([i for i in range(len(jobs)) if i not in done_indices])
+    renderer.finish(cancelled=cancelled)
+    record.finish(renderer)
 
     failures = [r for r in results if r.error]
 

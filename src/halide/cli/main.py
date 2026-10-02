@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 
 from halide.cli import console
@@ -78,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("batch", "Invert a folder of negative scans in parallel", batch_cmd,
         'halide batch roll16/ roll16-developed/ --profile "Portra 400"',
         "halide batch roll16/ --contact-sheet preview.jpg",
-        "halide batch roll16/ roll16-developed/ --skip-existing")
+        "halide batch roll16/ roll16-developed/ --log ~/darkroom-notes.txt")
     add("print", "Print a flat positive (from `invert --output flat`, optionally edited in "
         "darktable) onto the paper curve", print_cmd,
         "halide print flat_edited.tif print.tif",
@@ -121,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    # The run log records the command exactly as typed, quoted so it can be pasted back.
+    args.command_line = shlex.join(["halide", *raw_args])
 
     if args.command is None:
         print(console.welcome_screen())

@@ -107,3 +107,28 @@ def test_failed_frames_warnings_are_still_grouped():
 
 def test_nothing_to_say_gives_no_rows():
     assert _rows([]) == []
+
+
+def test_a_real_stopped_service_warning_is_said_once():
+    from halide.gpu_service import ServiceUnavailable
+    from halide.processing import service_stopped
+
+    failure = ServiceUnavailable("the GPU service stopped responding (EOFError)").failure
+    frame_warning = failure.warning("a.tif").removeprefix("a.tif: ")
+    results = [_ok(f"{n}.tif", 1.0, warning=frame_warning) for n in "abc"] + [_ok("d.tif", 1.0, warning="something else")]
+    rows = [r for r in _rows(results, stopped=service_stopped) if r[1] == "Warnings"]
+    assert rows == [
+        ("warn", "Warnings", "d.tif: something else"),
+        ("warn", "Warnings", "The GPU service stopped (no reply: EOFError); developing the remaining frames on the CPU"),
+    ]
+
+
+def test_other_warnings_survive_next_to_the_service_one():
+    from halide.gpu_service import ServiceUnavailable
+    from halide.processing import service_stopped
+
+    stopped = ServiceUnavailable("the GPU service can't be reached (OSError)").failure.warning("a.tif")
+    both = f"{stopped.removeprefix('a.tif: ')}; the exif copy failed"
+    texts = [r[2] for r in _rows([_ok("a.tif", 1.0, warning=both)], stopped=service_stopped)]
+    assert "a.tif: the exif copy failed" in texts
+    assert any("couldn't connect: OSError" in t for t in texts)

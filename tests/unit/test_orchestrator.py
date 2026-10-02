@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from halide.io.roll import RUN_LOG_NAME
 from halide.batch.orchestrator import (
     BatchJob,
     BatchResult,
@@ -1257,7 +1258,7 @@ def test_a_signalled_gpu_batch_cancels_in_order_and_leaves_nothing_behind(tmp_pa
     assert process.returncode == 130
     assert _group_gone(process.pid)
     assert not any(name.startswith(ours) for name in _shm_entries())
-    outputs = sorted(p.name for p in (tmp_path / "out").iterdir())
+    outputs = sorted(p.name for p in (tmp_path / "out").iterdir() if p.name != RUN_LOG_NAME)
     assert not any("partial" in name for name in outputs)  # frames in progress finished, whole
     counted = int(re.search(r"Cancelled - (\d+) of 6", out + err).group(1))
     assert len(outputs) == counted  # and every frame written is counted

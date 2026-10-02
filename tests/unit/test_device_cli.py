@@ -347,7 +347,8 @@ def test_batch_hands_the_device_to_its_workers_and_shows_their_warnings(roll_dir
     assert seen == [_FAKE_GPU]  # the default worker count knows it's a GPU run (VRAM cap)
     out = _strip(capsys.readouterr().out)
     # A frame redone on the CPU is reported, even with --quiet (warnings always print).
-    assert "frame_00.tiff: out of GPU memory" in out and "frame_01.tiff: out of GPU memory" in out
+    # ... as one grouped Warnings row naming the frames, not a line per frame.
+    assert "2 frames: out of GPU memory" in out and "frame_00.tiff, frame_01.tiff" in out
 
 
 def test_export_directory_hands_the_device_to_its_workers(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves):

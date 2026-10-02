@@ -41,6 +41,7 @@ _KINDS = {
     "scan_reference": "tiff",
     "output": "file",
     "contact_sheet": "file",
+    "log": "file",
     "input_dir": "dir",
     "output_dir": "dir",
     "profile": "profile",

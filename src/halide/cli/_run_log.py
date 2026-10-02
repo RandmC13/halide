@@ -1,0 +1,72 @@
+"""The end-of-run summary and the run log, shared by the multi-frame commands (batch, and print/
+export given folders): docs/specs/batch-summary-and-log.md. Stdlib-only at import, like every
+module the parser loads."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from halide.cli import console
+from halide.io.roll import RUN_LOG_NAME
+
+
+def add_log_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--log", metavar="FILE",
+                       help=f"Append this run's record to FILE instead of {RUN_LOG_NAME} in the output folder")
+    group.add_argument("--no-log", action="store_true", help="Don't write a run log")
+
+
+def log_path(args, output_dir: Path | None) -> Path | None:
+    """Where this run's log goes: --log FILE, else the output folder's halide-log.txt, else (a
+    preview with no output folder) nowhere."""
+    if args.no_log:
+        return None
+    if args.log:
+        return Path(args.log)
+    return output_dir / RUN_LOG_NAME if output_dir is not None else None
+
+
+class RunRecord:
+    """One run's summary and log: `start` when the run sheet closes, `add` each result as it
+    arrives, then `finish` (or `abort` on an unexpected error)."""
+
+    def __init__(self, args, kind: str, output_dir: Path | None):
+        from halide.batch.runlog import RunLog
+
+        path = log_path(args, output_dir)
+        self.kind = kind
+        self.quiet = args.quiet
+        self.command = getattr(args, "command_line", "halide")
+        self.log = RunLog(path, kind) if path is not None else None
+        self.results: list = []
+
+    def start(self, sheet: console.RunSheet, jobs, kept: list[str]) -> None:
+        if self.log is not None:
+            from halide.processing import _halide_version
+
+            self.log.start(self.command, sheet.plain_rows, [j.input_path.name for j in jobs], kept,
+                           _halide_version())
+
+    def add(self, result) -> None:
+        self.results.append(result)
+        if self.log is not None:
+            self.log.frame(result)
+
+    def finish(self, renderer) -> None:
+        from halide.batch.summary import RollSummary, summary_rows
+        from halide.processing import service_stopped
+
+        rows = summary_rows(RollSummary.from_results(self.results, self.kind, stopped=service_stopped))
+        if self.log is not None:
+            self.log.finish(getattr(renderer, "end_text", None), rows)
+            if self.log.error is not None:
+                rows.append(("warn", "Log", f"not written — {self.log.error}"))
+            else:
+                rows.append(("row", "Log", str(self.log.path)))
+        console.print_rows(rows, quiet=self.quiet)
+
+    def abort(self, exc: BaseException) -> None:
+        if self.log is not None:
+            self.log.finish(None, [], error=str(exc) or type(exc).__name__)

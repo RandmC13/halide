@@ -11,6 +11,7 @@ import pytest
 import tifffile
 
 import halide.device
+from halide.io.roll import RUN_LOG_NAME
 from halide.calibration.anchors import NeutralPoint
 from halide.calibration.scan_consistency import assess_roll
 from halide.cli.main import main
@@ -109,7 +110,7 @@ def test_no_frame_fails_on_mac_junk(tmp_path):
     out = tmp_path / "out"
     assert main(["batch", str(roll), str(out), "--rm", "0.9", "--bm", "1.1", "--rs", "1", "--bs", "1",
                  "--quiet", "--workers", "1"]) == 0
-    assert [p.name for p in out.iterdir()] == ["a.tif"]
+    assert [p.name for p in out.iterdir() if p.name != RUN_LOG_NAME] == ["a.tif"]
 
 
 def test_batch_run_sheet_row_for_skipped_files(tmp_path, capsys):

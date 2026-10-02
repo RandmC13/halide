@@ -6,6 +6,7 @@ import json
 import numpy as np
 import pytest
 
+from halide.io.roll import RUN_LOG_NAME
 from halide.cli.main import main
 from halide.io.icc import output_profile_bytes
 from halide.io.tiff import read_tiff, write_tiff
@@ -110,4 +111,4 @@ def test_print_directory_mode(negative_tiff, tmp_path):
         _develop(negative_tiff, flat_dir / f"{name}.tif", "--output", "flat")
     out_dir = tmp_path / "prints"
     assert main(["print", str(flat_dir), str(out_dir), "--quiet", "--workers", "1"]) == 0
-    assert sorted(p.name for p in out_dir.iterdir()) == ["a.tif", "b.tif"]
+    assert sorted(p.name for p in out_dir.iterdir() if p.name != RUN_LOG_NAME) == ["a.tif", "b.tif"]

@@ -30,11 +30,11 @@ from halide.cli._output_policy import (
     resolve_existing,
 )
 from halide.io.roll import list_scans
+from halide.cli._run_log import RunRecord, add_log_arguments
 from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
     frame_count,
-    print_frame_warnings,
     roll_row,
     skipped_row,
     start_compute,
@@ -56,6 +56,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "when `input` is a folder",
     )
     add_output_policy_arguments(parser)
+    add_log_arguments(parser)
     parser.add_argument(
         "--quality", type=int, default=95, help="JPEG quality, 1-100 (default: 95, ignored for PNG)"
     )
@@ -138,7 +139,10 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
         for f in files
     ]
 
+    all_jobs = jobs
     jobs, skipped, _ = resolve_bulk_jobs(jobs, args, interactive=is_interactive())
+    developing = {j.output_path for j in jobs}
+    kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
     if not jobs:
         print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
         return 0
@@ -160,35 +164,34 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
                 compute=compute,
             )
 
+        record = RunRecord(args, "export", output_dir)
+        record.start(sheet, jobs, list(kept))
         renderer = make_renderer(len(jobs), "export", quiet=args.quiet)
         job_index = {job: i for i, job in enumerate(jobs)}
 
         def on_start(job):
-            if renderer:
-                renderer.mark_processing(job_index[job])
+            renderer.mark_processing(job_index[job])
 
         def on_result(result):
-            if renderer:
-                renderer.report(job_index[result.job], result)
+            record.add(result)
+            renderer.report(job_index[result.job], result)
 
-        if renderer:
-            renderer.start()
-
-        results = run_export_batch(
-            jobs, quality=args.quality, max_workers=workers, on_result=on_result, on_start=on_start, device=device,
-            on_cancel=cancel_notice(renderer),
-            compute=compute,
-        )
+        renderer.start()
+        try:
+            results = run_export_batch(
+                jobs, quality=args.quality, max_workers=workers, on_result=on_result, on_start=on_start,
+                device=device, on_cancel=cancel_notice(renderer), compute=compute,
+            )
+        except BaseException as exc:
+            record.abort(exc)
+            raise
 
     cancelled = len(results) < len(jobs)
-    if renderer:
-        if cancelled:
-            done_indices = {job_index[r.job] for r in results}
-            not_started = [i for i in range(len(jobs)) if i not in done_indices]
-            renderer.cancel(not_started)
-        renderer.finish(cancelled=cancelled)
-
-    print_frame_warnings(results)
+    if cancelled:
+        done_indices = {job_index[r.job] for r in results}
+        renderer.cancel([i for i in range(len(jobs)) if i not in done_indices])
+    renderer.finish(cancelled=cancelled)
+    record.finish(renderer)
 
     failures = [r for r in results if r.error]
 
