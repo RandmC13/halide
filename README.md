@@ -198,6 +198,16 @@ or refuse (in a script); add `--overwrite` to replace it, or `--skip-existing` t
 the frames that are missing (resuming an interrupted roll). Outputs are written whole or not at
 all, so a cancelled run leaves no half-written file.
 
+### After a run
+
+When `batch`, `print` or `export` finishes a folder, a few lines under the "Developed" line tell
+you how the roll came out: the range of print grades and exposures, any frame whose grade is well
+below the roll's typical one (often a crop with something bright left in it), and any warnings,
+grouped. halide also keeps a notebook: every run appends to `halide-log.txt` in the output
+folder, with the command you ran, the settings, and a line per frame. It is written as the run
+goes, so a run that is killed still leaves a record, and the next run notes that it didn't
+finish. Use `--log FILE` to put the notebook somewhere else, or `--no-log` to skip it.
+
 ## What you get
 
 - **Print** (the default): a TIFF printed through the paper curve, with exposure and grade fitted
