@@ -50,6 +50,16 @@ def test_list_scans_takes_every_case_of_the_suffix_sorted_by_name(tmp_path):
     assert not skipped
 
 
+def test_halide_run_log_is_skipped_silently(tmp_path):
+    from halide.io.roll import RUN_LOG_NAME, list_scans
+
+    (tmp_path / RUN_LOG_NAME).write_text("log\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("mine\n", encoding="utf-8")
+    files, skipped = list_scans(tmp_path)
+    assert files == []
+    assert skipped.other == {"non-TIFF file": 1}  # notes.txt only
+
+
 def test_list_scans_reports_each_reason_for_skipping(tmp_path):
     from halide.io.contact_sheet import Tile, render_sheet, write_sheet
 

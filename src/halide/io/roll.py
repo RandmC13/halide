@@ -84,6 +84,8 @@ def list_scans(
             if name.lower().startswith(_MACOS_JUNK):
                 skipped.macos += 1
             continue
+        if name == RUN_LOG_NAME:
+            continue  # halide's own run log: never a frame, and not worth a "Skipped" mention
         if entry.is_dir():
             skipped.folders += 1
             continue
