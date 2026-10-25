@@ -335,7 +335,7 @@ def test_an_unreadable_header_is_still_listed_as_a_scan(tmp_path):
     assert [f.name for f in files] == ["broken.tif"] and not skipped
 
 
-# --- natural order ----------------------------------------------------------------------------------
+# --- natural order --------------------------------------------------------------------------------
 
 
 def test_natural_key_orders_numbers_as_numbers():

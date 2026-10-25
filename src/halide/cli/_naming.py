@@ -1,4 +1,4 @@
-"""Output naming templates (`--name "{roll}_{n:02}"`): docs/specs/recursive-rolls-and-names.md.
+"""Output naming templates (`--name "{roll}_{n:02}"`): fields, rendering, file-safe values, clashes.
 Stdlib only — the parser imports this module."""
 
 from __future__ import annotations
