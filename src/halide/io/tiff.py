@@ -105,8 +105,8 @@ def _normalize_into(raw: np.ndarray, scale: float, out: np.ndarray | None) -> np
     given. Deliberately cast-then-divide in both cases, not `np.divide(raw, scale, out=out)`: dividing
     straight from the integer input computes (at least internally) in a wider/different type than
     the float32-array-by-python-float division `raw.astype(np.float32) / scale` performs (NEP 50
-    keeps that division in float32 throughout), so the two can round differently in the last bit —
-    see the B1 task brief's ruling. Casting first and dividing second, in both branches, keeps the
+    keeps that division in float32 throughout), so the two can round differently in the last bit.
+    Casting first and dividing second, in both branches, keeps the
     `out=` path bit-identical to today's no-`out` result."""
     if out is None:
         return raw.astype(np.float32) / scale

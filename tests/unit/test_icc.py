@@ -222,8 +222,8 @@ def test_working_space_matrices_reproduce_colour_science():
         chromatic_adaptation_transform="Bradford",
         apply_cctf_encoding=False,
     )
-    # atol=0 (as the brief specifies) is too strict here: this is exactly the last-float64-bit
-    # divergence the brief's own background measurements describe — colour's per-pixel `vecmul`
+    # atol=0 is too strict here: this is exactly the last-float64-bit divergence measured when the
+    # matrices were fused — colour's per-pixel `vecmul`
     # broadcast and a single chained matmul use FMA differently, which shows up as a ~1-2 ULP
     # *absolute* difference that's a large *relative* difference for the small values this random
     # sample happens to produce near the neutral axis. Confirmed by direct comparison (not assumed):

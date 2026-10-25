@@ -17,8 +17,8 @@ from halide.device import DEFAULT_DEVICE, ComputeDevice, DeviceUnavailableError,
 # Re-exported from halide.device (the single place that actually acts on it — resolve_device falls
 # back to this same value when neither --device nor $HALIDE_DEVICE is given) so CLI code, and a
 # later "halide gpu" command/hint, can import the one true default from here without reaching past
-# the CLI package. The user chose "auto" as the one
-# default used by every command, once GPU support exists at all.
+# the CLI package. The user chose "auto" as the one default used by every command, once GPU support
+# exists at all.
 __all__ = [
     "DEFAULT_DEVICE",
     "add_device_argument",

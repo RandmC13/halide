@@ -279,7 +279,7 @@ def test_one_client_many_requests_and_several_clients(tmp_path, cpu_service):
 
 
 def test_service_address_is_picklable(cpu_service):
-    """B3 hands it to pool workers."""
+    """The batch hands it to its pool workers."""
     assert pickle.loads(pickle.dumps(cpu_service)) == cpu_service
 
 

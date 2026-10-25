@@ -216,7 +216,7 @@ def test_batch_rerun_non_interactive_refuses_then_skip_existing_develops_only_ne
 
 
 def test_batch_skip_existing_contact_sheet_covers_whole_roll_when_nothing_to_develop(roll_dir, tmp_path):
-    # Controller ruling: --skip-existing must never silently drop the requested contact sheet, and
+    # --skip-existing must never silently drop the requested contact sheet, and
     # must build it even when no frame needed developing.
     out_dir = tmp_path / "out"
     assert main(["batch", str(roll_dir), str(out_dir), "--auto-density-roll", "--quiet"]) == 0

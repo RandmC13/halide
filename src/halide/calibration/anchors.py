@@ -41,7 +41,7 @@ from halide.io.scan_metadata import ScanSettings
 
 # Agreement bands, in CC (density x 100) from what the other points agree neutral is. Calibrated on
 # Roll 16: trusted whites (trike, car, T-shirt, clouds) read CC 0.8-4.8 against each other; the two
-# objects the investigation had already found suspect - a warm-lit cloud edge (0147) and the cream
+# objects already known to be suspect - a warm-lit cloud edge (0147) and the cream
 # Alhambra wall (0159) - read CC 9.6 Y and CC 7.9 R. So "amber" is where a point deserves a second
 # look, and "red" is a point that almost certainly isn't neutral.
 AGREEMENT_AMBER_CC = 5.0

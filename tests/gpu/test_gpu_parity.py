@@ -205,7 +205,8 @@ def test_real_scan_print_on_gpu_matches_cpu(tmp_path, scan):
 
 # ---------------------------------------------------------------------------
 # export_delivery_image's device path (io/raster.py's namespace-generic to_srgb_8bit).
-# Held to its own, 8-bit tolerance — the brief's bar, checked explicitly rather than folded into
+# Held to its own 8-bit tolerance (within 1 code value, >= 99.9% identical), checked explicitly
+# rather than folded into
 # "<= 1 code value" so a systematic offset can't hide inside that check.
 # ---------------------------------------------------------------------------
 

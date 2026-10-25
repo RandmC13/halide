@@ -90,7 +90,7 @@ def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool) -> tuple
 
 
 def _gpu_hint_stamp() -> Path:
-    # Reuses cli/completion.py's own state-directory helper (Task 6b) rather than picking a new
+    # Reuses cli/completion.py's own state-directory helper rather than picking a new
     # location — see that module's docstring for why it's under $XDG_DATA_HOME/halide.
     from halide.cli.completion import _data_dir
 

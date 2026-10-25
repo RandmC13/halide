@@ -38,7 +38,7 @@ DEFAULT_TIMEOUT = 120.0
 
 # Appended by exiftool to every command of the session. `-charset filename=utf8`: file names go
 # over the pipe as UTF-8 (on Windows exiftool would otherwise read them in the system code page);
-# on Linux it doesn't change a byte of the output (checked against the real exiftool, task A1).
+# on Linux it doesn't change a byte of the output (checked against the real exiftool).
 # `-echo3`: after each command, exiftool prints this line with ${status} replaced by the exit
 # status the same command would have had as its own process (exiftool >= 12.10), so "failed" means
 # exactly what the one-shot's non-zero exit meant.

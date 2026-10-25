@@ -143,7 +143,7 @@ def test_fit_reliability_reproduces_the_review_simulation(span, table_median, ov
     assert reliability.is_limited is over_amber
     assert (reliability.worst_cc_at_ends > anchors.AGREEMENT_AMBER_CC) is over_amber
     # The covariance prediction tracks a Monte Carlo of real noisy fits (which also jitter green,
-    # which the prediction leaves out) - and the review's own table.
+    # which the prediction leaves out).
     simulated = _simulated_worst_end_cc(span)
     assert reliability.worst_cc_at_ends == pytest.approx(simulated, rel=0.35)
     assert reliability.worst_cc_at_ends == pytest.approx(table_median, rel=0.35)

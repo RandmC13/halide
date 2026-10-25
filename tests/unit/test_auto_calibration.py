@@ -237,7 +237,7 @@ def test_neutral_candidate_mask_is_bit_identical_to_the_old_full_reference_form(
 
 
 # ---------------------------------------------------------------------------
-# On the device : the same functions, given a GPU array,
+# On the device: the same functions, given a GPU array,
 # run there — pinned bit-for-bit on tests/unit/_fake_device.py's strict CPU stand-in (numpy
 # underneath, so any difference is a plumbing bug). A real GPU is held to a tolerance in
 # tests/gpu/test_gpu_parity.py instead: its argsort orders luminance ties differently.

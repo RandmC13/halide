@@ -74,7 +74,7 @@ def test_read_tiff_into_out_buffer_casts_float64_without_dividing(tmp_path):
     [np.uint8, np.uint16, np.uint32],
 )
 def test_read_tiff_into_out_buffer_matches_read_tiff_without_out_bit_for_bit(tmp_path, dtype):
-    """The B1 task brief's ruling: `out=` must reproduce today's `raw.astype(np.float32) / scale`
+    """`out=` must reproduce today's `raw.astype(np.float32) / scale`
     exactly, including its rounding — not `np.divide(raw, scale, out=out)`, which computes from the
     integer input and can round differently in the last bit. Exercises values that stress that
     rounding: the dtype's full range for uint8/uint16, and values right at the top of uint32's range

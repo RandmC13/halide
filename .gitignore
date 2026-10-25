@@ -10,11 +10,8 @@ dist/
 venv/
 .DS_Store
 
-# Local-only material: scans, reference PDFs/photos, Claude Code worktrees
+# Local-only material: test scans, Claude Code settings and worktrees
 Roll16-Testing/
-enlarger-controller.png
-contactsheet-barcoderef.jpg
-filminversion-ab.pdf
 .claude/
 
 # Real-scan outputs of `pytest -m gpu` (tests/gpu/test_gpu_parity.py), deleted after every test

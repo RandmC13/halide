@@ -92,7 +92,8 @@ class ServiceUnavailable(RuntimeError):
 @dataclass(frozen=True)
 class ServiceAddress:
     """Where a running service listens: everything a worker process needs to connect, as plain
-    picklable data (B3 hands it to pool workers). `pid` is the service process, for diagnostics
+    picklable data (the batch hands it to its pool workers). `pid` is the service process, for
+    diagnostics
     and tests; nothing in a worker needs it. `kind` is the device it develops on ("gpu"; "cpu" only
     in tests) — what a frame it developed records as its provenance "device"."""
 

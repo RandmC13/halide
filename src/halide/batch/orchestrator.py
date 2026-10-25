@@ -126,7 +126,7 @@ _SERVICE_INITIALIZER = None
 SERVICE_ENV = "HALIDE_GPU_SERVICE"
 _SERVICE_OFF = ("0", "off", "false", "no")
 
-# Controller ruling (final whole-branch review): the shared service needs Python 3.13 or newer.
+# The shared service needs Python 3.13 or newer.
 # shared_frames.attach_frame's service-side attach uses `SharedMemory(..., track=False)`, which is
 # a Python 3.13 addition (gh-82300) — this project's own floor is 3.11 (pyproject.toml). Below
 # 3.13 attach_frame raises SharedMemoryUnavailable and sweep does nothing (a tracked attach would

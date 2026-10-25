@@ -547,7 +547,7 @@ def test_halide_gpu_service_off_is_per_worker_gpu_mode_and_the_run_sheet_says_so
                                                                                 capsys, gpu_resolves, fake_gpu_service):
     import halide.cli.commands.batch_cmd as batch_cmd
 
-    monkeypatch.setenv("HALIDE_GPU_SERVICE", "0")  # the troubleshooting switch (B4)
+    monkeypatch.setenv("HALIDE_GPU_SERVICE", "0")  # the troubleshooting switch
     calls = []
     monkeypatch.setattr(batch_cmd, "run_batch", _recording_runner(calls, warning=None))
     assert main(["batch", str(roll_dir), str(tmp_path / "out"), *MANUAL]) == 0

@@ -1,4 +1,4 @@
-"""Who stops a batch, and how the parent process, always.
+"""Who stops a batch, and how: the parent process, always.
 
 Ctrl-C and closing the terminal (SIGHUP) reach the terminal's whole foreground process group — the
 batch parent, its worker processes, the pool's forkserver and the GPU service alike. Left to their

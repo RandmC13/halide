@@ -54,7 +54,7 @@ def compute_row(sheet: RunSheet, device: ComputeDevice, compute: BatchCompute | 
                 planned: bool = False) -> None:
     """The run sheet's Compute row (see cli/_device_args.py::device_row), plus, when there's
     something to add: how a GPU batch's workers share the card (`compute`), why an `auto` choice
-    fell back from GPU to CPU, or (Task 6b) that an NVIDIA card was found but GPU support isn't
+    fell back from GPU to CPU, or that an NVIDIA card was found but GPU support isn't
     installed. `planned` (--dry-run, `compute` from orchestrator.plan_compute): nothing was started,
     so the sharing is worded as what a real run would do."""
     text = device_row(device)
