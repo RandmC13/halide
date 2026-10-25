@@ -1,7 +1,7 @@
-"""F05: non-finite (NaN/inf) and non-positive pixels — a raw converter's export can contain a few
+"""Non-finite (NaN/inf) and non-positive pixels — a raw converter's export can contain a few
 (a highlight-recovery artifact, a scanner glitch); this project's top priority is colorimetric
 faithfulness, so they must be handled explicitly rather than silently poisoning a whole frame or
-profile with NaN. See docs/investigations/codebase-review-evidence/2.1.md (2.1-2), 2.2.md (2.2-6).
+profile with NaN.
 """
 
 import json
@@ -41,7 +41,7 @@ PROFILE = DensityProfile(white_balance=(1.0, 1.2, 1.5), density_scale=(1.0, 1.05
 def _write_negative(path, seed=1, bad_slice=None, bad_value=np.nan, bad_fraction=None):
     """A small synthetic negative TIFF with a real linear ICC profile — same shape as
     tests/unit/test_processing.py's own helper, plus the ability to inject non-finite/non-positive
-    pixels for F05's tests. `bad_slice` sets one region of the array to `bad_value`; `bad_fraction`
+    pixels for these tests. `bad_slice` sets one region of the array to `bad_value`; `bad_fraction`
     instead sets that fraction of the flattened array's leading elements to it (for the "too many"
     threshold test — a plain count-of-values fraction, matching the count `nan_to_num` cleans)."""
     rng = np.random.default_rng(seed)
@@ -66,7 +66,7 @@ def test_one_nan_pixel_invert_succeeds_and_warns(tmp_path):
     scan = tmp_path / "nan.tif"
     # One bad raw value corrupts all 3 of that pixel's channels once the ICC conversion's matrix
     # multiply mixes them (a real effect, not a test artifact — see 2.1-2) — but it's still one
-    # *pixel* (one spot on the frame), which is what the warning counts and reports (R7).
+    # *pixel* (one spot on the frame), which is what the warning counts and reports.
     _write_negative(scan, seed=1, bad_slice=(0, 0, 0), bad_value=np.nan)
     out = tmp_path / "out.tif"
     warnings = []
@@ -130,7 +130,7 @@ def test_print_scan_also_cleans_nonfinite_pixels_and_warns(tmp_path):
     assert "1 pixel wasn't a valid number (NaN/inf)" in warnings[0]  # see test_one_nan_pixel... above
 
 
-# --- Device / GPU service (R8: bad input isn't a device failure; R7: warnings must travel back
+# --- Device / GPU service (bad input isn't a device failure; warnings must travel back
 # through the service without printing) --------------------------------------------------------
 
 
@@ -146,7 +146,7 @@ def fake_gpu(monkeypatch):
 
 
 def test_over_one_percent_nonfinite_on_device_raises_plainly_no_gpu_wording_no_retry(tmp_path, fake_gpu):
-    # R8: run_device_job must not wrap a ScanColorError as a DeviceJobFailed — that would print
+    # run_device_job must not wrap a ScanColorError as a DeviceJobFailed — that would print
     # "the GPU failed (...)" and then retry on the CPU, which would just raise the identical error
     # a second time. It must fail once, plainly, exactly as the CPU-only path does.
     scan = tmp_path / "broken.tif"
@@ -163,7 +163,7 @@ def test_over_one_percent_nonfinite_on_device_raises_plainly_no_gpu_wording_no_r
 
 
 def test_over_one_percent_nonfinite_through_service_raises_plainly_no_retry(tmp_path, fake_gpu):
-    # Same R8 requirement, through the GPU service: the client must raise the ScanColorError the
+    # Same requirement, through the GPU service: the client must raise the ScanColorError the
     # service sends back as-is, not a DeviceJobFailed.
     scan = tmp_path / "broken.tif"
     _write_negative(scan, seed=9, bad_fraction=0.02)
@@ -180,7 +180,7 @@ def test_over_one_percent_nonfinite_through_service_raises_plainly_no_retry(tmp_
                 client.develop(frame, request, name=str(scan))
             assert not isinstance(excinfo.value, DeviceJobFailed)
         assert "aren't valid numbers - this export looks broken" in str(excinfo.value)
-        # An input error is a whole, in-step reply: F06's "any interruption kills the client" rule
+        # An input error is a whole, in-step reply: the "any interruption kills the client" rule
         # must not catch it, so the same client goes on to develop the next frame.
         good, _ = _read_scan(_write_negative_file(tmp_path / "good.tif", seed=10))
         with new_frame(good.shape, good.dtype) as frame:
@@ -190,7 +190,7 @@ def test_over_one_percent_nonfinite_through_service_raises_plainly_no_retry(tmp_
 
 
 def test_service_reports_nonfinite_warning_without_printing(tmp_path, capsys, fake_gpu):
-    # R7 (this fix round): the warning must travel back in the reply, not be printed from inside
+    # The warning must travel back in the reply, not be printed from inside
     # the spawned/threaded service process — nothing here is a photographer's terminal.
     scan = tmp_path / "nan.tif"
     _write_negative(scan, seed=10, bad_slice=(0, 0, 0), bad_value=np.nan)

@@ -1,5 +1,5 @@
 """The end-of-run summary and the run log, shared by the multi-frame commands (batch, and print/
-export given folders): docs/specs/batch-summary-and-log.md. Stdlib-only at import, like every
+export given folders). Stdlib-only at import, like every
 module the parser loads."""
 
 from __future__ import annotations

@@ -233,7 +233,7 @@ def test_estimate_export_worker_memory_bytes_uses_its_own_calibrated_constants(t
     # export's calibrated estimate for a file must actually use export's own (baseline, multiplier)
     # pair, not silently fall back to the pipeline's — checked by requiring the two diverge, not by
     # a fixed ordering: after the full pipeline's own memory-optimization fix (buffer reuse across
-    # core/*.py, no needless float64 upcast in the ICC matrix multiply — see CLAUDE.md), the pipeline
+    # core/*.py, no needless float64 upcast in the ICC matrix multiply ), the pipeline
     # is now the *cheaper* per-pixel estimate of the two for a large image, since none of that fix
     # touches export's own path through colour.RGB_to_RGB, which computes internally in float64
     # regardless of input dtype.
@@ -305,7 +305,7 @@ def test_run_export_batch_rejects_a_non_positive_explicit_worker_count(tmp_path)
         pass
 
 
-# --- GPU workers (docs/plans/gpu-acceleration.md §3.5, Task 7) ---
+# --- GPU workers ---
 #
 # There is no GPU here, and a fake device can't cross into a forkserver worker, so the worker
 # functions are called in-process (with tests/unit/_fake_device.py's fake GPU) and the pool
@@ -608,7 +608,7 @@ def test_print_worker_passes_the_device_and_reports_fallback(tmp_path, worker_gp
     assert result.error is None and "cudaErrorLaunchFailure" in result.warning
 
 
-# The user's RTX 3070 benchmark (docs/plans/gpu-acceleration.md §7): a GPU worker's host memory is
+# The user's RTX 3070 benchmark : a GPU worker's host memory is
 # ~1.2 GiB against a CPU worker's ~0.4 GiB (CUDA/CuPy's own host-side libraries), so the RAM cap must
 # count that for GPU pools — or a machine with a big card and little RAM starts too many workers.
 _USER_RAM = int(7.6 * 2**30)
@@ -666,7 +666,7 @@ def test_memory_budget_warning_counts_gpu_host_memory(tmp_path):
         assert memory_budget_warning(jobs, requested_workers=6, device=gpu) is not None
 
 
-# --- The shared GPU service (docs/plans/gpu-batch-throughput.md Task B3) ---
+# --- The shared GPU service ---
 #
 # No GPU here: real-pool tests run a "gpu"-kind service whose own process installs the strict fake
 # device (tests/unit/_fake_device.py's install_as_gpu) — so every frame really crosses into the
@@ -800,7 +800,7 @@ def test_a_gpu_batch_shares_one_service_and_no_worker_touches_cuda(tmp_path, mon
 def test_service_mode_export_and_print_match_the_in_process_gpu_path(tmp_path, fake_gpu_service, clean_shm, fake_gpu):
     # Compared with the in-process GPU path on the same (fake) device: the service runs the same
     # device code. (A device export may differ from the CPU's by one 8-bit code value — the device
-    # branch's own sRGB encoding, docs/plans/gpu-acceleration.md D2 — so the CPU isn't the reference.)
+    # branch's own sRGB encoding, held to a tolerance — so the CPU isn't the reference.)
     positives = _roll(tmp_path, 2, writer=_write_positive)
     exports = [BatchJob(input_path=p, output_path=tmp_path / f"{p.stem}.png") for p in positives]
     assert [r.error for r in run_export_batch(exports, max_workers=2, device=_GPU)] == [None, None]
@@ -984,7 +984,7 @@ def test_service_mode_worker_count_is_ram_after_the_service_and_shared_memory(tm
 
 def test_on_the_users_machine_service_mode_runs_more_workers_than_per_worker_gpu(tmp_path):
     # 8 physical cores, 7.6 GiB RAM: per-worker GPU mode fits 4 (~1.2 GiB each); CPU-only workers
-    # sharing one service fit more — the point of Part B. (Constants measured and kept in B4.)
+    # sharing one service fit more — the point of the shared service.
     jobs = [BatchJob(input_path=tmp_path / f"{i}.tif", output_path=None) for i in range(37)]
     with patch("halide.batch.orchestrator._decoded_pixel_bytes", return_value=_FRAME), patch(
         "halide.batch.orchestrator._shared_frame_bytes", return_value=_FRAME
@@ -1126,7 +1126,7 @@ def test_decoded_pixel_bytes_reads_what_read_tiff_decodes(tmp_path):
     assert orchestrator._decoded_pixel_bytes(path) == int(np.prod(shape)) * 4
 
 
-# --- Exit paths (F12, review 2.4-2 and 2.4-9): stale frames, SIGHUP/SIGTERM, early Ctrl-C --------
+# --- Exit paths: stale frames, SIGHUP/SIGTERM, early Ctrl-C --------
 
 import subprocess  # noqa: E402
 import textwrap  # noqa: E402
@@ -1237,7 +1237,7 @@ def test_ctrl_c_early_in_a_batch_prints_cancelled_not_tracebacks(tmp_path, delay
 @pytest.mark.parametrize("signum, whole_group", [(signal.SIGHUP, True), (signal.SIGTERM, False), (signal.SIGINT, True)],
                          ids=["terminal closed", "SIGTERM", "Ctrl-C"])
 def test_a_signalled_gpu_batch_cancels_in_order_and_leaves_nothing_behind(tmp_path, signum, whole_group):
-    """F12 (review 2.4-2): closing the terminal (SIGHUP to the whole group) mid-batch used to kill
+    """Closing the terminal (SIGHUP to the whole group) mid-batch used to kill
     every process that could clean up, leaving the shared frames in /dev/shm — RAM — until reboot.
     SIGHUP and SIGTERM now take Ctrl-C's orderly path: the frames in progress finish, the service
     stops, the shared frames are swept."""
@@ -1265,7 +1265,7 @@ def test_a_signalled_gpu_batch_cancels_in_order_and_leaves_nothing_behind(tmp_pa
 
 
 def test_after_a_cancel_the_wait_for_frames_in_progress_is_announced_once():
-    """Ruling R9: while the frames in progress finish after Ctrl-C, the caller is told why the batch
+    """While the frames in progress finish after Ctrl-C, the caller is told why the batch
     hasn't stopped yet — and only when there is something to wait for."""
     job = BatchJob(input_path=Path("a.tif"), output_path=Path("b.tif"))
     future: Future = Future()

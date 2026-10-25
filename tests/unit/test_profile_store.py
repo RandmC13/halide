@@ -356,7 +356,7 @@ def test_save_named_profile_with_tone(tmp_path):
 
 def test_load_tone_override_never_restores_linear_mode(tmp_path):
     # Even if a "tone" sidecar somehow had a mode field, load_tone_override should ignore it and
-    # always return "paper" - linear-output is deliberately never inherited from a saved profile.
+    # always return "paper" - flat output is deliberately never inherited from a saved profile.
     path = tmp_path / "sneaky.json"
     save_profile(PROFILE, path, tone=ToneCurveParams(mode="linear", exposure=0.1, contrast=0.5))
     assert load_tone_override(path).mode == "paper"
@@ -425,7 +425,7 @@ def test_interrupted_profile_save_keeps_old_profile(tmp_path, monkeypatch):
 
 
 def test_default_profiles_dir_on_macos_uses_application_support(monkeypatch, tmp_path):
-    """F13: macOS keeps per-user data in ~/Library/Application Support; XDG_CONFIG_HOME still wins."""
+    """macOS keeps per-user data in ~/Library/Application Support; XDG_CONFIG_HOME still wins."""
     monkeypatch.setattr("sys.platform", "darwin")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)

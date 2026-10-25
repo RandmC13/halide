@@ -1,5 +1,4 @@
-"""One GPU process shared by CPU-only batch workers — Part B of docs/plans/gpu-batch-throughput.md,
-for the reasons in docs/investigations/gpu-batch-throughput.md: a GPU batch was limited by host RAM,
+"""One GPU process shared by CPU-only batch workers — a GPU batch was limited by host RAM,
 because every GPU worker carried its own CUDA context and NVIDIA's libraries (~0.8 GiB each), while
 the GPU itself sat idle ~90% of the time. Here one service process holds the only CUDA context and
 develops frames one at a time; the workers do the file work (decode, compress, write, exiftool) and
@@ -109,7 +108,7 @@ class DevelopReply:
     """processing.develop_request's result: the tone actually used (None for Stage.DENSITY_ONLY)
     and the density profile actually used (the per-frame auto estimate when none was given).
 
-    `warnings`: any messages the job produced (F05's non-finite-pixel notice, so far) — the service
+    `warnings`: any messages the job produced (the non-finite-pixel notice, so far) — the service
     runs in its own process, with nothing of its own to print them to usefully, so they travel back
     here instead and the client's caller re-emits them through its own on_warning/BatchResult path,
     exactly as the in-process CPU/GPU paths do directly."""
@@ -152,7 +151,7 @@ class ServiceClient:
         return self._address.kind
 
     def develop(self, frame, request, name: str | None = None) -> DevelopReply:
-        """`name` (typically the input path) is only for F05's non-finite-pixel warning message —
+        """`name` (typically the input path) is only for the non-finite-pixel warning message —
         the service has no other way to know it, since `request` carries none of process_scan's own
         arguments."""
         (resolved, profile), warnings = self._request(("develop", frame.descriptor(), request, name))
@@ -199,7 +198,7 @@ class ServiceClient:
                         raise TimeoutError(f"no reply within {self._timeout:g} s")
                     status, payload = conn.recv()
                 except BaseException:
-                    # F06: whatever went wrong — the service died or stuck, or Ctrl-C (any
+                    # Whatever went wrong — the service died or stuck, or Ctrl-C (any
                     # BaseException) landed while a reply was owed — this connection is out of step:
                     # the next request would read this one's reply and its own frame would be written
                     # out undeveloped. Marked dead first, before anything else can be interrupted;
@@ -218,7 +217,7 @@ class ServiceClient:
         if status == "ok":
             return payload
         if status == "input_error":
-            # R8: bad input data (e.g. F05's >1% non-finite pixels), not a device/service problem —
+            # Bad input data (e.g. >1% non-finite pixels), not a device/service problem —
             # `payload` is the original exception (ScanColorError, picklable — a plain message, no
             # CuPy/device state), raised here exactly as the CPU path would raise it itself: no
             # DeviceJobFailed, no "GPU failed" wording, no CPU retry from the caller.
@@ -396,7 +395,7 @@ class _Server:
                 return "ok", None
             raise ValueError(f"unknown request {kind!r}")
         except ScanColorError as exc:
-            # R8: bad input data (e.g. F05's >1% non-finite pixels), not a device/service problem —
+            # Bad input data (e.g. >1% non-finite pixels), not a device/service problem —
             # sent back as-is (see ServiceClient._request's "input_error" handling) so the worker
             # raises exactly the error the CPU path would: no DeviceJobFailed wrapping, no "GPU
             # failed"/service wording, and no CPU retry from the caller.
@@ -407,7 +406,7 @@ class _Server:
             return "failed", DeviceFailure.from_exception(exc)
 
     def _run(self, host, job, request, name):
-        """Run `job` (develop_request/print_request), collecting any warnings it produces (F05's
+        """Run `job` (develop_request/print_request), collecting any warnings it produces (the
         non-finite-pixel notice, so far) instead of letting them print inside this process — the
         service has nothing of its own a photographer would see to print them to; the client's
         caller re-emits them through its own on_warning/BatchResult path. Returns (job's result,
@@ -423,7 +422,7 @@ class _Server:
         try:
             return bound_job(host, request), collected
         except processing.ScanColorError:
-            raise  # R8: bad input data, not a device problem — see _handle
+            raise  # bad input data, not a device problem — see _handle
         except BaseException as exc:  # noqa: BLE001 — see _compute_loop
             raise processing.DeviceJobFailed(processing.DeviceFailure.from_exception(exc, host_touched=True)) from exc
 

@@ -107,7 +107,7 @@ def test_picker_session_from_load_to_saved_profile_to_clean_close(tmp_path, monk
     assert data["film_stock"] == "Test Stock"
     assert window.status_label.full_text().startswith("Saved calibration profile 'smoke'")
 
-    # Close with a frame load still mid-flight (the Task 12 crash path): close() must not return
+    # Close with a frame load still mid-flight (the close-time crash path): close() must not return
     # while any thread the window started is running.
     ParkedLoader.reset()
     monkeypatch.setattr("halide.gui.main_window.FrameLoader", ParkedLoader)

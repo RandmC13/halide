@@ -289,10 +289,6 @@ The method is Aaron Buchler's, from
 Steps 1 and 2 are the calibration: two numbers per channel, solved from the neutral points you
 pick. All of this runs in linear ACEScg, because the result depends on the working space.
 
-The reasoning behind each design choice, with measurements from real rolls, is recorded in
-[`CLAUDE.md`](CLAUDE.md) (under "Decisions and why"). Longer plans and investigations are in
-[`docs/`](docs/).
-
 ## Development
 
 ```bash
@@ -302,7 +298,8 @@ python -m pytest tests/ -q
 
 Code layout: `src/halide/core/` holds the pure image maths, `io/` handles TIFF/ICC/export,
 `calibration/` handles profiles and fitting, `batch/` does parallel processing, `cli/` holds the
-commands and `gui/` the Qt picker. `legacy/` keeps the original single-file script for comparison.
+commands and `gui/` the Qt picker. `benchmarks/gpu_bench.py` times CPU against GPU on your own
+machine.
 
 ## Acknowledgements
 

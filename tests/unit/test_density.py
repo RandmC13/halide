@@ -171,7 +171,7 @@ def test_residuals_flag_an_off_axis_point_with_its_colour():
         ((-0.10, 0.05, 0.05), (15.0, "CC 15C")),  # cyan: short of red
         ((0.05, -0.10, 0.05), (15.0, "CC 15M")),  # magenta: short of green
         ((0.05, 0.05, -0.10), (15.0, "CC 15Y")),  # yellow: short of blue
-        # two filters of different size, largest first (review 2.1-9: this used to read "CC 20 R")
+        # two filters of different size, largest first
         ((0.10, 0.0, -0.10), (20.0, "CC 20Y + 10M")),
         ((0.10, -0.03, -0.07), (17.0, "CC 17Y + 13M")),
         # neutral density is removed: a uniform offset is no cast at all

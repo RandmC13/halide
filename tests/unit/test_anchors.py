@@ -101,7 +101,7 @@ def test_agreement_label():
     assert anchors.Agreement(cc=0.2, filters="neutral", band="calm").label() == "neutral"
 
 
-# --- fit reliability (D-2: the 0.1 D Save gate stays; the picker says where the fit holds) ----------
+# --- fit reliability (the 0.1 D Save gate stays; the picker says where the fit holds) -------------
 
 # Review 2.1-1's simulation: a film line (wb 2.2/1/1.4, s 1.3/1/0.78), three picked points centred
 # on D 1.0, scored at the ends of a typical negative, D 0.4 and 1.6.

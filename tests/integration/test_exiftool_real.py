@@ -1,7 +1,6 @@
 """copy_exif_metadata through the real exiftool, kept open (halide.io.exiftool), against the
-one-shot call it replaced. Skipped where exiftool isn't installed. Task A1's acceptance on the real
-scans (byte-identical outputs for 4 scans + 3 Roll 16 frames, drop_icc both ways) is recorded in
-its report; this keeps the same comparison running on small synthetic files."""
+one-shot call it replaced. Skipped where exiftool isn't installed. This keeps the
+byte-for-byte comparison running on small synthetic files."""
 
 import hashlib
 import shutil

@@ -1,11 +1,11 @@
-"""process_scan / print_scan on a compute device (docs/plans/gpu-acceleration.md, §3.3).
+"""process_scan / print_scan on a compute device.
 
 There is no GPU here, so `device=ComputeDevice(kind="gpu")` runs on tests/unit/_fake_device.py,
 injected where processing.py crosses to and from the device (`halide.device.to_device`/`to_host`)
 and registered with core/'s array_namespace. The fake computes with numpy, so the device path must
 be bit-identical to the CPU path: any difference is plumbing (a stage that skipped `xp`, a scalar
 that came back from the device in a different type, a band that was missed), not arithmetic. The
-real-GPU version of these checks, held to the D2 tolerance, is tests/gpu/test_gpu_parity.py.
+real-GPU version of these checks, held to a tolerance, is tests/gpu/test_gpu_parity.py.
 """
 
 import json
@@ -298,7 +298,7 @@ def test_scan_already_in_halides_own_profile_is_not_converted_on_device(tmp_path
 
 
 # ---------------------------------------------------------------------------
-# Task 6: export_delivery_image's device path (io/raster.py's namespace-generic to_srgb_8bit,
+# export_delivery_image's device path (io/raster.py's namespace-generic to_srgb_8bit,
 # uploaded once and downloaded band by band into a host uint8 buffer this function owns alone —
 # see processing.py::_export_srgb_on_device).
 # ---------------------------------------------------------------------------
@@ -391,7 +391,7 @@ def test_export_delivery_image_does_not_mutate_the_source_image_on_failure(tmp_p
 
 
 def test_auto_calibration_runs_on_the_device_frame(tmp_path, fake_gpu, monkeypatch):
-    """Per-frame auto calibration is given the device frame itself (plan Task 8) — not a host copy
+    """Per-frame auto calibration is given the device frame itself — not a host copy
     downloaded just for it — and the only frame-sized download is the finished result."""
     scan = _write_scan(tmp_path / "neg.tif")
     process_scan(scan, tmp_path / "cpu.tif", Stage.FULL, None, ToneCurveParams())

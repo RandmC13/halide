@@ -386,7 +386,7 @@ def maybe_save_profile(
             )
     if announce:
         print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))
-    # Picked points that only pin the fit down over part of the frame (D-2): saved all the same,
+    # Picked points that only pin the fit down over part of the frame: saved all the same,
     # but a profile is meant for the whole roll, so say where it holds.
     reliability_warning = getattr(args, "pick_reliability_warning", None)
     if reliability_warning:

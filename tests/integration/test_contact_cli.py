@@ -85,7 +85,7 @@ def test_contact_rejects_a_bad_sheet_format(roll, tmp_path):
 
 
 def test_batch_preview_thumbnail_folder_is_deleted_even_when_the_run_fails(roll, tmp_path, monkeypatch):
-    """R-077: the folder of full-frame thumbnails goes on any exit, not just a finished run."""
+    """The folder of full-frame thumbnails goes on any exit, not just a finished run."""
     from halide.cli.commands import batch_cmd
 
     made = _record_tempdirs(monkeypatch)

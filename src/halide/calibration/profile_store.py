@@ -209,7 +209,8 @@ def load_tone_override(path: str | Path) -> ToneCurveParams | None:
     """Read back an optional saved exposure/contrast override (see save_profile's `tone` param).
     Returns None for any profile file without one - including every profile saved before this
     existed, which is the point: fully backward compatible, no migration needed. Deliberately never
-    restores linear-output mode - that stays a CLI-flag/preview-only choice, not something a saved
+    restores flat output (`--output flat`) - that stays a CLI-flag/preview-only choice, not
+    something a saved
     profile silently changes about a future run's output format."""
     data = json.loads(Path(path).read_text())
     tone_data = data.get("tone")

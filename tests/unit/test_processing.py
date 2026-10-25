@@ -75,9 +75,9 @@ def test_estimate_roll_density_profile_raises_when_all_files_unreadable(tmp_path
         estimate_roll_density_profile(bad_paths)
 
 
-# --- Atomic writes (F04) ------------------------------------------------------------------------
-# See docs/investigations/codebase-review-evidence/2.3.md 2.3-3 (truncated file on a crashed
-# write) and 2.3-4 (an exiftool failure after a good write must not fail the whole frame).
+# --- Atomic writes ------------------------------------------------------------------------------
+# A crashed write must not leave a truncated file, and an exiftool failure after a good write must
+# not fail the whole frame.
 
 
 def test_process_scan_exif_failure_is_a_warning_not_an_error(tmp_path, monkeypatch):

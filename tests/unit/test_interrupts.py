@@ -1,4 +1,4 @@
-"""halide.interrupts: the signal helpers behind orderly cancelling (F12, review 2.4-9)."""
+"""halide.interrupts: the signal helpers behind orderly cancelling."""
 
 import os
 import selectors

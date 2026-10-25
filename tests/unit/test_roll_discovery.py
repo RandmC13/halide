@@ -1,4 +1,4 @@
-"""F09, F15, F16, F25: one folder listing everywhere, plain-language input errors, a positive is
+"""One folder listing everywhere, plain-language input errors, a positive is
 never re-inverted, scans without camera EXIF are "not verifiable"."""
 
 import os
@@ -40,7 +40,7 @@ def _negative(path, shape=(16, 16, 3), icc=True):
     return path
 
 
-# --- discovery (F09) ------------------------------------------------------------------------------
+# --- discovery ------------------------------------------------------------------------------------
 
 
 def test_list_scans_takes_every_case_of_the_suffix_sorted_by_name(tmp_path):
@@ -125,7 +125,7 @@ def test_batch_run_sheet_row_for_skipped_files(tmp_path, capsys):
     assert "Skipped 1 hidden macOS file, 1 folder" in out
 
 
-# --- input errors (F25) ---------------------------------------------------------------------------
+# --- input errors ---------------------------------------------------------------------------------
 
 
 def _fail(path):
@@ -211,7 +211,7 @@ def test_a_damaged_profile_message_reads_as_a_sentence(tmp_path):
     assert "unsupported color profile" not in message and "color" not in message.replace("colour", "")
 
 
-# --- re-inverting a positive (F15) ----------------------------------------------------------------
+# --- re-inverting a positive ----------------------------------------------------------------------
 
 
 def test_reinverting_a_halide_output_is_refused(tmp_path):
@@ -243,7 +243,7 @@ def test_a_batch_reports_a_positive_per_frame_and_develops_the_rest(tmp_path):
     assert "already a halide positive" in by_name["b.tif"].error
 
 
-# --- EXIF (F16) -----------------------------------------------------------------------------------
+# --- EXIF -----------------------------------------------------------------------------------------
 
 
 def test_check_reports_no_exif_as_not_verifiable(tmp_path, capsys):
@@ -275,7 +275,7 @@ def test_a_point_from_a_frame_without_scan_exposure_data_is_noted(tmp_path):
     assert notes == [None, "point 2: frame has no scan exposure data, used unnormalised"]
 
 
-# --- pre-flight (F25) -----------------------------------------------------------------------------
+# --- pre-flight -----------------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root can write anywhere")

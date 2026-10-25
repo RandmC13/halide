@@ -87,7 +87,7 @@ def run(args: argparse.Namespace) -> int:
     # The thumbnails are made on the CPU (run_thumbnail_batch: the frames are already developed,
     # and what's left isn't worth uploading a frame for). So the device is resolved only when a GPU
     # was explicitly asked for (--device gpu or HALIDE_DEVICE=gpu), which still fails fast without
-    # CuPy/a driver like every command (Ruling R7). `auto` is never resolved here: that would import
+    # CuPy/a driver like every command. `auto` is never resolved here: that would import
     # CuPy and make a CUDA context (~0.6 s, ~300 MB of GPU memory), and could warn "GPU not usable"
     # for a command that never uses one.
     note = ""

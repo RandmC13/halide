@@ -24,7 +24,7 @@ _SRGB_ICC_BYTES = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobyt
 def srgb_matrix() -> np.ndarray:
     """colour-science's own float64 ACEScg -> sRGB matrix (`colour.matrix_RGB_to_RGB`, Bradford
     adaptation), applied as one matrix multiply per band instead of colour.RGB_to_RGB's per-pixel
-    broadcast — see to_srgb_8bit and CLAUDE.md, "D1"."""
+    broadcast — see to_srgb_8bit."""
     import colour
 
     return np.asarray(
@@ -65,8 +65,8 @@ def to_srgb_8bit(acescg_image):
     namespace-generic — colour's own `cctf_encoding` stays the authority on the numbers there, so
     CPU output stays bit-identical. The device branch can't call into colour (numpy-only), so it
     uses `encode_srgb` above instead and keeps the whole computation in the image's own dtype (one
-    float32 matrix multiply, per docs/plans/gpu-acceleration.md §3.3) rather than colour's float64
-    conversion — held to the D2 tolerance against the CPU path, not to bit-identity."""
+    float32 matrix multiply) rather than colour's float64
+    conversion — held to a float32 tolerance against the CPU path, not to bit-identity."""
     xp = array_namespace(acescg_image)
     if xp is np:
         import colour  # imported here, not at module level: it's most of the CLI's startup time

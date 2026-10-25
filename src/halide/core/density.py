@@ -3,7 +3,7 @@ across the whole tonal range of a color negative scan.
 
 The regression in solve_density_balance() is the one piece of real, working science already in the
 old halide script — it appeared three times there (interactive_density_balance,
-auto_density_balance, roll_analysis_density_balance in legacy/halide_v1.py), verbatim-identical
+auto_density_balance, roll_analysis_density_balance), verbatim-identical
 each time, differing only in how the two calibration points were gathered. It is reproduced here
 exactly (verified against abpy/color-neg-resources' own `density levels.py` reference script,
 see tests/unit/test_density.py) as a single function, decoupled from any particular calibration

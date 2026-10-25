@@ -157,7 +157,7 @@ def test_batch_cli_prints_its_settings_as_one_run_sheet_before_developing(roll_d
     assert list(rows) == ["Roll", "Scans", "Calibration", "Output", "Compute", "Workers"]
     nbsp = "\u00a0"  # RunSheet.SEP's non-breaking space
     assert rows["Roll"].replace(" ", "") == f"in{nbsp}·4frames→{out_dir}"  # the long tmp path wraps
-    # R-050: the automatic tiers point to the faithful one, on a dimmed line of their own
+    # The automatic tiers point to the faithful one, on a dimmed line of their own
     assert rows["Calibration"] == (
         f"auto{nbsp}· one profile for the whole roll, from 4 frames automatic estimate - for the most "
         "faithful colour, pick neutral points with `halide calibrate`"
@@ -275,7 +275,7 @@ def test_auto_density_roll_with_another_source_is_argparses_refusal(roll_dir, tm
 
 
 def test_batch_has_no_pick_option(roll_dir, tmp_path, capsys):
-    """R-054: picking is `invert --pick` only; a roll is calibrated in `halide calibrate`."""
+    """Picking is `invert --pick` only; a roll is calibrated in `halide calibrate`."""
     with pytest.raises(SystemExit) as refused:
         main(["batch", str(roll_dir), str(tmp_path / "out"), "--pick"])
     assert refused.value.code == 2

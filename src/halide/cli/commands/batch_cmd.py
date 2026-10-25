@@ -196,7 +196,7 @@ def _destination(args: argparse.Namespace, would_create: bool = False) -> str:
     return f"{destination} + contact sheet {args.contact_sheet}" if args.contact_sheet else destination
 
 
-# R-050: the automatic tiers are approximate (CLAUDE.md, auto calibration's limits); say what's better.
+# The automatic tiers are approximate (see auto calibration's known limits); say what's better.
 AUTO_CALIBRATION_ADVICE = (
     "automatic estimate - for the most faithful colour, pick neutral points with `halide calibrate`"
 )
@@ -480,7 +480,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     sheet.row("Output", _output_text(stage, tone_params))
 
     # Resolved after choose_calibration_source (called by _run, before this sheet opens) and
-    # before the sheet closes — see CLAUDE.md's choose_calibration_source ordering note. The workers
+    # before the sheet closes (the calibration prompt must come first). The workers
     # develop on it (run_batch): on a GPU through the shared GPU service, or — if it can't be used —
     # with a CUDA context per worker, whose default count also fits the card's memory.
     device = resolve_device_arg(args, isolated=True)  # the parent never computes on the card (2.4-7)

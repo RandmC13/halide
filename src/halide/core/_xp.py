@@ -1,5 +1,5 @@
 """Which array library an array belongs to — numpy, or CuPy for a frame on the GPU — so core/'s
-functions are written once and run on either (see docs/plans/gpu-acceleration.md). Pure: never
+functions are written once and run on either. Pure: never
 imports CuPy; a CuPy array can only exist if the caller already imported it."""
 
 from __future__ import annotations

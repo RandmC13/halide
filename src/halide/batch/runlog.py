@@ -1,5 +1,5 @@
 """The run log: a darkroom notebook appended to `halide-log.txt` in the output folder (or
-`--log FILE`), one block per run (docs/specs/batch-summary-and-log.md).
+`--log FILE`), one block per run.
 
 Written as the run goes, not at the end — the runs that die are the ones you most want a record
 of: (1) heading, command and run sheet before any frame develops; (2) one line per frame as it

@@ -1,5 +1,5 @@
 """Which compute device halide runs on (`halide/device.py`). CuPy is an optional dependency (see
-CLAUDE.md/docs/plans/gpu-acceleration.md), so `resolve_device` must behave correctly whether or not
+the `cuda12`/`cuda13` extras), so `resolve_device` must behave correctly whether or not
 it's installed, and whether or not the machine it's installed on actually has a working GPU driver
 — the three real cases seen in practice: no CuPy at all, CuPy installed with a working card, and
 CuPy installed but the driver is missing/too old (this sandbox: CuPy is installed, but the first

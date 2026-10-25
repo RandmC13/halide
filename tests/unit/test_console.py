@@ -5,7 +5,7 @@ already implicitly covering the non-interactive fallback path for confirm/menu, 
 the behavior that must never block a script waiting on input. The overwrite policy itself
 (`--overwrite`/`--skip-existing`/refuse) lives in cli/_output_policy.py and is tested in
 tests/unit/test_output_policy.py — it replaced console.confirm_overwrite, whose non-interactive
-"always proceed" was exactly the silent-overwrite bug D-1 fixed."""
+"always proceed" was exactly the silent-overwrite bug that was fixed."""
 
 from __future__ import annotations
 
@@ -320,7 +320,7 @@ def test_run_cli_makes_stdout_line_buffered(monkeypatch):
 
 
 def test_verbs_name_what_each_command_does():
-    """R-096: `export` says "Exporting" (it was "Printing" before a real print step existed)."""
+    """`export` says "Exporting" (it was "Printing" before a real print step existed)."""
     assert console.VERB["export"] == "Exporting" and console.VERB_PAST["export"] == "Exported"
     assert console.VERB["print"] == "Printing" and console.VERB_PAST["print"] == "Printed"
     assert console.VERB["invert"] == console.VERB["batch"] == "Developing"

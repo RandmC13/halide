@@ -65,13 +65,13 @@ def test_write_delivery_image_rejects_unsupported_extension(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# D1: srgb_matrix's BLAS matmul form vs colour-science's own per-pixel broadcast
-# (see CLAUDE.md, "D1" — the user accepted "looks identical", not bit-identical).
+# srgb_matrix's BLAS matmul form vs colour-science's own per-pixel broadcast
+# (the user accepted "looks identical", not bit-identical).
 # ---------------------------------------------------------------------------
 
 
 def _to_srgb_8bit_with_colour(acescg_image: np.ndarray) -> np.ndarray:
-    """Verbatim copy of to_srgb_8bit's body as of dff3cb2 — the D1 oracle."""
+    """Verbatim copy of to_srgb_8bit's body as of dff3cb2 — the oracle."""
     import colour
 
     srgb_linear = colour.RGB_to_RGB(
@@ -114,8 +114,8 @@ def test_to_srgb_8bit_matches_colour_science_on_random_values():
 
 
 # ---------------------------------------------------------------------------
-# Task 6: to_srgb_8bit / encode_srgb on the device (a strict fake here; the real GPU is checked in
-# tests/gpu/test_gpu_parity.py against the D2 tolerance, not exact equality).
+# to_srgb_8bit / encode_srgb on the device (a strict fake here; the real GPU is checked in
+# tests/gpu/test_gpu_parity.py against a tolerance, not exact equality).
 # ---------------------------------------------------------------------------
 
 

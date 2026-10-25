@@ -6,7 +6,7 @@ Layout (landscape, fixed size, never scrolls - see _compute_window_size):
   filmstrip       the whole roll, current frame outlined, point counts under frames (gui/filmstrip.py)
   left column     Negative | Positive switch + what the positive is · the image with numbered point
                   markers · the "what to click" caption (states which way brightness is reversed on
-                  the negative - see CLAUDE.md, never soften it) · status line
+                  the negative; never soften it) · status line
   right panel     step wedge (gui/step_wedge.py) · neutral points list (gui/point_list.py) · notice
                   line · Build contact sheet… · Extra information / Print / Details drawers (gui/drawers.py,
                   accordion) · the one red primary button: Save calibration profile (Develop in the
@@ -531,7 +531,7 @@ class MainWindow(QWidget):
         panel.addWidget(coverage_title)
         self.wedge = StepWedge()
         panel.addWidget(self.wedge)
-        # Only while the fit can't be trusted over the whole roll (D-2): Save stays allowed.
+        # Only while the fit can't be trusted over the whole roll: Save stays allowed.
         self.reliability_note = QLabel("")
         self.reliability_note.setWordWrap(True)
         self.reliability_note.setStyleSheet(f"color: {theme.TEXT_WARNING};")

@@ -69,7 +69,7 @@ def test_sheet_lays_frames_out_in_strips_with_a_short_last_strip(tmp_path):
 
 def test_write_sheet_failure_leaves_existing_sheet_untouched(tmp_path, monkeypatch):
     """A sheet can take tens of seconds to render for a full roll; a crash partway through the
-    save (disk full, kill -9) must not leave a truncated file under the real name (F04)."""
+    save (disk full, kill -9) must not leave a truncated file under the real name."""
     frame = np.full((60, 90, 3), 128, dtype=np.uint8)
     sheet = render_sheet([Tile("IMG_1", frame)], "Roll", frame_width=90, columns=6)
     path = tmp_path / "sheet.jpg"

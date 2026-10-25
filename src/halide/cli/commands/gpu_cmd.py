@@ -1,6 +1,6 @@
 """`halide gpu` — tell the user whether they have an NVIDIA card halide could use, and add optional
-GPU support (CuPy plus NVIDIA's CUDA runtime libraries, ~1 GB) on request. See CLAUDE.md's GPU
-priority and docs/plans/gpu-acceleration.md §3.7: a plain `pip install halide` must never pull that
+GPU support (CuPy plus NVIDIA's CUDA runtime libraries, ~1 GB) on request. A plain `pip install
+halide` must never pull that
 in, so this command is the one way halide offers it — and only when there's actually a card to
 offer it for; nobody without an NVIDIA GPU should be pitched a ~1 GB download.
 """
@@ -52,7 +52,7 @@ def _status() -> int:
             print(f"{device.name} — GPU support is installed and working")
             print("GPU is in use by default (--device auto)")
         else:
-            # The carried-over minor from Task 3: fallback_reason can embed a raw CUDA error
+            # fallback_reason can embed a raw CUDA error
             # string. Lead with a plain sentence, then show that as its own detail line.
             print("GPU support is installed, but the card isn't usable right now")
             print(f"    {device.fallback_reason or 'no reason was reported'}")

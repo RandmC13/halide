@@ -30,8 +30,8 @@ _BAND_BYTES = 4 * 1024**2
 
 # The band budget for a frame resident on a GPU (processing.py's device path). Larger than the
 # host's: each band is a kernel launch per stage, and a GPU needs big launches to be busy, while its
-# memory only has to hold the frame plus a few bands' temporaries (docs/plans/gpu-acceleration.md,
-# §3.3: ~181 MiB frame + ~6 x 64 MiB). Banding stays bit-identical at any size (module docstring).
+# memory only has to hold the frame plus a few bands' temporaries (~181 MiB frame + ~6 x 64 MiB).
+# Banding stays bit-identical at any size (module docstring).
 DEVICE_BAND_BYTES = 64 * 2**20
 
 

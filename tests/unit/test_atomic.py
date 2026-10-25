@@ -1,5 +1,5 @@
-"""atomic_output (F04): a killed or failed write must never leave a truncated file under the real
-output name. See docs/investigations/codebase-review-evidence/2.3.md 2.3-3."""
+"""atomic_output: a killed or failed write must never leave a truncated file under the real
+output name."""
 
 import pytest
 

@@ -230,7 +230,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
 
 def run(args: argparse.Namespace) -> int:
     # Resolved here regardless of which mode runs, so --device gpu still fails fast without
-    # CuPy/a driver and every command's Compute row behaves the same way (Ruling R7). Both modes
+    # CuPy/a driver and every command's Compute row behaves the same way. Both modes
     # export on it: the single file in this process, a directory in the worker pool.
     input_path = Path(args.input)
     if not input_path.is_dir():

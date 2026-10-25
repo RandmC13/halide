@@ -173,7 +173,7 @@ def test_rejects_scan_with_no_embedded_icc_profile(tmp_path):
 
 
 def test_invert_output_equal_to_input_refused_non_interactive(negative_tiff):
-    # D-1: output == input is a hard error in every mode, before any decoding starts — it must
+    # Output == input is a hard error in every mode, before any decoding starts — it must
     # never depend on --overwrite/interactivity, since this is "use a scan as its own output",
     # never "overwrite an existing file".
     before = negative_tiff.read_bytes()

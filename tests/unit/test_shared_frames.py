@@ -1,7 +1,7 @@
-"""halide.shared_frames: full-resolution decoded buffers in shared memory (see docs/investigations/
-gpu-batch-throughput.md, Part B) — a CPU worker's frame and the GPU service that will attach to it
-(Task B2) must see the same bytes without a pipe copy, and a worker that dies while holding one must
-never leak a /dev/shm segment (the plan's Review Focus item 5)."""
+"""halide.shared_frames: full-resolution decoded buffers in shared memory — a CPU worker's frame and
+the GPU service that will attach to it
+must see the same bytes without a pipe copy, and a worker that dies while holding one must
+never leak a /dev/shm segment."""
 
 from __future__ import annotations
 
@@ -340,7 +340,7 @@ def test_sweep_removes_a_sigkilled_pool_workers_segment_with_no_resource_tracker
     assert result.stderr == ""  # no "leaked shared_memory" warning, no tracker traceback
 
 
-# --- Task B3 carry-over fixes -----------------------------------------------------------------
+# --- Carry-over fixes -----------------------------------------------------------------
 
 
 def test_batch_prefix_is_different_for_every_batch():
@@ -442,7 +442,7 @@ def test_prefix_pid_reads_this_modules_own_prefixes():
 
 @pytest.mark.skipif(sys.platform != "linux" or sys.version_info < (3, 13), reason="/dev/shm sweep, Python 3.13+")
 def test_sweep_stale_removes_a_dead_processs_segment_and_leaves_live_ones():
-    """F12 (review 2.4-2): a batch killed outright (whole-group SIGKILL, closing the terminal)
+    """A batch killed outright (whole-group SIGKILL, closing the terminal)
     leaves its frames in /dev/shm, which is RAM, until reboot. A dead creator's segments go; a
     live process's never do."""
     dead = shared_memory.SharedMemory(create=True, size=48, name=_dead_segment_name(_dead_pid(), "dead"),
@@ -482,7 +482,7 @@ def test_sweep_stale_skips_a_segment_it_may_not_open_and_carries_on(monkeypatch)
 
 
 def test_every_shared_frame_name_is_at_most_30_characters():
-    """F35 (2.2-12): macOS caps a POSIX shared-memory name at 31 characters including the slash.
+    """macOS caps a POSIX shared-memory name at 31 characters including the slash.
     The longest pid Linux allows (2**22) and the widest frame id must still fit."""
     from halide import shared_frames
 

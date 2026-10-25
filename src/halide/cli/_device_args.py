@@ -1,5 +1,5 @@
 """Shared `--device` CLI argument, resolution, and run-sheet row — used by every command that
-develops a frame (see docs/plans/gpu-acceleration.md Tasks 5-7). `contact` takes the flag too, but
+develops a frame. `contact` takes the flag too, but
 its thumbnails of already-developed frames stay on the CPU, so it resolves only an explicit `gpu`
 (to fail fast, like every command) and never probes for `auto`.
 
@@ -17,7 +17,7 @@ from halide.device import DEFAULT_DEVICE, ComputeDevice, DeviceUnavailableError,
 # Re-exported from halide.device (the single place that actually acts on it — resolve_device falls
 # back to this same value when neither --device nor $HALIDE_DEVICE is given) so CLI code, and a
 # later "halide gpu" command/hint, can import the one true default from here without reaching past
-# the CLI package. R3 (docs/plans/gpu-acceleration.md §6 D3): the user chose "auto" as the one
+# the CLI package. The user chose "auto" as the one
 # default used by every command, once GPU support exists at all.
 __all__ = [
     "DEFAULT_DEVICE",
@@ -94,7 +94,7 @@ def device_row(device: ComputeDevice) -> str:
 
 def gpu_hint(device: ComputeDevice) -> str | None:
     """Only when it's worth mentioning: CuPy isn't installed, but the machine actually has an
-    NVIDIA card (Task 6b, docs/plans/gpu-acceleration.md §3.7). None when there's nothing to add —
+    NVIDIA card. None when there's nothing to add —
     a real GPU is already in use, or there's no card at all (nobody without an NVIDIA card should
     be pitched a ~1 GB download). Shared, word for word, by two surfaces that show it differently:
     `cli/_run_sheet.py::compute_row` appends it to the Compute row on every batch/print/export run,

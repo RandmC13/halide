@@ -1,8 +1,8 @@
-"""GPU benchmark for docs/plans/gpu-acceleration.md, Task 7 — run on the machine with the NVIDIA card.
+"""GPU benchmark — run on the machine with the NVIDIA card.
 
 Unlike the probe beside it, this times halide itself: the real `halide invert` and `halide batch`
 commands, at `--device cpu` and `--device gpu`, and `batch` at several `--workers` counts plus the
-automatic choice. It answers what the plans leave to measurement:
+automatic choice. It answers what only measurement can answer:
 
   1. Is the GPU faster for a whole roll, and with how many workers (a GPU worker's time is mostly
      decode + write, so fewer may be enough) — which sets the default device and worker count.
@@ -16,7 +16,7 @@ automatic choice. It answers what the plans leave to measurement:
   3. How much host RAM a batch uses while it runs (all of halide's processes, sampled with psutil:
      RSS and, where the platform has it, PSS — shared-memory frames are mapped by both a worker and
      the GPU service, so RSS counts them twice and PSS doesn't), and whether the machine swapped.
-  4. (docs/plans/gpu-batch-throughput.md, Task B4) The two ways a GPU batch can use the card, in
+  4. The two ways a GPU batch can use the card, in
      the same run: the shared GPU service (the default: one process holds the only CUDA context,
      CPU-only workers hand it frames through shared memory) at `--workers` auto, 4 and 8; and the
      previous per-worker mode (`HALIDE_GPU_SERVICE=0`: every worker its own CUDA context) at auto
@@ -25,8 +25,7 @@ automatic choice. It answers what the plans leave to measurement:
      "largest worker" column then excludes it. A service row whose batch didn't actually use the
      service (the run sheet's "GPU service not used: ..." — e.g. /dev/shm too small) is flagged.
 
-First run on the user's RTX 3070 on 2026-09-27; its results and what they set are in
-gpu-acceleration.md §7 (items 1-3) and gpu-batch-throughput.md, Task B4 (item 4).
+First run on the user's RTX 3070 on 2026-09-27.
 Rerun it on new hardware to refit.
 
 Every batch row also shows how many workers `--workers` auto would pick in that mode. Per-worker
@@ -34,7 +33,7 @@ GPU mode skips 8 workers: about 4 per-worker GPU workers fit on an 8 GiB card, s
 would likely fall back to the CPU and the row would time that instead. Before any GPU timing, one
 untimed GPU `invert` warms up CuPy (its first-ever run compiles kernels).
 
-    .venv/bin/python docs/plans/gpu-acceleration-bench.py --scan IMG_0158.tif --roll Roll16-Testing \\
+    .venv/bin/python benchmarks/gpu_bench.py --scan IMG_0158.tif --roll Roll16-Testing \\
         --profile Roll16-KodakGold200 > gpu-bench.txt
 
 `--only batch` skips the single-frame `invert` rows and the in-process memory measurement (a
@@ -267,7 +266,7 @@ def _auto_workers(roll: Path, device: str) -> dict:
 
 
 # The ways a batch reaches the device: (label, device, environment). "service" and "per-worker" are
-# the two GPU modes (docs/plans/gpu-batch-throughput.md Part B); HALIDE_GPU_SERVICE=0 is halide's own
+# the two GPU modes; HALIDE_GPU_SERVICE=0 is halide's own
 # switch back to per-worker mode (batch/orchestrator.py).
 _MODES = {
     "cpu": [("-", {})],
@@ -417,7 +416,7 @@ def main() -> int:
                 shm = f", /dev/shm fits {auto['shm_cap']}" if auto.get("shm_cap") is not None else ""
                 print(f"--workers auto on {device} (GPU service): {auto['service_workers']}{shm}")
         print("\nMode: on the GPU, \"service\" is one GPU process shared by all workers (the default);")
-        print("\"per-worker\" is HALIDE_GPU_SERVICE=0, every worker its own CUDA context (before Part B).")
+        print("\"per-worker\" is HALIDE_GPU_SERVICE=0, every worker its own CUDA context (the fallback).")
         print("GPU procs: every process that used the card other than the GPU service; the smallest is usually")
         print("the halide parent's own CUDA context (it resolves the device), the rest are per-worker mode's")
         print("workers. Host RAM: all of halide's processes together at their peak (RSS, and PSS, which counts")

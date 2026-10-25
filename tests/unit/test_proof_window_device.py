@@ -1,4 +1,4 @@
-"""The picker's contact-sheet window hands its resolved device to batch's workers (Task 7).
+"""The picker's contact-sheet window hands its resolved device to batch's workers.
 
 gui/proof_window.py needs Qt, which can't load in every environment the suite runs in (this
 sandbox has no libglib), and the part under test — ProofRenderer.run's pool plumbing — uses none of
@@ -101,7 +101,7 @@ def test_proof_renderer_develops_on_the_pickers_device(proof_window, monkeypatch
     assert all(rest[-2:] == expected for _, rest in submitted)
 
 
-# --- The GPU service is started and stopped with the window's pool (Task B3) ---
+# --- The GPU service is started and stopped with the window's pool ---
 #
 # A real pool and a real service process: a "gpu" service whose GPU is the strict fake, or a "cpu"
 # one whose develop never finishes (to close the window while a frame is in the service's hands).

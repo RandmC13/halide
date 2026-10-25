@@ -32,9 +32,9 @@ import numpy as np
 from halide.core._xp import array_namespace
 
 _LUT_TAG_SIGNATURES = frozenset({"A2B0", "A2B1", "A2B2", "B2A0", "B2A1", "B2A2"})
-_LINEARITY_TOLERANCE = 5e-3  # in density (log10 units): 0.005 D, judged over t in [0.001, 1] (F08)
+_LINEARITY_TOLERANCE = 5e-3  # in density (log10 units): 0.005 D, judged over t in [0.001, 1]
 _LINEARITY_RANGE = (1e-3, 1.0)
-# ICC stores the colorants already adapted to the D50 PCS, so they must sum to its white (F08).
+# ICC stores the colorants already adapted to the D50 PCS, so they must sum to its white.
 _D50_PCS_WHITE = np.array([0.9642, 1.0, 0.8249])
 _WHITE_POINT_TOLERANCE = 2e-3
 
@@ -239,7 +239,7 @@ def working_space_matrices() -> tuple[np.ndarray, np.ndarray]:
     adaptation from D50 (the ICC PCS illuminant) to ACEScg's own white point, then ACEScg's
     XYZ -> RGB matrix. Built exactly as colour's XYZ_to_RGB builds them internally, so applying
     them as two matrix multiplies is the same maths colour.XYZ_to_RGB does, minus its per-pixel
-    broadcast (see convert_to_working_space and CLAUDE.md, "D1")."""
+    broadcast (see convert_to_working_space)."""
     import colour
     from colour.adaptation import matrix_chromatic_adaptation_VonKries
     from colour.models import xy_to_xyY, xyY_to_XYZ
@@ -276,7 +276,7 @@ def convert_to_working_space(img: np.ndarray, profile: LinearRGBProfile) -> np.n
     # earlier 60M-value stress test (same sandbox, different random sample) that found 1 of 60M off
     # by 1 ulp — the two runs sampled different values, and which of them happen to land on the rare
     # last-bit divergence isn't established; don't read this as hardware-dependent. Accepted
-    # tolerance is 2 float32 ulps — see CLAUDE.md, "D1" for the decision and the measured numbers.
+    # tolerance is 2 float32 ulps.
     m_cat, m_xyz_to_acescg = working_space_matrices()
     working = pcs_xyz @ xp.asarray(m_cat.T)
     working = working @ xp.asarray(m_xyz_to_acescg.T)

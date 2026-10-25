@@ -3,7 +3,7 @@
 A fresh exiftool costs ~0.66 s per output, and most of that is exiftool's own start-up and
 tag-table loading, not the file rewrite (on a 1-pixel TIFF the same copy still takes ~0.49 s).
 Kept running in its `-stay_open` mode it is ~0.29 s per file after the first, and the files it
-writes are byte-for-byte identical (docs/investigations/gpu-batch-throughput.md, "Corrections").
+writes are byte-for-byte identical.
 
 exiftool stays optional: with none installed, `execute` returns False exactly as the old
 one-shot call did. Anything that goes wrong with the kept-open process itself (it died, it hung,
@@ -60,8 +60,7 @@ class ExifToolSessionError(ExifToolError):
 class ExifToolSession:
     """One exiftool process reused for many commands (its -stay_open mode). Most of a fresh
     exiftool's ~0.66 s per file is its own start-up and tag-table loading, not the file
-    rewrite: kept open it is ~0.29 s per file, with byte-identical output
-    (docs/investigations/gpu-batch-throughput.md)."""
+    rewrite: kept open it is ~0.29 s per file, with byte-identical output"""
 
     def __init__(self, executable: str = EXECUTABLE, timeout: float = DEFAULT_TIMEOUT) -> None:
         self._timeout = timeout
@@ -306,7 +305,7 @@ def _fits_argument_file(args: list[str]) -> bool:
 
 def _one_shot(args: list[str], written: str | Path | None = None) -> bool:
     """The original call: a fresh exiftool for this one command — bounded by the same timeout as a
-    session request (F17), so an exiftool that hangs on a file (a stalled network share) can't hang
+    session request, so an exiftool that hangs on a file (a stalled network share) can't hang
     the batch after the session has already given up on it. On timeout it is killed (by
     subprocess.run itself), its temporary file removed, and ExifToolError raised: the frame's
     pixels are already written, so the caller reports it as metadata that couldn't be copied."""

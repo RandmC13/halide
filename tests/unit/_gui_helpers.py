@@ -1,5 +1,5 @@
 """Shared by the picker tests: record every thread a MainWindow starts, and a FrameLoader stand-in
-that stays mid-load until released (the state Task 12's close-time crash needed)."""
+that stays mid-load until released (the state the close-time crash test needs)."""
 
 import threading
 import time

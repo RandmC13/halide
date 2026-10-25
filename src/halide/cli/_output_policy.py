@@ -1,12 +1,11 @@
-"""What halide does when an output file already exists (the user's decision D-1, recorded in
-CLAUDE.md): ask in a terminal, refuse in a script, --overwrite / --skip-existing to choose.
+"""What halide does when an output file already exists (the user's decision): ask in a terminal,
+refuse in a script, --overwrite / --skip-existing to choose.
 Writing over the scan being developed is refused in every mode, whatever the flags say.
 
 Shared by every command that writes files (invert/batch/print/export/contact) so the policy reads
 the same way everywhere, rather than each command inventing its own overwrite prompt (the gap this
 replaces: `console.confirm_overwrite` silently proceeded whenever stdin wasn't a tty, and no bulk
-command checked for pre-existing outputs at all — see docs/investigations/codebase-review-evidence
-2.3-1, 2.3-2, 2.5-1, 4-3, 4-4)."""
+command checked for pre-existing outputs at all)."""
 
 from __future__ import annotations
 
@@ -182,7 +181,7 @@ def plan_bulk_jobs(
     return kept_jobs, len(jobs) - len(kept_jobs), kept_outputs, existing
 
 
-# --- Pre-flight checks (F25): before any work starts, each a plain error naming the path ----------
+# --- Pre-flight checks: before any work starts, each a plain error naming the path ----------
 
 
 def check_input_file(path: Path) -> None:

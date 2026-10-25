@@ -1,11 +1,9 @@
 """Which compute device halide runs on: the CPU (always available) or an NVIDIA GPU via CuPy (an
-optional install — see CLAUDE.md's "GPU support is optional" priority and
-docs/plans/gpu-acceleration.md). This module is the single place that decides; nothing else should
+optional install). This module is the single place that decides; nothing else should
 import cupy directly or guess whether it works.
 
 Deliberately does not import cupy at module level, or even for a `"cpu"` request: cupy is a ~1 GB
 optional dependency, and `halide --help`/every CPU-only run must stay fast and dependency-free (see
-CLAUDE.md's "Starting the CLI imports no numpy, tifffile, Pillow or colour-science" entry, and
 `tests/unit/test_cli_startup.py`, which this module's callers must keep passing). `resolve_device`
 imports cupy lazily, only when asked for anything other than `"cpu"`.
 """
@@ -20,7 +18,7 @@ from dataclasses import dataclass
 
 DEVICE_ENV = "HALIDE_DEVICE"
 
-# R3 (docs/plans/gpu-acceleration.md §6 D3): the user's one default, used by every command, once
+# The user's one default, used by every command, once
 # neither --device nor $HALIDE_DEVICE says otherwise. Defined here (not just in cli/_device_args.py,
 # which re-exports it for CLI callers) because this is the single place that actually acts on it.
 DEFAULT_DEVICE = "auto"
@@ -241,8 +239,8 @@ def gpu_support_installed() -> bool:
 
 def release_memory() -> None:
     """Hand CuPy's cached device memory back to the driver. CuPy keeps freed blocks in a pool for
-    reuse, which is right for a batch worker developing frame after frame (Task 7 keeps the pool
-    warm), but a one-frame run — or a frame that just ran out of GPU memory and is about to be
+    reuse, which is right for a batch worker developing frame after frame, but a one-frame run — or
+    a frame that just ran out of GPU memory and is about to be
     redone on the CPU — has no use for the cache. A no-op when CuPy was never imported (nothing to
     release, and importing it here would cost exactly what the module docstring avoids); never
     raises, since it runs on the way out of an error path."""

@@ -185,8 +185,8 @@ def fit_reliability(
 
     Why: the Save gate only asks for MIN_DENSITY_SEPARATION (0.1 D) between points, and three
     points that close, agreeing perfectly with each other, still leave the line's tilt so loosely
-    pinned that the ends of a typical roll can print CC 8-15 off (codebase review 2.1-1's
-    simulation). Saving stays allowed; this is what the warning reports.
+    pinned that the ends of a typical roll can print CC 8-15 off (by simulation). Saving stays
+    allowed; this is what the warning reports.
 
     None when there's nothing to judge: no fit yet (too few points, or one the fit refuses) or no
     wedge (the roll's previews haven't loaded)."""

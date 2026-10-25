@@ -1,4 +1,4 @@
-"""core/ is pure: no file I/O, no printing, nothing imported from io/ at run time (CLAUDE.md)."""
+"""core/ is pure: no file I/O, no printing, nothing imported from io/ at run time."""
 
 import re
 import tokenize

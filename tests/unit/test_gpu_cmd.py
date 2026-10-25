@@ -1,5 +1,5 @@
 """`halide gpu` — find an NVIDIA card without CuPy installed, tell the user GPU support exists, and
-install it on request (Task 6b, docs/plans/gpu-acceleration.md §3.7). CuPy plus NVIDIA's runtime
+install it on request CuPy plus NVIDIA's runtime
 libraries is ~1 GB, so a plain `pip install halide` must never pull it in; this is the one place
 that offers it, and only to someone who actually has a card.
 
@@ -558,7 +558,7 @@ def test_invert_no_card_never_stamps_and_reprobes_every_run(negative_tiff, tmp_p
     probe) is called again on every single invert, indefinitely — deliberate, so a card added to
     the machine later still gets the hint once. Measured negligible (~0.11 ms median per call in a
     fresh process, this sandbox, no libcuda present) rather than papered over with an unconditional
-    stamp; see ruling R8 in docs/plans/gpu-acceleration.md."""
+    stamp."""
     calls = []
 
     def fake_detect():

@@ -1,5 +1,5 @@
-"""The GPU benchmark script (docs/plans/gpu-acceleration-bench.py) is run by the user on their own
-card, not here — there's no GPU in the dev sandbox. These tests exercise its helpers (with a fake
+"""The GPU benchmark script (benchmarks/gpu_bench.py) is run by the user on their own card, not
+here — there may be no GPU where the suite runs. These tests exercise its helpers (with a fake
 CuPy where the GPU would be) so a mistake in them shows up before the user spends a long run on it."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import pytest
 from halide.device import ComputeDevice
 from halide.io.tiff import write_tiff
 
-_BENCH = Path(__file__).resolve().parents[2] / "docs" / "plans" / "gpu-acceleration-bench.py"
+_BENCH = Path(__file__).resolve().parents[2] / "benchmarks" / "gpu_bench.py"
 _MANUAL = ["--rm", "2.28", "--bm", "1.47", "--rs", "1.32", "--bs", "0.78"]
 
 

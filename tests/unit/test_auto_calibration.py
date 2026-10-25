@@ -237,9 +237,9 @@ def test_neutral_candidate_mask_is_bit_identical_to_the_old_full_reference_form(
 
 
 # ---------------------------------------------------------------------------
-# On the device (docs/plans/gpu-acceleration.md, Task 8): the same functions, given a GPU array,
+# On the device : the same functions, given a GPU array,
 # run there — pinned bit-for-bit on tests/unit/_fake_device.py's strict CPU stand-in (numpy
-# underneath, so any difference is a plumbing bug). A real GPU is held to the D2 tolerance in
+# underneath, so any difference is a plumbing bug). A real GPU is held to a tolerance in
 # tests/gpu/test_gpu_parity.py instead: its argsort orders luminance ties differently.
 # ---------------------------------------------------------------------------
 
@@ -312,8 +312,8 @@ def test_auto_density_balance_on_device_warns_and_raises_as_on_cpu(fake_device):
 
 
 def _old_saturation(pixels, reference):
-    """The pre-F05 `_saturation` body (np.divide with `where=`) — an oracle for everything except
-    its degenerate-pixel handling, which F05 deliberately changed (see the parametrized test
+    """The old `_saturation` body (np.divide with `where=`) — an oracle for everything except
+    its degenerate-pixel handling, which was deliberately changed (see the parametrized test
     below): a non-positive-max/NaN pixel used to score 0 (the most "neutral" a pixel could look),
     which is exactly the bug — it made such a pixel the *first* one picked as a neutral candidate,
     not excluded from candidacy at all."""
@@ -325,7 +325,7 @@ def _old_saturation(pixels, reference):
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
 def test_saturation_excludes_degenerate_pixels_but_matches_the_old_form_elsewhere(fake_device, dtype):
-    # F05: a pixel whose normalized max channel isn't positive (black, negative, or NaN) is now
+    # A pixel whose normalized max channel isn't positive (black, negative, or NaN) is now
     # scored +inf — maximally saturated, i.e. excluded by any "keep the least-saturated" threshold
     # — instead of the old 0, which wrongly looked like the *most* neutral pixel possible.
     rng = np.random.default_rng(5)

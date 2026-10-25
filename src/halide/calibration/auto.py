@@ -49,14 +49,14 @@ MIN_PIXELS_PER_BIN = 200  # below this, a bin's own median is too noisy to trust
 # three dye layers have different characteristic-curve *shapes*, most dramatically at the
 # underexposed "toe," where near-black content of any real hue converges toward nearly the same
 # raw color (there is little image-forming density left to differentiate it). Confirmed via real
-# testing (see CLAUDE.md): a genuinely neutral black object and a head of dark (non-neutral) hair
+# testing: a genuinely neutral black object and a head of dark (non-neutral) hair
 # had near-identical raw RGB and both passed the old global-median filter, while a genuinely
 # neutral, properly-exposed white object was excluded. _density_local_saturation fixes the "compared
 # against the wrong density level" half of that bug by computing a LOCAL reference per density
 # bin instead of one global one. It does not fix the separate, harder problem that
 # _shadow_and_highlight_from_candidates still extracts from the extreme percentiles of whatever
-# survives — investigated and found not fixable by better statistics on this same data (see
-# CLAUDE.md); anchor-frame or ColorChecker calibration remain the reliable options when this
+# survives — investigated and found not fixable by better statistics on this same data; anchor-frame
+# or ColorChecker calibration remain the reliable options when this
 # matters.
 MIN_DENSITY_SEPARATION = 0.1  # log10 density units; deliberately conservative, see _check_density_separation
 
@@ -123,7 +123,7 @@ def _saturation(pixels: np.ndarray, reference: np.ndarray | None = None) -> np.n
     pixel is colored." `reference=None` falls back to a single frame-wide median (broadcast to
     every pixel) for callers that don't need density-local behavior.
 
-    (max - min) / max where max > 0, else +inf (a black, negative or NaN pixel: F05 — excluded from
+    (max - min) / max where max > 0, else +inf (a black, negative or NaN pixel — excluded from
     candidacy outright, never "the most neutral pixel possible," which a 0 would make it look like
     to any caller that then picks the *lowest*-saturation pixels as neutral candidates). Written
     without `np.divide(..., where=)`, which CuPy's ufuncs don't take: the divisor is set to 1 where
@@ -156,7 +156,7 @@ def _check_density_separation(shadow_rgb: np.ndarray, highlight_rgb: np.ndarray)
     """Warn (not raise) when the solved shadow/highlight candidates are suspiciously close in
     density — a cheap, real, but narrow safety net: it only catches a near-degenerate (tiny-span)
     pair. It will NOT catch a wrong-but-well-separated pair, which is the specific failure mode
-    found via real testing on IMG_0151 (see CLAUDE.md) — that failure needs a fundamentally
+    found via real testing on IMG_0151 — that failure needs a fundamentally
     different, external signal (anchor-frame or ColorChecker calibration), not a cheaper check.
     """
     shadow_density = np.log10(1.0 / np.maximum(shadow_rgb, MIN_TRANSMITTANCE))
@@ -180,7 +180,7 @@ def _neutral_candidate_mask(image: np.ndarray, neutral_fraction: float) -> np.nd
 
     A non-finite or non-positive-in-every-channel pixel (NaN/inf from a broken export, or a deeply
     clipped/negative raw value) is excluded from candidacy before it ever reaches
-    `_density_local_saturation` — F05. Left in, a single such pixel would poison whichever
+    `_density_local_saturation`. Left in, a single such pixel would poison whichever
     luminance-sorted density bin it sorts into: that bin's per-channel reference becomes
     `xp.median(...)` of a set that includes it, which is NaN if the pixel is NaN, corrupting every
     *other* pixel's saturation score in that bin too — not just its own (confirmed: this is exactly

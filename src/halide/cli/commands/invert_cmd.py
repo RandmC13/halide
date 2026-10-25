@@ -109,7 +109,7 @@ def _maybe_print_gpu_hint(device) -> None:
     later must still get the hint once, which an unconditional "probed already" stamp would
     silently prevent. It's only acceptable because the probe itself is cheap when there's nothing
     to find — measured in this sandbox (no libcuda present) at ~0.11 ms median per call in a fresh
-    process (20 samples; see ruling R8 in docs/plans/gpu-acceleration.md) — negligible next to a
+    process (20 samples) — negligible next to a
     single-frame develop. If a future platform/driver combination makes `detect_nvidia_driver`
     meaningfully slower, this trade-off needs revisiting (e.g. stamping the "no card" result too,
     with a re-probe interval), not silently working around it here."""
@@ -151,8 +151,8 @@ def run(args: argparse.Namespace) -> int:
     else:
         choose_calibration_source(args, "this image")  # sets args.profile etc. before anything reads them
         density_profile, saved_tone = resolve_density_profile(args)
-    # Resolved after the calibration-source prompt above (see CLAUDE.md's choose_calibration_source
-    # ordering note) — a device prompt/error mid-calibration would be a strange place for it.
+    # Resolved after the calibration-source prompt above
+    # — a device prompt/error mid-calibration would be a strange place for it.
     device = resolve_device_arg(args)
     fallback_warning = device_fallback_warning(device)
     if fallback_warning:

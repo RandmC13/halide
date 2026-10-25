@@ -1,7 +1,7 @@
 """`--device`/`$HALIDE_DEVICE` wired into the CLI: the shared flag, its resolution into the CLI's
 usual clean error exit, the run-sheet/summary-line Compute row, and end-to-end behaviour on
-`invert`/`print` (Task 5, Ruling R7) and `export`'s single-file mode (Task 6), and the multi-frame
-commands handing the resolved device to their worker pools (Task 7)."""
+`invert`/`print` and `export`'s single-file mode, and the multi-frame
+commands handing the resolved device to their worker pools."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def test_device_flag_ignores_case_and_surrounding_space():
 
 
 def test_default_device_constant_is_auto():
-    # R3: one default, "auto", everywhere.
+    # One default, "auto", everywhere.
     assert DEFAULT_DEVICE == "auto"
 
 
@@ -218,7 +218,7 @@ def test_print_prints_the_device_on_its_summary_line(negative_tiff, tmp_path, ca
 
 
 # ---------------------------------------------------------------------------
-# end to end: export (single file — Task 6; the bulk-directory mode's pool is further down)
+# end to end: export (single file; the bulk-directory mode's pool is further down)
 # ---------------------------------------------------------------------------
 
 
@@ -297,7 +297,7 @@ def test_batch_run_sheet_shows_gpu_fallback_reason(roll_dir, tmp_path, monkeypat
 
 
 # ---------------------------------------------------------------------------
-# Task 7: the multi-frame commands hand their resolved device to the worker pool
+# The multi-frame commands hand their resolved device to the worker pool
 # ---------------------------------------------------------------------------
 
 _FAKE_GPU = ComputeDevice(kind="gpu", name="Fake GPU", memory_free=6 * 2**30, memory_total=8 * 2**30)
@@ -489,7 +489,7 @@ def test_calibrate_hands_the_device_to_the_picker(monkeypatch, gpu_resolves):
 
 
 # ---------------------------------------------------------------------------
-# Task B3: a GPU batch shares one GPU service, and the run sheet says how the GPU is used
+# A GPU batch shares one GPU service, and the run sheet says how the GPU is used
 # ---------------------------------------------------------------------------
 
 
@@ -565,7 +565,7 @@ def test_a_real_gpu_batch_through_the_service(roll_dir, tmp_path, monkeypatch, c
 
         assert json.loads(read_tiff_description(out_dir / name))["halide"]["device"] == "gpu"
     # The synthetic scans carry no camera EXIF, so the run's own "not verifiable" warning is
-    # expected (F16); what must be absent is any GPU trouble.
+    # expected; what must be absent is any GPU trouble.
     out = capsys.readouterr().out
     assert "GPU" not in out and "CPU" not in out
 

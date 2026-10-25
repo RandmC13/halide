@@ -1,6 +1,5 @@
 """Full-resolution decoded frames living in shared memory (`/dev/shm` on Linux) instead of a
-process-private heap — Part B of docs/plans/gpu-batch-throughput.md's "faster batch" work
-(docs/investigations/gpu-batch-throughput.md): a CPU-only worker decodes a scan straight into one of
+process-private heap: a CPU-only worker decodes a scan straight into one of
 these buffers, hands its name to a separate GPU service process, and the service attaches to the
 same bytes instead of the frame being pickled/copied through a pipe.
 
@@ -51,7 +50,7 @@ from typing import Iterator
 
 import numpy as np
 
-_NAME_STEM = "hl"  # short on purpose: macOS caps a segment name at 31 characters (F35)
+_NAME_STEM = "hl"  # short on purpose: macOS caps a segment name at 31 characters
 _PID_DIGITS = 6  # a pid in base 36, zero-padded: 36**6 is over 2 billion, past any real pid_max
 _TOKEN_LENGTH = 6  # 36**6 = 2.2 billion; a 4-hex token collided ~1 in 65,536 same-process batches (R21)
 _BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -94,7 +93,7 @@ class SharedFrame:
 
     def descriptor(self) -> tuple[str, tuple[int, ...], str]:
         """The `(name, shape, dtype)` a caller should actually send to another process — e.g. as
-        `attach_frame(*frame.descriptor())` on the receiving end (Task B2). Never send `frame`
+        `attach_frame(*frame.descriptor())` on the receiving end. Never send `frame`
         itself, or `frame.array`, across a process boundary (see the class docstring)."""
         return (self.name, self.shape, self.dtype)
 
@@ -329,7 +328,7 @@ def prefix_pid(name: str) -> int | None:
 
 
 def sweep_stale() -> int:
-    """Unlink every halide segment whose creating process is no longer running (F12): what a
+    """Unlink every halide segment whose creating process is no longer running: what a
     batch killed outright (a whole-group SIGKILL, the OOM killer taking the parent) left behind —
     nothing that died could run its own `sweep`, and the shared resource tracker died with it.
     Without this such a segment holds RAM (/dev/shm is tmpfs) until reboot, and shrinks every

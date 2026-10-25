@@ -267,7 +267,7 @@ def _oneshot_pids(log):
 
 
 def test_a_hung_oneshot_after_hung_sessions_times_out_and_raises(fake, tmp_path, monkeypatch):
-    """F17 (review 2.4-5): after two hung sessions the one-shot fallback used to have no timeout,
+    """After two hung sessions the one-shot fallback used to have no timeout,
     so an exiftool that hangs on a file (a stalled network share) hung the batch for good."""
     monkeypatch.setenv("HANG", "1")
     monkeypatch.setenv("ONESHOT_HANG", "1")

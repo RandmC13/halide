@@ -1,4 +1,4 @@
-"""Atomic output writes (F04): every file halide writes as its final result — a developed TIFF,
+"""Atomic output writes every file halide writes as its final result — a developed TIFF,
 a print, an export, a contact sheet, a saved profile — goes through here first, so a kill -9, a
 full disk, or any other failure partway through a write never leaves a truncated file sitting under
 the real output name, indistinguishable by name from a complete one.

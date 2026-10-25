@@ -1,4 +1,4 @@
-"""Unit tests for halide.cli._output_policy — the D-1 overwrite policy (ask in a terminal, refuse
+"""Unit tests for halide.cli._output_policy — the overwrite policy (ask in a terminal, refuse
 in a script, --overwrite/--skip-existing to choose; output == input is always a hard error)."""
 
 from __future__ import annotations

@@ -1,17 +1,17 @@
-"""The device path on a real GPU against the CPU path (docs/plans/gpu-acceleration.md, §3.3, D2).
+"""The device path on a real GPU against the CPU path.
 
 Run with `pytest -m gpu` on a machine with CuPy and a working NVIDIA GPU; everywhere else the whole
 module skips at collection. tests/unit/test_device_pipeline.py pins the same plumbing bit-for-bit on
 a fake device; this checks the real arithmetic, which is close but not bit-identical (different
-float rounding in the GPU's matmuls, logs and powers), held to the D2 tolerance:
+float rounding in the GPU's matmuls, logs and powers), held to a tolerance:
   - float32 pixels within 1e-5 relative, or 1e-7 absolute (for values near zero);
   - fitted exposure / contrast within 1e-5; the flat output's linear_scale within 1e-5 relative.
 
 The real scans (IMG_0151/0156/0156-nowb/0158.tif in the repo root, gitignored) are used when
 present — they are what the tolerance is really about.
 
-The last section (Task B4) is different: the shared GPU service against the in-process GPU path,
-both on the card, through the real batch code — held to bit-identity, not D2.
+The last section is different: the shared GPU service against the in-process GPU path,
+both on the card, through the real batch code — held to bit-identity, not a tolerance.
 """
 
 from __future__ import annotations
@@ -204,7 +204,7 @@ def test_real_scan_print_on_gpu_matches_cpu(tmp_path, scan):
 
 
 # ---------------------------------------------------------------------------
-# Task 6: export_delivery_image's device path (io/raster.py's namespace-generic to_srgb_8bit).
+# export_delivery_image's device path (io/raster.py's namespace-generic to_srgb_8bit).
 # Held to its own, 8-bit tolerance — the brief's bar, checked explicitly rather than folded into
 # "<= 1 code value" so a systematic offset can't hide inside that check.
 # ---------------------------------------------------------------------------
@@ -285,7 +285,7 @@ def test_real_scan_export_on_gpu_matches_cpu(tmp_path, scan):
 
 
 # ---------------------------------------------------------------------------
-# Task 8: auto calibration on the device frame (calibration/auto.py). Compared by tolerance only:
+# Auto calibration on the device frame (calibration/auto.py). Compared by tolerance only:
 # the GPU's argsort orders exact luminance ties differently (the user's probe: 58% identical order),
 # which can move a density bin's boundary by a pixel — close, never bit-identical.
 # ---------------------------------------------------------------------------
@@ -327,9 +327,10 @@ def test_real_scans_roll_auto_density_balance_on_gpu_matches_cpu():
 
 
 # ---------------------------------------------------------------------------
-# Task B4 (docs/plans/gpu-batch-throughput.md): the shared GPU service against the in-process GPU
+# The shared GPU service against the in-process GPU
 # path (per-worker mode, HALIDE_GPU_SERVICE=0), both through the real batch code. Same device code
-# on the same card, so these are held to bit-identity — not to D2: TIFF pixel bytes and provenance
+# on the same card, so these are held to bit-identity — not to a tolerance: TIFF pixel bytes and
+# provenance
 # (whose "device" is "gpu" on both sides), and export PNG pixels. Any difference is a service bug —
 # except the "auto-density"/"auto-density-flat" develop cases, where per-frame auto calibration's
 # GPU argsort/percentile isn't guaranteed reproducible run to run (see
@@ -432,7 +433,7 @@ def _rerun_per_worker(monkeypatch, scans, folder, stage, profile, tone):
 def _assert_tiffs_identical_diagnosing_nondeterminism(per_worker_rerun, folder, profile, name):
     """service vs per-worker: on a mismatch with no explicit profile ("auto-density"/
     "auto-density-flat" — per-frame auto calibration, `calibration/auto.py`), the mismatch isn't
-    automatically a service bug: CLAUDE.md records that GPU argsort/percentile ties aren't
+    automatically a service bug: GPU argsort/percentile ties aren't
     guaranteed to land the same way as the CPU's, and the same non-associative-reduction /
     thread-scheduling effect isn't guaranteed to reproduce identically run to run on the GPU either
     — the service and the per-worker path both run the *same* device code, but as two separate CUDA

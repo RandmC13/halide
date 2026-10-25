@@ -1,5 +1,5 @@
 """What happened to a roll, from its frames' BatchResults: the figures and flags the end-of-run
-summary prints and the run log records (docs/specs/batch-summary-and-log.md). Pure: it prints
+summary prints and the run log records. Pure: it prints
 nothing and touches no files, so the screen and the log can't disagree."""
 
 from __future__ import annotations

@@ -320,7 +320,7 @@ def test_show_doesnt_invent_a_full_path_for_an_older_relative_roll(tmp_path, cap
     assert "recorded relative to the folder halide calibrate ran in" in out
 
 
-# --- Task 3: profile store safety (F03, F24) ----------------------------------------------------
+# --- Profile store safety ----------------------------------------------------
 
 
 def _save(negative_tiff, output, name, *, rm=2.0, bm=1.0, extra=()):
@@ -476,7 +476,7 @@ def test_profile_delete_with_slash_is_rejected_before_touching_anything(negative
 
 
 def test_saving_narrow_picks_warns_where_the_fit_holds(negative_tiff, tmp_path, monkeypatch, capsys, isolated_profiles_dir):
-    # D-2: picks that only pin the fit down over part of the frame are still saved, with the
+    # Picks that only pin the fit down over part of the frame are still saved, with the
     # picker's own "Fit reliable over …" note as a warning.
     picked = DensityProfile(white_balance=(1.5, 1.0, 0.7), density_scale=(1.1, 1.0, 0.9), source="manual")
     note = "Fit reliable over D 0.9-1.3 only - add a point in the shadows or highlights for the ends of the roll"

@@ -33,7 +33,7 @@ def _point(frame, green_density, deviation=(0.0, 0.0, 0.0)):
     return NeutralPoint(frame=frame, x=1, y=1, rgb=tuple(10.0**-d), scan=SCAN)
 
 
-# --- window size (D-3) ------------------------------------------------------------------------
+# --- window size (the user's 1920x1080 size is pinned) --------------------------------------------
 
 
 def test_window_size_on_1920x1080_is_1056x756():
@@ -51,7 +51,7 @@ def test_window_size_on_a_small_laptop_is_the_minimum():
     assert (size.width(), size.height()) == (900, 700)
 
 
-# --- contact sheet window tracking (F11) ------------------------------------------------------
+# --- contact sheet window tracking ------------------------------------------------------------
 
 
 class _FakeProof(QDialog):
@@ -161,7 +161,7 @@ def test_reliability_says_not_reliable_anywhere_instead_of_a_one_point_range(tmp
     assert "not reliable anywhere" in note and "D 1." not in note
 
 
-# --- point-list names (D-3: the 1080p picker must read as before) -----------------------------
+# --- point-list names (the 1080p picker must read as before) --------------------------------------
 
 
 def _list_names(app, tmp_path, stem):
@@ -194,7 +194,7 @@ def test_a_very_long_frame_name_is_elided_with_the_full_path_as_tooltip(app, tmp
     window.close()
 
 
-# --- late signals, one load in flight, closing mid-rebuild (Task 12 review, F11) ---------------------
+# --- late signals, one load in flight, closing mid-rebuild ---------------------
 
 
 def _bare_roll(window, tmp_path, count=3):
@@ -246,7 +246,7 @@ def test_only_one_frame_load_is_in_flight_and_the_latest_frame_wins(monkeypatch,
 
 
 def test_closing_the_picker_mid_frame_load_waits_for_the_loader(monkeypatch, tmp_path, app):
-    """Task 12's crash: a window destroyed while a FrameLoader still runs aborts Qt. close() must not
+    """A window destroyed while a FrameLoader still runs aborts Qt. close() must not
     return until every thread it started has stopped, including one that is mid-load."""
     ParkedLoader.reset()
     started = record_started_threads(monkeypatch)
@@ -321,7 +321,7 @@ def test_closing_the_picker_mid_rebuild_waits_for_every_renderer(monkeypatch, tm
     assert not proof_window._STOPPING
 
 
-# --- one red widget per window (R-105) ----------------------------------------------------------
+# --- one red widget per window ------------------------------------------------------------------
 
 
 def test_only_the_one_primary_button_is_red(app):

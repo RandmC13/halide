@@ -1,5 +1,5 @@
 """The one place a folder of scans is listed: batch, print, export, check, contact and the picker all
-call `list_scans`, so they agree on which files are frames and in what order (F09).
+call `list_scans`, so they agree on which files are frames and in what order.
 
 Stdlib only (no Pillow until a picture file needs telling apart from a contact sheet): imported on
 the CLI's start-up path."""

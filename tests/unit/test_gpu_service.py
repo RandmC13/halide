@@ -1,4 +1,4 @@
-"""The GPU service process (halide/gpu_service.py, docs/plans/gpu-batch-throughput.md Task B2).
+"""The GPU service process (halide/gpu_service.py).
 
 There is no GPU here, so the service runs in one of three ways:
   - a `"cpu"`-kind service in a real separate (spawned) process — proves the IPC and shared-memory
@@ -9,7 +9,8 @@ There is no GPU here, so the service runs in one of three ways:
   - a `"gpu"`-kind service in a real process whose child installs the fake as its GPU
     (`running_service(..., initializer=_fake_device.install_as_gpu)`) — proves the parent never
     imports CuPy.
-Frames are small (/dev/shm is 64 MiB in this sandbox); full-size, real-GPU checks are Task B4.
+Frames are small (/dev/shm is 64 MiB in this sandbox); full-size, real-GPU checks live in
+tests/gpu/.
 """
 
 import contextlib
@@ -458,7 +459,7 @@ def test_stuck_service_times_out(tmp_path):
 
 @pytest.mark.skipif(not hasattr(signal, "pthread_kill"), reason="needs signal.pthread_kill")
 def test_an_interrupted_request_makes_the_client_dead_not_out_of_step(tmp_path):
-    """F06 (review 2.4-1): Ctrl-C landing while a request waits for its reply used to leave that
+    """Ctrl-C landing while a request waits for its reply used to leave that
     reply owed on the connection, so the next request read the *previous* frame's reply and its own
     frame — still the raw negative — was written out. Any BaseException there now marks the client
     dead: the next request raises ServiceUnavailable (the caller redevelops on the CPU) instead."""

@@ -71,9 +71,9 @@ _FALLBACK_PER_WORKER_BYTES = 5 * 1024**3  # used only if a file's header can't b
 _EXPORT_PEAK_RSS_MULTIPLIER = 2
 _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 
-# GPU workers (docs/plans/gpu-acceleration.md §3.5, §7): peak *device* memory per worker, modelled
+# GPU workers: peak *device* memory per worker, modelled
 # like RAM as `context + K * decoded_pixel_bytes`. Fitted from the user's RTX 3070 benchmark
-# (docs/plans/gpu-acceleration-bench.py, 2026-09-27), one 181 MiB frame developed on the GPU:
+# (benchmarks/gpu_bench.py, 2026-09-27), one 181 MiB frame developed on the GPU:
 #   - CuPy's pool peaked at 821 MiB with a given profile and 878 MiB with --auto-density (4.54 and
 #     4.86 x the frame) — the resident frame, the 64 MiB device bands' temporaries (banding.
 #     DEVICE_BAND_BYTES) and the whole-frame statistics together, so they need no terms of their own;
@@ -96,13 +96,13 @@ _FALLBACK_FRAME_BYTES = 200 * 1024 * 1024
 # can't be used) to 4 workers.
 _GPU_HOST_OVERHEAD_BYTES = 1024 * 1024 * 1024
 
-# The shared GPU service (docs/plans/gpu-batch-throughput.md Part B, halide/gpu_service.py): on a GPU,
+# The shared GPU service (halide/gpu_service.py): on a GPU,
 # one service process holds the only CUDA context and develops every worker's frames, and the
 # workers are CPU-only processes that hand it frames through shared memory (halide/shared_frames.py).
 # The service's own host memory is taken off the RAM budget before sizing the workers:
 # `_GPU_SERVICE_HOST_BYTES` (CUDA's and CuPy's host-side libraries — the measured GPU worker overhead
 # above) plus one frame's working memory, per batch (estimate_service_host_bytes): 1205 MiB for a
-# real 181 MiB frame. Measured on the user's RTX 3070 (Task B4): the service peaked at ~1178 MiB RSS
+# real 181 MiB frame. Measured on the user's RTX 3070: the service peaked at ~1178 MiB RSS
 # (~933 MiB PSS), so this stands as it is.
 _GPU_SERVICE_HOST_BYTES = _GPU_HOST_OVERHEAD_BYTES
 
@@ -122,7 +122,7 @@ _SERVICE_INITIALIZER = None
 # A troubleshooting switch: HALIDE_GPU_SERVICE=0 (or "off") makes a GPU batch use per-worker GPU
 # mode — every worker its own CUDA context, as before the service existed — instead of the shared
 # service. On by default (unset, or any other value). Also how the benchmark
-# (docs/plans/gpu-acceleration-bench.py) and tests/gpu time and compare the two modes in one run.
+# (benchmarks/gpu_bench.py) and tests/gpu time and compare the two modes in one run.
 SERVICE_ENV = "HALIDE_GPU_SERVICE"
 _SERVICE_OFF = ("0", "off", "false", "no")
 
@@ -444,7 +444,7 @@ def _workload_constants(workload: str) -> tuple[int, int]:
 def estimate_service_worker_memory_bytes(jobs: list[BatchJob], workload: str = "develop") -> int:
     """One service-mode worker's peak RAM: a CPU worker's (it's a CPU-only process — no CUDA, no
     CuPy) plus its shared frame(s), counted on top even though they're the same working buffer the
-    CPU constants already include. Deliberately generous and not refit after Task B4 measured
+    CPU constants already include. Deliberately generous and not refit after measuring
     ~525 MiB against this ~876 MiB for a real scan: if the service dies mid-batch, every worker
     develops on the CPU while still holding its shared frame — about what this estimates — and the
     margin keeps that from swapping. 6 workers (what it picks on 7.6 GiB) vs 8 measured 0.45 vs
@@ -471,7 +471,8 @@ class BatchCompute:
     batch_compute():
       - "cpu": no GPU; workers get exactly the arguments they always had;
       - "service": one GPU service shared by CPU-only workers (the normal GPU case);
-      - "per_worker": each worker makes its own CUDA context, as before Part B — only when the
+      - "per_worker": each worker makes its own CUDA context, as before the service existed — only
+      when the
         service can't be used, and `fallback_reason` says why (/dev/shm too small, or the service
         didn't start)."""
 
@@ -571,7 +572,7 @@ def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: 
     if device is not None and device.kind == "gpu":
         from halide.shared_frames import sweep_stale
 
-        # F12: frames a batch killed outright left behind (nothing of it survived to sweep them) —
+        # Frames a batch killed outright left behind (nothing of it survived to sweep them) —
         # first, so the /dev/shm cap below counts the space they held as free.
         sweep_stale()
     fallback, shm_cap = _service_decision(jobs, device, workload)
@@ -581,7 +582,7 @@ def batch_compute(jobs: list[BatchJob], device: ComputeDevice | None, workload: 
     from halide.shared_frames import batch_prefix, sweep
 
     with contextlib.ExitStack() as stack:
-        # F12: while the service runs, closing the terminal (SIGHUP) or SIGTERM cancels like Ctrl-C
+        # While the service runs, closing the terminal (SIGHUP) or SIGTERM cancels like Ctrl-C
         # (KeyboardInterrupt), so the unwinding below still stops the service and sweeps. Entered
         # first, so it is the last thing undone.
         stack.enter_context(cancel_on_hangup_and_term())
@@ -931,7 +932,7 @@ def _run_pool(
     in_flight: dict = {}
     stopped: list = []  # the pool's worker processes, once a cancel stopped it without waiting
     try:
-        # F12: closing the terminal (SIGHUP) or SIGTERM cancels exactly like Ctrl-C.
+        # Closing the terminal (SIGHUP) or SIGTERM cancels exactly like Ctrl-C.
         with cancel_on_hangup_and_term():
             try:
                 context = _pool_context()

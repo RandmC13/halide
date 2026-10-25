@@ -80,7 +80,7 @@ class PointView:
     frame_number: int | None  # None: the frame isn't in the loaded roll ("frame missing")
     green_density: float  # at the reference scan exposure
     agreement: Agreement | None
-    note: str | None = None  # e.g. the frame had no scan EXIF, so its point wasn't normalised (F16)
+    note: str | None = None  # e.g. the frame had no scan EXIF, so its point wasn't normalised
 
 
 @dataclass

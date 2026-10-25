@@ -87,7 +87,7 @@ class ScanColorError(Exception):
 
 class ScanInputError(ScanColorError):
     """Raised when an input file isn't a scan halide can develop: not a TIFF, unreadable, or not
-    RGB (F25), or already a halide positive (F15). A ScanColorError subclass so it travels the same
+    RGB, or already a halide positive. A ScanColorError subclass so it travels the same
     way — unwrapped through the GPU paths, reported per frame by a batch, a plain message from the
     CLI — because it too is a fact about the input, never a GPU failure to retry on the CPU."""
 
@@ -116,7 +116,7 @@ def provenance_json(
     it to be present.
 
     `device` ("cpu" / "gpu") is where the frame was actually developed: the two agree only to
-    float32 rounding (docs/plans/gpu-acceleration.md, D2), not bit for bit, so a file says which
+    float32 rounding (within the GPU accuracy tolerance), not bit for bit, so a file says which
     made it. A GPU frame that fell back to the CPU records "cpu"."""
     record: dict = {
         "output": "flat" if resolved.mode == "linear" else "print",
@@ -135,7 +135,7 @@ def provenance_json(
             record["film_stock"] = profile.film_stock  # for contact sheets' edge print
     if scan_gain != 1.0:
         record["scan_gain"] = float(scan_gain)
-    # allow_nan=False (F05): a NaN/inf value here would otherwise be written as a bare, non-standard
+    # allow_nan=False: a NaN/inf value here would otherwise be written as a bare, non-standard
     # `NaN`/`Infinity` token — valid to json.dumps by default, but not valid JSON for any other
     # reader — so this raises a clear ValueError instead of silently writing a broken file.
     return json.dumps({_PROVENANCE_KEY: record}, allow_nan=False)
@@ -204,7 +204,7 @@ def _decode_tiff(path: str | Path, out: np.ndarray | None = None):
 
 def _check_scan_layout(path: str | Path) -> None:
     """Fail with a plain message, from the header alone, for anything that isn't a readable RGB TIFF
-    (F25) — before decoding, so a JPEG, a raw file, a greyscale or RGBA export never surfaces as a
+    — before decoding, so a JPEG, a raw file, a greyscale or RGBA export never surfaces as a
     tifffile/numpy traceback."""
     path = Path(path)
     try:
@@ -224,7 +224,7 @@ def _check_scan_layout(path: str | Path) -> None:
 
 
 def _reject_positive(path: str | Path) -> None:
-    """F15: a file halide itself already wrote (it carries halide's provenance) isn't a negative —
+    """A file halide itself already wrote (it carries halide's provenance) isn't a negative —
     developing it again would invert a positive. Header only; a file that can't be read is left for
     _read_scan to report properly."""
     path = Path(path)
@@ -270,13 +270,13 @@ def _read_scan(
     return np.require(scan.image, requirements="W"), source_profile
 
 
-_MAX_NONFINITE_FRACTION = 0.01  # F05: above this, the export itself looks broken, not just noisy
+_MAX_NONFINITE_FRACTION = 0.01  # above this, the export itself looks broken, not just noisy
 
 
 def _clean_nonfinite_band(band, xp) -> int:
     """Count *pixel locations* in `band` with a non-finite value in any channel, and zero every
     non-finite value in place — 0 if there are none, so clean input is never touched by
-    `nan_to_num` (bit-identical, F05's hard constraint).
+    `nan_to_num` (bit-identical).
 
     Counts locations, not raw values: one corrupted input value spreads across all 3 channels once
     the ICC conversion's matrix multiply mixes them, but a photographer reading "N pixels" means N
@@ -293,7 +293,7 @@ def _report_nonfinite(name: str, count: int, total_pixels: int, on_warning: Call
     """After `_clean_nonfinite_band` has zeroed `count` (of `total_pixels`) pixel locations: warn
     about a few (the reciprocal's MIN_TRANSMITTANCE floor then prints them as the brightest white,
     and the print fit's percentiles are robust to a handful) — or fail the frame outright above
-    `_MAX_NONFINITE_FRACTION`, since that many means the export is broken, not the scan (F05)."""
+    `_MAX_NONFINITE_FRACTION`, since that many means the export is broken, not the scan."""
     fraction = count / total_pixels
     if fraction > _MAX_NONFINITE_FRACTION:
         raise ScanColorError(
@@ -312,7 +312,7 @@ def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes
                       *, name: str | None = None, on_warning: Callable[[str], None] | None = None):
     """Convert `image` (host or device array) in place, band by band; a no-op for None.
 
-    Also where non-finite (NaN/inf) pixels are handled (F05): a raw converter's export can contain
+    Also where non-finite (NaN/inf) pixels are handled: a raw converter's export can contain
     a few, e.g. from a highlight-recovery artifact. Counted and zeroed per band — only on a band
     that actually has any, so clean input costs nothing extra and stays bit-identical — before they
     can poison invert()'s reciprocal, the print fit's percentiles, or the JSON provenance with NaN.
@@ -383,11 +383,11 @@ def process_scan(
 
     Returns the tone values actually used (None for Stage.DENSITY_ONLY, which has no tone stage).
     """
-    _reject_positive(input_path)  # F15: before anything is written
+    _reject_positive(input_path)  # before anything is written
     output_path = Path(output_path) if output_path is not None else None
     # Written under a hidden temp name beside the real one and only moved into place once every
     # step below (the TIFF write, then exiftool, then the provenance description) has run — a
-    # killed or failed write never leaves a truncated file under the real output name (F04).
+    # killed or failed write never leaves a truncated file under the real output name.
     atomic_ctx = atomic_output(output_path) if output_path is not None else contextlib.nullcontext(None)
     exif_warning = None
     with atomic_ctx as tmp_path:
@@ -483,7 +483,7 @@ def _run_on_service(input_path, frame, service, method: str, request, on_warning
     buffer the CPU should start over on, "cpu"): fall_back_to_cpu's rules, so a frame the service
     may have half-written, or may still write into, is re-read into a private buffer.
 
-    A ScanColorError from the service (bad input data — F05, R8) is neither of those: it isn't
+    A ScanColorError from the service (bad input data) is neither of those: it isn't
     caught here, so it propagates straight out, exactly as run_device_job's in-process counterpart
     does — no fallback, no "GPU failed" wording. Any warnings the service collected while running
     the job (it has nothing of its own to print them to) are re-emitted here through this worker's
@@ -540,7 +540,7 @@ def develop_request(frame, request: DevelopRequest, band_bytes: int | None = Non
     (core/_xp.py), so the GPU runs exactly the CPU's steps in the CPU's order, and the CPU path is
     the code it always was. Returns (tone used, profile used).
 
-    `name`/`on_warning`: see _to_working_space (F05's non-finite handling). The GPU service calls
+    `name`/`on_warning`: see _to_working_space (its non-finite handling). The GPU service calls
     this with neither (it runs in its own process, with no live callback to report through), so a
     frame developed that way cleans non-finite pixels silently rather than warning about them — a
     known, narrow gap, no worse than the pre-existing one for auto-density's own warnings.warn."""
@@ -700,13 +700,13 @@ def run_device_job(host: np.ndarray, job, request):
     develop_request or print_request), and download the result back into `host`. Returns job's
     result, or raises DeviceJobFailed after handing CuPy's cached memory back.
 
-    `host` is written only once, at the very end (the plan's "out-of-memory never fails a frame",
-    §3.3): up to the download a failure leaves it exactly as decoded, ready for the CPU to start
+    `host` is written only once, at the very end (an out-of-memory never fails a frame): up to the
+    download a failure leaves it exactly as decoded, ready for the CPU to start
     over on. Host memory stays ~1 frame: `host` is both the upload source and the download target.
     The one place this runs: the in-process device path (_run_on_device) and the GPU service.
 
-    A ScanColorError (F05's "too many non-finite pixels" — or any future input-data check) is *not*
-    a device problem (R8): it propagates unwrapped, not as DeviceJobFailed, so the caller neither
+    A ScanColorError ("too many non-finite pixels" — or any future input-data check) is *not*
+    a device problem: it propagates unwrapped, not as DeviceJobFailed, so the caller neither
     prints "the GPU failed" nor retries on the CPU (which would just raise the identical error a
     second time) — the frame fails once, with the same plain message the CPU path itself gives."""
     frame = None
@@ -767,7 +767,7 @@ def export_fallback(input_path, acescg_image: np.ndarray, failure: DeviceFailure
 
 def _run_on_device(input_path, host: np.ndarray, device: ComputeDevice | None, job, request, on_warning):
     """Run `job(frame, request, band_bytes)` on a GPU copy of `host` and download the result into
-    `host` (see run_device_job). `job` is bound with `name`/`on_warning` first (F05's non-finite
+    `host` (see run_device_job). `job` is bound with `name`/`on_warning` first (its non-finite
     handling) — this runs in-process (unlike the GPU service), so the caller's own warning channel
     is still reachable here.
 
@@ -854,7 +854,7 @@ def print_scan(
         )
     output_path = Path(output_path)
     exif_warning = None
-    # Same atomic-write contract as process_scan (F04): everything below runs on a hidden temp
+    # Same atomic-write contract as process_scan: everything below runs on a hidden temp
     # path, moved over the real name only once it's all done.
     with atomic_output(output_path) as tmp_path:
         with contextlib.ExitStack() as shared:
@@ -949,7 +949,7 @@ def export_delivery_image(
         else:
             srgb_8bit = _export_srgb_on_device(input_path, scan.image, device, on_warning)
         # Written under a hidden temp name beside the real one, moved into place only once the
-        # PNG/JPEG is fully encoded (F04) — see process_scan's own atomic_output for why.
+        # PNG/JPEG is fully encoded — see process_scan's own atomic_output for why.
         with atomic_output(output_path) as tmp_path:
             if srgb_8bit is not None:
                 write_srgb_8bit_image(tmp_path, srgb_8bit, quality=quality)

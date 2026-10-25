@@ -189,13 +189,13 @@ def test_convert_to_working_space_preserves_neutral_gray():
 
 
 # ---------------------------------------------------------------------------
-# D1: convert_to_working_space's BLAS matmul form vs colour-science's own per-pixel broadcast
-# (see CLAUDE.md, "D1" — the user accepted "looks identical", not bit-identical).
+# convert_to_working_space's BLAS matmul form vs colour-science's own per-pixel broadcast
+# (the user accepted "looks identical", not bit-identical).
 # ---------------------------------------------------------------------------
 
 
 def _convert_with_colour(img: np.ndarray, profile) -> np.ndarray:
-    """Verbatim copy of convert_to_working_space as of dff3cb2 — the D1 oracle."""
+    """Verbatim copy of convert_to_working_space as of dff3cb2 — the oracle."""
     import colour
 
     matrix = profile.rgb_to_pcs_xyz.astype(img.dtype, copy=False)
@@ -256,7 +256,7 @@ def test_convert_to_working_space_on_real_scans(name):
 
 
 # ---------------------------------------------------------------------------
-# F08: density-based linearity, damage-proof parsing, D50 white point
+# Density-based linearity, damage-proof parsing, D50 white point
 # ---------------------------------------------------------------------------
 def _with_trc(trc: bytes) -> bytes:
     tags = dict(LINEAR_TAGS)
@@ -319,7 +319,7 @@ def test_halides_own_output_profile_passes():
 
 
 # ---------------------------------------------------------------------------
-# Hostile / odd curve encodings (review 2.1-15): every parametric type, sampled tables, the tolerance
+# Hostile / odd curve encodings: every parametric type, sampled tables, the tolerance
 # ---------------------------------------------------------------------------
 _LINEAR_PARA = {
     0: [1.0],

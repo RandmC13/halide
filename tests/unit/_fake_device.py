@@ -204,7 +204,7 @@ fake_xp = types.SimpleNamespace(
     broadcast_to=_namespaced(np.broadcast_to, sequence_args=(1,)),
     concatenate=_namespaced(np.concatenate, sequence_args=(0,)),
     empty=_namespaced(np.empty),
-    # F05 (non-finite/non-positive pixel handling): isfinite/any/count_nonzero/nan_to_num at the ICC
+    # Non-finite/non-positive pixel handling: isfinite/any/count_nonzero/nan_to_num at the ICC
     # working-space boundary (processing.py), all/zeros for auto calibration's candidate exclusion
     # (calibration/auto.py). CuPy has each with these signatures.
     isfinite=_namespaced(np.isfinite),
