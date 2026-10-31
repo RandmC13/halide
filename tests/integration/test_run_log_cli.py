@@ -184,3 +184,27 @@ def test_a_cancelled_batch_still_closes_its_log(roll, tmp_path, monkeypatch):
     assert _batch(roll, out) == 130
     text = (out / RUN_LOG_NAME).read_text(encoding="utf-8")
     assert "Cancelled" in text and "━━ finished" in text
+
+
+@pytest.mark.parametrize("command,ext", [("batch", "tif"), ("print", "tif"), ("export", "png")])
+@pytest.mark.parametrize("dry", [False, True])
+def test_log_never_names_a_scan_an_output_or_a_picture(roll, tmp_path, command, ext, dry):
+    out = tmp_path / "out"
+    extra = ["--dry-run"] if dry else []
+    base = ["batch", str(roll), str(out), *MANUAL] if command == "batch" else [command, str(roll), str(out)]
+    scan = roll / "frame_00.tif"
+    produced = out / f"frame_00.{ext}"
+    produced.parent.mkdir()
+    produced.write_bytes(b"precious")
+    picture = tmp_path / "x.png"
+    picture.write_bytes(b"png")
+    for log, expect in ((scan, scan.read_bytes()), (produced, b"precious"), (picture, b"png")):
+        with pytest.raises(SystemExit) as exc:
+            main([*base, "--log", str(log), "--overwrite", *extra])
+        assert "not a log" in str(exc.value.code)
+        assert log.read_bytes() == expect
+
+
+def test_a_preview_refuses_a_scan_as_its_log(roll, tmp_path):
+    with pytest.raises(SystemExit):
+        main(["batch", str(roll), "--contact-sheet", str(tmp_path / "s.jpg"), *MANUAL, "--log", str(roll / "frame_01.tif")])

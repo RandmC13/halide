@@ -53,7 +53,7 @@ from halide.cli._calibration_args import (
     resolve_stage,
     resolve_tone_params,
 )
-from halide.cli._run_log import RunRecord, add_log_arguments
+from halide.cli._run_log import RunRecord, add_log_arguments, check_log_path
 from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
@@ -320,6 +320,7 @@ def run(args: argparse.Namespace) -> int:
         kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
         build_sheet = sheet_path is None or sheet_path in kept_outputs
     else:
+        check_log_path(args.log, [(j.input_path, j.input_path) for j in jobs])
         skipped_frames = 0
         kept = []
         # output_dir is None only reaches here with a contact sheet requested (checked above) — no

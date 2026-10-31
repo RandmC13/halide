@@ -131,6 +131,12 @@ def resolve_existing(
     raise SystemExit(refusal)
 
 
+def _check_log(args, pairs: list[tuple[Path, Path]]) -> None:
+    from halide.cli._run_log import check_log_path
+
+    check_log_path(getattr(args, "log", None), pairs)
+
+
 def resolve_bulk_jobs(
     jobs: list,
     args,
@@ -150,6 +156,7 @@ def resolve_bulk_jobs(
     and `extra_pairs` outputs alike)."""
     pairs = [(job.input_path, job.output_path) for job in jobs]
     check_not_input(pairs)
+    _check_log(args, pairs + list(extra_pairs or []))
     all_pairs = pairs + list(extra_pairs or [])
     kept_outputs = {out for _, out in resolve_existing(all_pairs, policy_from_args(args), interactive=interactive)}
     kept_jobs = [job for job in jobs if job.output_path in kept_outputs]
@@ -170,6 +177,7 @@ def plan_bulk_jobs(
     how many of the *jobs'* outputs already exist)."""
     pairs = [(job.input_path, job.output_path) for job in jobs]
     check_not_input(pairs)
+    _check_log(args, pairs + list(extra_pairs or []))
     existing = sum(1 for _, out in pairs if out.exists())
     all_pairs = pairs + list(extra_pairs or [])
     policy = policy_from_args(args)

@@ -28,6 +28,24 @@ def log_path(args, output_dir: Path | None) -> Path | None:
     return output_dir / RUN_LOG_NAME if output_dir is not None else None
 
 
+_PICTURE_SUFFIXES = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
+
+
+def check_log_path(log: str | Path | None, pairs: list[tuple[Path, Path]]) -> None:
+    """Refuse a --log FILE that is a picture or is one of this run's own scans or outputs: the log
+    is appended to, so it would corrupt the file. `pairs` are (input, output) paths."""
+    if log is None:
+        return
+    from halide.cli._output_policy import _same_file
+
+    log = Path(log)
+    if log.suffix.lower() in _PICTURE_SUFFIXES or any(_same_file(log, p) for pair in pairs for p in pair):
+        raise SystemExit(
+            f"--log {log} is a picture, not a log — halide never writes over a scan or a print. "
+            f"Choose a .txt file, or leave --log out to use {RUN_LOG_NAME} in the output folder"
+        )
+
+
 class RunRecord:
     """One run's summary and log: `start` when the run sheet closes, `add` each result as it
     arrives, then `finish` (or `abort` on an unexpected error)."""
