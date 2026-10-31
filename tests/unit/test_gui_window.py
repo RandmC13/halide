@@ -28,6 +28,12 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _closing_never_blocks_on_the_question(monkeypatch):
+    """Tests that close a window holding unsaved points shouldn't wait on the modal question."""
+    monkeypatch.setattr(MainWindow, "_confirm_close", lambda self, count: True)
+
+
 def _point(frame, green_density, deviation=(0.0, 0.0, 0.0)):
     d = np.array([np.log10(WB[c]) + green_density / SCALE[c] for c in range(3)]) + np.asarray(deviation)
     return NeutralPoint(frame=frame, x=1, y=1, rgb=tuple(10.0**-d), scan=SCAN)
@@ -337,3 +343,77 @@ def test_only_the_one_primary_button_is_red(app):
         primaries = [b for b in window.findChildren(QPushButton) if b.property("role") == "primary"]
         assert primaries == [window.primary_button]
         window.close()
+
+
+# --- closing and reopening never silently throws points away -------------------------------------
+
+
+def _close_asks(window, monkeypatch, answer):
+    asked = []
+    monkeypatch.setattr(window, "_confirm_close", lambda n: asked.append(n) or answer)
+    return asked
+
+
+def test_closing_with_unsaved_points_and_keep_picking_leaves_the_window_open(monkeypatch, tmp_path, app):
+    window = _window_with_points(monkeypatch, tmp_path, app)
+    stopped = []
+    monkeypatch.setattr(window, "_stop_loaders", lambda **kw: stopped.append(kw))
+    asked = _close_asks(window, monkeypatch, False)
+    window.show()
+    assert not window.close()
+    assert asked == [3] and window.isVisible() and not stopped
+
+
+def test_closing_with_unsaved_points_and_close_closes(monkeypatch, tmp_path, app):
+    window = _window_with_points(monkeypatch, tmp_path, app)
+    asked = _close_asks(window, monkeypatch, True)
+    window.show()
+    assert window.close()
+    assert asked == [3] and not window.isVisible()
+
+
+def test_closing_without_points_or_after_a_save_asks_nothing(monkeypatch, tmp_path, app):
+    empty = MainWindow()
+    asked = _close_asks(empty, monkeypatch, False)
+    assert empty.close() and not asked
+    window = _window_with_points(monkeypatch, tmp_path, app)
+    window._on_saved("x", "saved")
+    asked = _close_asks(window, monkeypatch, False)
+    assert window.close() and not asked
+
+
+def test_one_point_added_after_a_save_asks_again(monkeypatch, tmp_path, app):
+    window = _window_with_points(monkeypatch, tmp_path, app)
+    window._on_saved("x", "saved")
+    window.session.add_point(_point(window.session.frames[0].path, 2.0))
+    asked = _close_asks(window, monkeypatch, True)
+    window.close()
+    assert asked == [4]
+
+
+def _saved_profile(window, tmp_path):
+    from halide.calibration.profile_store import save_named_profile
+
+    s = window.session
+    return save_named_profile(s.profile_to_save(), "p", profiles_dir=tmp_path / "profiles", **s.sidecars())
+
+
+def test_reopening_a_profile_unchanged_then_closing_asks_nothing(monkeypatch, tmp_path, app):
+    window = _window_with_points(monkeypatch, tmp_path, app)
+    path = _saved_profile(window, tmp_path)
+    monkeypatch.setattr(window, "_confirm_new_calibration", lambda: True)
+    window.open_profile(path)
+    assert window.session.points
+    asked = _close_asks(window, monkeypatch, False)
+    assert window.close() and not asked
+
+
+def test_opening_an_unreadable_profile_keeps_the_points_and_asks_nothing(monkeypatch, tmp_path, app):
+    window = _window_with_points(monkeypatch, tmp_path, app)
+    before = list(window.session.points)
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ not json")
+    monkeypatch.setattr(window, "_confirm_new_calibration", lambda: pytest.fail("asked"))
+    window.open_profile(bad)
+    assert window.session.points == before
+    assert "Couldn't open bad.json" in window.status_label.toolTip()

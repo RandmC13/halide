@@ -405,6 +405,7 @@ class MainWindow(QWidget):
         self.is_pick_session = is_pick_session
         self._pick_result_emitted = False
         self.session = CalibrationSession()
+        self._saved_points: list = []  # the points as last saved or reopened; close asks if they differ
         self._profile_name = ""  # a reopened profile's name, offered again on save
 
         self._current: int | None = None  # index into session.frames
@@ -692,6 +693,11 @@ class MainWindow(QWidget):
             self.open_profile(Path(path))
 
     def open_profile(self, path: Path) -> None:
+        try:
+            CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
+        except (ValueError, KeyError, OSError) as exc:
+            self._status(f"Couldn't open {path.name}: {exc}")
+            return
         if not self._confirm_new_calibration():
             return
         self.session.reset()
@@ -715,6 +721,7 @@ class MainWindow(QWidget):
             self._roll_not_found(path.stem, recorded)
         else:
             self._warn_missing_frames()
+        self._saved_points = list(self.session.points)
 
     def _roll_not_found(self, profile_name: str, recorded: Path) -> None:
         """The reopened profile's roll folder has gone: say so, and offer to point at where it went
@@ -1198,6 +1205,7 @@ class MainWindow(QWidget):
 
     def _on_saved(self, name: str, message: str) -> None:
         self._profile_name = name
+        self._saved_points = list(self.session.points)
         self._status(message)
 
     def _repaint_all(self) -> None:
@@ -1217,7 +1225,26 @@ class MainWindow(QWidget):
     def _status(self, message: str) -> None:
         self.status_label.set_full_text(message)
 
+    def _confirm_close(self, count: int) -> bool:
+        box = QMessageBox(
+            QMessageBox.Icon.Question,
+            "Close the picker?",
+            f"The {console.plural(count, 'neutral point')} you picked aren't saved in a profile and will be lost.",
+            parent=self,
+        )
+        close = box.addButton("Close", QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton("Keep picking", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.setEscapeButton(keep)
+        box.exec()
+        self._repaint_all()
+        return box.clickedButton() is close
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        points = self.session.points
+        if points and points != self._saved_points and not self._pick_result_emitted and not self._confirm_close(len(points)):
+            event.ignore()
+            return
         self.hide()  # closing feels instant even while a frame finishes loading
         self._closing = True
         self._stop_loaders(wait=True)
