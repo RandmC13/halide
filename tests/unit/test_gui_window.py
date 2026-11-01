@@ -426,7 +426,7 @@ def test_opening_an_unreadable_profile_keeps_the_points_and_asks_nothing(monkeyp
     monkeypatch.setattr(window, "_confirm_new_calibration", lambda: pytest.fail("asked"))
     window.open_profile(bad)
     assert window.session.points == before
-    assert "Couldn't open bad.json" in window.status_label.toolTip()
+    assert window.notice_bar.notices()["error"].title.startswith("Couldn't open bad.json")
 
 
 def test_grade_slider_never_reaches_zero(app):

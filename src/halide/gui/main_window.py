@@ -51,6 +51,7 @@ from halide.gui.drawers import Accordion, Drawer, PrintControls, RollDetailsForm
 from halide.gui.filmstrip import Filmstrip
 from halide.gui.image_view import ImageView
 from halide.gui.loaders import FrameLoader, PreviewLoader
+from halide.gui.notices import Notice, NoticeBar
 from halide.gui.point_list import CC_EXPLANATION, PointList, agreement_colour, no_wrap
 from halide.gui.profiles_window import ProfilesWindow
 from halide.gui.proof_window import ProofWindow, wait_for_stopping_renderers
@@ -68,7 +69,7 @@ from halide.gui.sampling import (
     snap_to_representative_pixel,
 )
 from halide.gui.step_wedge import StepWedge, WedgeTick
-from halide.gui.widgets import PROFILE_NAME_MAX_W, ElidedLabel, SaveStamp, ViewSwitch
+from halide.gui.widgets import PROFILE_NAME_MAX_W, SaveStamp, ViewSwitch
 from halide.io.contact_sheet import downsample_linear
 from halide.processing import read_roll_scan_metadata
 
@@ -93,13 +94,15 @@ _MAGNIFIER_ZOOM = 6
 _MARKER_HIT_RADIUS = 10  # display pixels: a click this close to a marker selects it instead of adding
 _OVERLAY_TINT = np.array([0.0, 1.0, 0.0], dtype=np.float32)
 
+# The guide under the picture. On the negative the reversal is the one thing a newcomer must not miss,
+# so it's picked out in the warning colour (never softened).
 _CAPTION_NEGATIVE = (
-    "Click things that were white, grey or black in the real scene. This is the raw negative, so "
-    "brightness is reversed: real whites look DARK here, real shadows look LIGHT."
+    "Click things that were white, grey or black in the scene. Brightness is reversed: "
+    f"<b style='color:{theme.TEXT_WARNING}'>real whites look DARK here</b>."
 )
 _CAPTION_POSITIVE = (
-    "Click things that were white, grey or black in the real scene. Points are always measured on "
-    "the negative, whichever view you click on."
+    "Click things that were white, grey or black in the scene. Points are measured on the negative "
+    "either way."
 )
 
 
@@ -169,6 +172,7 @@ class MainWindow(QWidget):
         # A status worth keeping ("Reopened …", "Skipped …"): loading doesn't replace it until the
         # person moves to another frame themselves.
         self._sticky_status: str | None = None
+        self._scan_flags_by_index: dict[int, str] = {}
         self._proof: ProofWindow | None = None
         self._preview_loader: PreviewLoader | None = None
         self._frame_loader: FrameLoader | None = None
@@ -282,13 +286,24 @@ class MainWindow(QWidget):
         self.image_view.left.connect(self.image_view.clear_loupe)
         left.addWidget(self.image_view, stretch=1)
 
+        guide = QHBoxLayout()
+        guide.setSpacing(8)
+        self.view_mark = QLabel("NEGATIVE")
+        self.view_mark.setFont(theme.edge_font(11))
+        self.view_mark.setStyleSheet(
+            f"color: {theme.FILM_REBATE}; background: {theme.EDGE_PRINT}; border-radius: 2px; padding: 0 4px;"
+        )
+        guide.addWidget(self.view_mark, 0, Qt.AlignmentFlag.AlignTop)
         self.caption = QLabel(_CAPTION_NEGATIVE)
         self.caption.setWordWrap(True)
-        self.caption.setProperty("role", "dim")
-        left.addWidget(self.caption)
-        self.status_label = ElidedLabel("")
-        self.status_label.setProperty("role", "dim")
-        left.addWidget(self.status_label)
+        guide.addWidget(self.caption, 1)
+        left.addLayout(guide)
+        # What's true of the roll as chips that stay; what's happening now as text that fades.
+        self.notice_bar = NoticeBar()
+        self.notice_bar.set_host(self.image_view)
+        self.notice_bar.frameRequested.connect(self._go_to_frame)
+        self.status_label = self.notice_bar.activity
+        left.addWidget(self.notice_bar)
         body.addLayout(left, stretch=1)
 
         # right panel: wedge, points, notice, proof, drawers, primary
@@ -415,7 +430,7 @@ class MainWindow(QWidget):
     def load_roll(self, folder: Path, keep_points: bool = False) -> None:
         paths, left_out = list_scans(folder)
         if not paths:
-            self._status(f"No TIFF scans in {folder}")
+            self._error("No TIFF scans", f"No TIFF scans in {folder}")
             return
         if not keep_points:
             if not self._confirm_new_calibration():
@@ -423,13 +438,16 @@ class MainWindow(QWidget):
             self._new_calibration()
         self._start_roll(paths, folder)
         if left_out:
-            scan_check = f" · {self._sticky_status}" if self._sticky_status else ""  # keep the scan check's warning
-            self._sticky(f"Skipped {left_out.describe()}{scan_check}")
+            count = sum((left_out.hidden, left_out.contact_sheets, left_out.folders, left_out.positives, *left_out.other.values()))
+            self.notice_bar.set_notice("skipped", Notice(
+                chip=f"{count} skipped", title=f"Left out of the roll, not being scans: {left_out.describe()}",
+            ))
 
     def _new_calibration(self) -> None:
-        self._sticky_status = None  # the last roll's message is about the last roll
         """Forget the calibration in hand: points, profile name, extra information, print pin, and
         the top bar's profile chip or save stamp, which would otherwise name a profile this isn't."""
+        self._sticky_status = None  # the last roll's message is about the last roll
+        self.notice_bar.clear_all()
         self.session.reset()
         self._profile_name = ""
         self.details_form.set_values(self.session.details)
@@ -483,7 +501,9 @@ class MainWindow(QWidget):
         for _, roll_paths in rolls:
             flags.update(frame_flags(assess_roll({str(p): metadata[str(p)] for p in roll_paths})))
         # Keyed by the paths as given (relative when typed so on the command line), in frame order.
-        self.filmstrip.strip.set_flags({i: flags[str(p)] for i, p in enumerate(paths) if str(p) in flags})
+        self._scan_flags_by_index = {i: flags[str(p)] for i, p in enumerate(paths) if str(p) in flags}
+        self.filmstrip.strip.set_flags(self._scan_flags_by_index)
+        self.notice_bar.clear_notice("skipped")  # the caller sets it again for this roll
         self._current = None
         self.full_image = None
         self.display = None
@@ -494,12 +514,28 @@ class MainWindow(QWidget):
             self._start_thread(self._preview_loader)
         self._select_frame(0)
         self._refresh_points()
-        if flags:
-            earlier = f"{self._sticky_status} · " if self._sticky_status else ""  # e.g. "Reopened …"
-            self._sticky(
-                f"{earlier}⚠ {console.plural(len(flags), 'frame')} {'was' if len(flags) == 1 else 'were'} scanned "
-                "differently — see the ⚠ on the strip"
-            )
+        self._show_scan_check(flags)
+
+    def _show_scan_check(self, flags: dict[str, str]) -> None:
+        """The roll's scan check as a chip; its list names each frame and why, and goes to it."""
+        if not flags:
+            self.notice_bar.clear_notice("scan")
+            return
+        several = len(self.session.rolls) > 1
+        rows = []
+        for i, frame in enumerate(self.session.frames):
+            reason = self._scan_flags_by_index.get(i)
+            if reason:
+                label = f"FRAME {frame.number:02d}" + (f" {frame.roll.name.upper()}" if several else "")
+                rows.append((label, reason, i))
+        n = len(rows)
+        self.notice_bar.set_notice("scan", Notice(
+            chip=f"⚠ {n} scanned differently",
+            title=f"{console.plural(n, 'frame')} {'was' if n == 1 else 'were'} scanned differently from most of the roll",
+            rows=rows,
+            footer="One profile shifts colour between them; scan a roll at one manual exposure and one white "
+                   "balance (halide batch --match-scan-exposure evens out exposure)",
+        ))
 
     def show_profiles(self) -> ProfilesWindow:
         if self._profiles is None:
@@ -563,7 +599,7 @@ class MainWindow(QWidget):
         try:
             self.session.use_profile(path)
         except (ValueError, KeyError, OSError) as exc:
-            self._status(f"Couldn't use {path.stem}: {exc}")
+            self._error(f"Couldn't use {path.stem}", f"Couldn't use {path.stem}: {exc}")
             return
         self._profile_name = path.stem
         self._saved_points = list(self.session.points)
@@ -578,15 +614,16 @@ class MainWindow(QWidget):
         try:
             CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
         except (ValueError, KeyError, OSError) as exc:
-            self._status(f"Couldn't open {path.name}: {exc}")
+            self._error(f"Couldn't open {path.name}", f"Couldn't open {path.name}: {exc}")
             return
         if not self._confirm_new_calibration():
             return
+        self.notice_bar.clear_all()
         self.session.reset()
         try:
             self.session.restore(path)
         except (ValueError, KeyError, OSError) as exc:
-            self._status(f"Couldn't open {path.name}: {exc}")
+            self._error(f"Couldn't open {path.name}", f"Couldn't open {path.name}: {exc}")
             return
         if path.parent.resolve() == default_profiles_dir().resolve():
             self._profile_name = path.stem
@@ -605,7 +642,7 @@ class MainWindow(QWidget):
                 folder = self._roll_not_found(path.stem, folder)
                 scans = list_scans(folder)[0] if folder is not None else []
                 if folder is not None and not scans:
-                    self._status(f"No TIFF scans in {folder} - that roll's points still count in the fit")
+                    self._error("No TIFF scans", f"No TIFF scans in {folder} - that roll's points still count in the fit")
             if scans and folder not in [f for f, _ in loaded]:  # Find roll… may name a roll already open
                 loaded.append((folder, scans))
         if loaded:
@@ -637,7 +674,11 @@ class MainWindow(QWidget):
             start = next((str(q) for q in missing.parents if q.is_dir()), str(Path.home()))
             chosen = QFileDialog.getExistingDirectory(self, "Find the roll (its folder of scans)", start)
         if not chosen:
-            self._status(f"Roll not found: {missing} - its points still count in the fit")
+            self.notice_bar.set_notice(f"missing {missing}", Notice(
+                chip=f"⚠ {missing.name} not found",
+                title=f"Roll not found: {missing}. Its points still count in the fit; reopen the profile and "
+                      "use Find roll… to show them on their frames",
+            ))
             return None
         return Path(chosen)
 
@@ -673,7 +714,7 @@ class MainWindow(QWidget):
     def _loading_progress(self, message: str) -> None:
         """Loading's own status line: it replaces anything but a sticky status that's still showing."""
         if self.status_label.full_text() != self._sticky_status:
-            self._status(message)
+            self.notice_bar.show_activity(message, lasting=message.startswith("Loading"))
 
     def _sticky(self, message: str) -> None:
         self._status(message)
@@ -757,7 +798,7 @@ class MainWindow(QWidget):
             self.session.frames[self._current].error = str(error)
             self.image_view.set_image(None, f"Couldn't load {path.name}")
             self.filmstrip.strip.mark_failed(self._current, str(error))
-            self._status(f"Error: {error}")
+            self._error(f"Couldn't load {path.name}", f"Couldn't load {path.name}: {error}")
             return
         self.full_image = image
         frame = self.session.frames[self._current]
@@ -836,6 +877,7 @@ class MainWindow(QWidget):
         """Re-render the current frame in the current view, and the view's labels."""
         positive = self._positive_mode()
         self.caption.setText(_CAPTION_POSITIVE if positive else _CAPTION_NEGATIVE)
+        self.view_mark.setText("POSITIVE" if positive else "NEGATIVE")
         frame = self.session.frames[self._current] if self._current is not None else None
         self._resolved = None
         self._positive_profile = None
@@ -1260,7 +1302,12 @@ class MainWindow(QWidget):
             self._repaint_all()
 
     def _status(self, message: str) -> None:
-        self.status_label.set_full_text(message)
+        self.notice_bar.show_activity(message)
+
+    def _error(self, chip: str, message: str) -> None:
+        """Something went wrong: a red chip that stays until it's read, not a line the next message
+        replaces."""
+        self.notice_bar.set_notice("error", Notice(chip=f"✕ {chip}", title=message, error=True))
 
     def _confirm_close(self, count: int) -> bool:
         box = QMessageBox(

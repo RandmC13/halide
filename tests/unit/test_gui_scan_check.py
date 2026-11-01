@@ -43,7 +43,10 @@ def test_frames_scanned_at_another_exposure_are_flagged_on_the_strip(tmp_path, m
     below.setY(below.y() + 8)  # the lower rebate, where the ⚠ sits
     assert strip.tooltip_at(below) == f"Scanned differently: digitized at {S60.describe()}, most of the roll at {S30.describe()}"
     assert strip.tooltip_at(strip.frame_rect(0).center()) is None
-    assert window.status_label.full_text() == "⚠ 1 frame was scanned differently — see the ⚠ on the strip"
+    notice = window.notice_bar.notices()["scan"]
+    assert notice.chip == "⚠ 1 scanned differently"
+    assert notice.title == "1 frame was scanned differently from most of the roll"
+    assert notice.rows == [("FRAME 02", f"digitized at {S60.describe()}, most of the roll at {S30.describe()}", 1)]
     window._closing = True
     window.close()
 
@@ -51,7 +54,7 @@ def test_frames_scanned_at_another_exposure_are_flagged_on_the_strip(tmp_path, m
 def test_a_consistent_roll_has_no_flags(tmp_path, monkeypatch, app):
     window = _open(tmp_path, monkeypatch, app, [S30, S30])
     assert window.filmstrip.strip._flags == {}
-    assert "scanned differently" not in window.status_label.full_text()
+    assert "scan" not in window.notice_bar.notices()
     window._closing = True
     window.close()
 
