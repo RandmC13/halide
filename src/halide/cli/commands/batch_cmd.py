@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
+import os
 import shutil
 import tempfile
+import time
 import warnings
 from typing import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from halide import ignore_colour_matplotlib_warning
-from halide.io.roll import list_scans
+from halide.io.roll import find_rolls, list_scans
 from halide.batch.orchestrator import (
     BatchJob,
     default_worker_count,
@@ -25,6 +28,7 @@ from halide.batch.progress import cancel_notice, make_renderer
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.cli._device_args import add_device_argument, resolve_device_arg
+from halide.cli._naming import CLASH_FIX, add_name_argument, naming_for
 from halide.cli._help import add_workers_argument
 from halide.cli._output_policy import (
     add_dry_run_argument,
@@ -59,6 +63,7 @@ from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
     dry_run_line,
+    print_rename_list,
     frame_count,
     outputs_row,
     roll_row,
@@ -89,8 +94,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "this is a preview: frames are developed exactly as a real run would, but only small "
         "thumbnails are kept (in a temporary folder, deleted afterwards)",
     )
+    parser.add_argument(
+        "--into", metavar="PATH",
+        help="Develop into PATH, resolved against each roll's scan folder (--into ../inversion puts "
+        "Roll1/pre-processed's prints in Roll1/inversion). An alternative to the output folder",
+    )
+    parser.add_argument(
+        "--recursive", action="store_true",
+        help="Treat every folder of scans under the input folder as a roll, and develop each one in "
+        "turn — with --into, or into a subfolder of the output folder named for the roll. Folders "
+        "of halide's own output are skipped",
+    )
     add_contact_layout_arguments(parser)
-    parser.add_argument("--suffix", default="", help="Text to add to each output file name, before .tif")
+    add_name_argument(parser, "Text to add to each output file name, before .tif")
     add_output_policy_arguments(parser, saves_profile=True)
     add_dry_run_argument(parser)
     add_log_arguments(parser)
@@ -268,110 +284,308 @@ def _output_text(stage: Stage, tone_params) -> str:
     return f"print{_SEP}grade {grade}{_SEP}exposure {exposure}"
 
 
+def _profile_stock(args: argparse.Namespace) -> str | None:
+    """`{stock}` for --name: the --profile's film stock, when the template uses it. A profile that
+    can't be loaded is reported where it is used, not here."""
+    if not args.name or "{stock}" not in args.name or not args.profile:
+        return None
+    from halide.calibration.profile_store import load_profile, resolve_profile_path
+
+    try:
+        return load_profile(resolve_profile_path(args.profile)).film_stock
+    except (OSError, ValueError):
+        return None
+
+
+@dataclass
+class RollPlan:
+    """One roll of a run: its scans, where it develops to, and what is left to do for it. `name` is
+    set only with --recursive (a single-roll run names itself after its folder, as it always has)."""
+
+    name: str | None
+    input_dir: Path
+    left_out: object
+    output_dir: Path | None
+    sheet_path: Path | None
+    jobs: list[BatchJob]  # every frame of the roll
+    todo: list[BatchJob] = field(default_factory=list)  # the frames left to develop
+    skipped_frames: int = 0
+    kept: list[str] = field(default_factory=list)
+    build_sheet: bool = True
+    existing: int = 0
+    sheet_exists: bool = False
+
+    @property
+    def label(self) -> str:
+        return self.name or self.input_dir.resolve().name
+
+
+@dataclass
+class RollOutcome:
+    code: int
+    developed: int = 0
+    failed: int = 0
+
+
+def _roll_destination(args: argparse.Namespace, folder: Path, name: str) -> Path | None:
+    """Where a roll develops to: --into resolved against its scan folder, else the output folder
+    (one subfolder per roll with --recursive), else nowhere (a contact-sheet preview)."""
+    if args.into:
+        into = Path(args.into)
+        return into if into.is_absolute() else Path(os.path.normpath(folder / into))
+    if args.output_dir is None:
+        return None
+    return Path(args.output_dir) / name if args.recursive else Path(args.output_dir)
+
+
+def _check_recursive_save(args: argparse.Namespace) -> None:
+    if args.recursive and args.save_profile_as and (args.auto_density or args.auto_density_roll):
+        raise SystemExit("--save-profile-as with --recursive needs one calibration for every roll — each roll "
+                         "gets its own estimate with --auto-density and --auto-density-roll; save one from a "
+                         "single roll")
+
+
+def _check_destination_flags(args: argparse.Namespace) -> None:
+    if args.into and args.output_dir:
+        raise SystemExit("--into and an output folder both say where to develop to — give one of them")
+    if args.output_dir is None and not args.contact_sheet and not args.into:
+        raise SystemExit("give an output directory, --into FOLDER, --contact-sheet SHEET (a preview), or both"
+                         if args.recursive else
+                         "give an output directory, --contact-sheet SHEET (a preview), or both")
+    if args.output_dir is None and not args.into:
+        if args.recursive:
+            raise SystemExit("a contact-sheet preview of several rolls needs --into or an output folder to "
+                             "put each sheet in")
+        if args.name or args.suffix:
+            flag = "--name" if args.name else "--suffix"
+            raise SystemExit(f"{flag} names the developed frames, and a contact-sheet preview keeps none — "
+                             f"give an output directory, or drop {flag}")
+    if args.recursive and args.contact_sheet and Path(args.contact_sheet).name != args.contact_sheet:
+        raise SystemExit(f"--contact-sheet {args.contact_sheet} — with --recursive give a file name only "
+                         f"(it is written into each roll's output folder)")
+    _check_recursive_save(args)
+
+
+def _find_plans(args: argparse.Namespace, input_dir: Path) -> tuple[list[RollPlan], object]:
+    """The rolls of this run, each with its jobs (outputs named, clashes refused). Returns (plans,
+    what --recursive left out, or None). A destination is excluded from discovery by working out
+    every candidate's destination first, so a new roll's `inversion/` is never taken for a roll."""
+    if args.recursive:
+        rolls, skipped = find_rolls(input_dir)
+        destinations = {d.resolve() for r in rolls if (d := _roll_destination(args, r.folder, r.name))}
+        if destinations:
+            rolls, skipped = find_rolls(input_dir, exclude=lambda folder: folder.resolve() in destinations)
+        if args.into and Path(args.into).is_absolute() and len(rolls) > 1:
+            raise SystemExit(f"--into {args.into} is an absolute path, so all {len(rolls)} rolls would be "
+                             f"developed into it — use a relative one such as ../inversion, which is "
+                             f"resolved against each roll's scan folder")
+        found = [(r.name, r.folder, r.files, r.left_out) for r in rolls]
+    else:
+        files, left_out = list_scans(input_dir, skip_positives=True)
+        skipped = None
+        found = [(None, input_dir, files, left_out)]
+    stock = _profile_stock(args)
+    plans = []
+    for name, folder, files, left_out in found:
+        label = name or input_dir.resolve().name
+        output_dir = _roll_destination(args, folder, label)
+        sheet_path = None
+        if args.contact_sheet:
+            sheet_path = output_dir / args.contact_sheet if args.recursive else Path(args.contact_sheet)
+        if output_dir is not None:
+            check_output_folder(output_dir)  # the folder itself is made when its roll starts
+            jobs = jobs_for_files(files, output_dir, suffix=args.suffix,
+                                  name=naming_for(args, label, stock) if args.name else None)
+        else:
+            jobs = [BatchJob(input_path=f, output_path=None) for f in files]
+        plans.append(RollPlan(name, folder, left_out, output_dir, sheet_path, jobs))
+    seen: dict[str, RollPlan] = {}
+    for plan in plans:
+        if plan.output_dir is None or not plan.jobs:
+            continue
+        first = seen.setdefault(str(plan.output_dir.resolve()).casefold(), plan)
+        if first is not plan:
+            raise SystemExit(f"{first.label} and {plan.label} would both be developed into {plan.output_dir} — "
+                             f"give each roll its own output folder")
+    return plans, skipped
+
+
+def _decide_existing(args: argparse.Namespace, plans: list[RollPlan]) -> None:
+    """Who develops what, after applying the overwrite policy to every roll's outputs at once — so
+    a terminal is asked once, and a script refused once, however many rolls there are."""
+    for plan in plans:
+        plan.sheet_exists = bool(args.dry_run and plan.sheet_path is not None and plan.sheet_path.exists())
+    if plans[0].output_dir is None:
+        plan = plans[0]  # a contact-sheet preview: one roll, no full-size outputs to protect
+        check_log_path(args.log, [(j.input_path, j.input_path) for j in plan.jobs])
+        plan.todo = plan.jobs
+        if args.dry_run:
+            plan.build_sheet = not (policy_from_args(args) is OutputPolicy.SKIP_EXISTING and plan.sheet_path.exists())
+        else:
+            plan.build_sheet = bool(resolve_existing([(plan.sheet_path, plan.sheet_path)],
+                                                     policy_from_args(args), interactive=is_interactive()))
+        return
+    extra = [(p.sheet_path, p.sheet_path) for p in plans if p.sheet_path is not None] or None
+    fix = CLASH_FIX if args.name else "rename one of them"
+    everything = [job for plan in plans for job in plan.jobs]
+    if args.dry_run:  # never asks, never refuses for want of a terminal
+        todo, _, kept_outputs, _ = plan_bulk_jobs(everything, args, extra_pairs=extra, fix=fix)
+    else:
+        todo, _, kept_outputs = resolve_bulk_jobs(everything, args, interactive=is_interactive(),
+                                                  extra_pairs=extra, fix=fix)
+    developing = {j.output_path for j in todo}
+    for plan in plans:
+        plan.todo = [j for j in plan.jobs if j.output_path in developing]
+        plan.skipped_frames = len(plan.jobs) - len(plan.todo)
+        plan.kept = [j.input_path.name for j in plan.jobs if j.output_path not in developing]
+        plan.build_sheet = plan.sheet_path is None or plan.sheet_path in kept_outputs
+        plan.existing = sum(1 for j in plan.jobs if j.output_path.exists()) if args.dry_run else 0
+
+
+def _plan_args(args: argparse.Namespace, plan: RollPlan, first: bool) -> argparse.Namespace:
+    """The arguments one roll runs with: where it develops to, and its own contact sheet. Only the
+    first roll saves the profile — the calibration is the same for all of them."""
+    if not (args.recursive or args.into):
+        return args
+    roll_args = copy.copy(args)
+    roll_args.output_dir = plan.output_dir
+    roll_args.contact_sheet = plan.sheet_path
+    if not first:
+        roll_args.save_profile_as = None
+    return roll_args
+
+
 def run(args: argparse.Namespace) -> int:
     check_no_ignored_flags(args)
     stage = resolve_stage(args)
 
     input_dir = Path(args.input_dir)
     check_input_folder(input_dir)
-    if args.output_dir is None and not args.contact_sheet:
-        raise SystemExit("give an output directory, --contact-sheet SHEET (a preview), or both")
-    sheet_path = Path(args.contact_sheet) if args.contact_sheet else None
-    if sheet_path is not None:
+    _check_destination_flags(args)
+    if args.contact_sheet:
         from halide.io.contact_sheet import check_sheet_path
 
         try:
-            check_sheet_path(sheet_path)
+            check_sheet_path(Path(args.contact_sheet))
         except ValueError as exc:
             raise SystemExit(str(exc))
 
-    if args.output_dir is not None:
-        output_dir = Path(args.output_dir)
-        if args.dry_run:
-            check_output_folder(output_dir)  # a dry run creates nothing
-        else:
-            prepare_output_folder(output_dir)
-        files, left_out = list_scans(input_dir, skip_positives=True)
-        jobs = jobs_for_files(files, output_dir, suffix=args.suffix)
-    else:
-        output_dir = None
-        files, left_out = list_scans(input_dir, skip_positives=True)
-        jobs = [BatchJob(input_path=f, output_path=None) for f in files]
-    # Roll-wide decisions (scan checks, the scan-exposure reference, the --auto-density-roll
-    # estimate) are made from every frame of the roll, never from just the ones left to develop
-    # when resuming — or the resumed frames would get a different profile from the rest of the roll.
-    roll_jobs = jobs
-    if not jobs:
-        if left_out.positives:
+    plans, rolls_skipped = _find_plans(args, input_dir)
+    plans = [p for p in plans if p.jobs]
+    if not plans:
+        positives = rolls_skipped.halide_outputs if rolls_skipped else 0
+        if positives or (not args.recursive and list_scans(input_dir, skip_positives=True)[1].positives):
             print(f"No scans to develop in {input_dir} — its TIFFs are halide positives. To re-print "
                   f"them use `halide print`; to develop again, point halide at the original scans")
         else:
             print(f"No TIFF files found in {input_dir}")
         return 1
+    _decide_existing(args, plans)
 
-    # A preview run's jobs (output_dir is None) keep nothing but a temp thumbnail, so there's
-    # nothing there to protect; only real per-frame outputs and the contact sheet itself go
-    # through the overwrite policy — combined into one decision, one prompt for the whole roll.
-    existing = 0
-    sheet_exists = bool(args.dry_run and sheet_path is not None and sheet_path.exists())
-    if output_dir is not None:
-        extra = [(sheet_path, sheet_path)] if sheet_path is not None else None
-        all_jobs = jobs
-        if args.dry_run:  # never asks, never refuses for want of a terminal
-            jobs, skipped_frames, kept_outputs, existing = plan_bulk_jobs(jobs, args, extra_pairs=extra)
-        else:
-            jobs, skipped_frames, kept_outputs = resolve_bulk_jobs(
-                jobs, args, interactive=is_interactive(), extra_pairs=extra
-            )
-        developing = {j.output_path for j in jobs}
-        kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
-        build_sheet = sheet_path is None or sheet_path in kept_outputs
+    def has_work(plan: RollPlan) -> bool:
+        return bool(plan.todo) if plan.output_dir is not None else plan.build_sheet
+
+    if not args.dry_run and any(has_work(p) for p in plans):
+        if stage is not Stage.INVERT_ONLY:
+            choose_calibration_source(args, "this roll" if len(plans) == 1 else "these rolls")  # before any sheet
+        _check_recursive_save(args)  # the prompt may have chosen an automatic estimate
+    # --auto-density-roll vs --profile/--auto-density is argparse's (exclusive group); only the
+    # manual values need this hand check.
+    if any(has_work(p) for p in plans) and args.auto_density_roll and manual_calibration_given(args):
+        raise SystemExit("manual overrides (--rm/--bm/--rs/--bs) can't be combined with --auto-density-roll")
+
+    if args.recursive:
+        with console.RunSheet(quiet=args.quiet) as sheet:
+            sheet.row("Rolls", f"{console.plural(len(plans), 'roll')}{_SEP}"
+                               f"{frame_count(sum(len(p.jobs) for p in plans))} under {input_dir}")
+            if rolls_skipped and (left := rolls_skipped.describe()):
+                sheet.row("Skipped", left)
+
+    started = time.monotonic()
+    outcomes: list[RollOutcome] = []
+    for i, plan in enumerate(plans):
+        try:
+            if plan.output_dir is not None and not args.dry_run:
+                prepare_output_folder(plan.output_dir)
+            outcome = _run_roll(_plan_args(args, plan, i == 0), stage, plan)
+        except SystemExit as exc:
+            if not args.recursive:
+                raise
+            print(console.error(f"{plan.label}: {exc.code if isinstance(exc.code, str) else 'stopped'}"))
+            outcome = RollOutcome(1, failed=len(plan.todo))
+        outcomes.append(outcome)
+        if outcome.code == 130:
+            break
+    if not args.recursive:
+        return outcomes[0].code
+    return _overall_line(args, plans, outcomes, time.monotonic() - started)
+
+
+def _overall_line(args: argparse.Namespace, plans: list[RollPlan], outcomes: list[RollOutcome],
+                  seconds: float) -> int:
+    """The line after the last roll of a --recursive run, and the exit code: 130 if cancelled, 1 if
+    any roll or frame failed."""
+    rolls = console.plural(len(plans), "roll")
+    if any(o.code == 130 for o in outcomes):
+        states = [f"{p.label} {'cancelled' if o.code == 130 else 'done'}" for p, o in zip(plans, outcomes)]
+        states += [f"{p.label} not started" for p in plans[len(outcomes):]]
+        print(console.cancelled(f"Cancelled - {', '.join(states)}"))
+        return 130
+    planned = sum(len(p.todo) for p in plans)
+    if args.dry_run:
+        print(console.success(f"Dry run — nothing developed. {rolls}{_SEP}{frame_count(planned)} would be developed."))
+        return 0
+    developed = sum(o.developed for o in outcomes)
+    failed_rolls = [p.label for p, o in zip(plans, outcomes) if o.code != 0]
+    if failed_rolls:
+        print(f"{console.Style.YELLOW}{console.ICON_WARN}{console.Style.RESET} "
+              f"{rolls}{_SEP}{developed} of {frame_count(planned)} developed "
+              f"({planned - developed} failed: {', '.join(failed_rolls)}) in {console.human_time(seconds)}")
+        return 1
+    if not developed:
+        print(console.success(f"{rolls}{_SEP}nothing new to develop"))
     else:
-        check_log_path(args.log, [(j.input_path, j.input_path) for j in jobs])
-        skipped_frames = 0
-        kept = []
-        # output_dir is None only reaches here with a contact sheet requested (checked above) — no
-        # single "input" for a sheet, so only its own existence matters.
-        if args.dry_run:
-            build_sheet = not (policy_from_args(args) is OutputPolicy.SKIP_EXISTING and sheet_path.exists())
-        else:
-            build_sheet = bool(
-                resolve_existing([(sheet_path, sheet_path)], policy_from_args(args), interactive=is_interactive())
-            )
+        print(console.success(f"{rolls}{_SEP}{frame_count(developed)} developed in {console.human_time(seconds)}"))
+    return 0
 
-    if args.dry_run and output_dir is None and not build_sheet:
+
+def _run_roll(args: argparse.Namespace, stage: Stage, plan: RollPlan) -> RollOutcome:
+    """One roll, from its early exits (nothing to do) to the end of its run."""
+    input_dir, output_dir, sheet_path, jobs = plan.input_dir, plan.output_dir, plan.sheet_path, plan.todo
+    title = plan.name or input_dir.name
+    if args.dry_run and output_dir is None and not plan.build_sheet:
         print(console.success(
             f"Dry run — nothing developed. Nothing to do — {sheet_path} already exists (--skip-existing)."
         ))
-        return 0
+        return RollOutcome(0)
     if args.dry_run and not jobs:
         text = f"Nothing to develop — every output in {output_dir} already exists (--skip-existing)"
-        if sheet_path is not None and build_sheet:
+        if sheet_path is not None and plan.build_sheet:
             text += f"; the contact sheet {sheet_path} would be built from the folder"
         print(console.success(f"Dry run — nothing developed. {text}."))
-        return 0
+        return RollOutcome(0)
     if output_dir is not None and not jobs:
-        if sheet_path is None or not build_sheet:
+        if sheet_path is None or not plan.build_sheet:
             print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
-            return 0
+            return RollOutcome(0)
         # Nothing left to develop, but the sheet still needs building — from the whole,
         # already-complete folder, the same way `halide contact <output_dir> <sheet>` would.
         from halide.cli._contact_sheet import discover_processed_files, write_sheet_from_folder
 
         files, _ = discover_processed_files(output_dir, sheet_path)
-        return write_sheet_from_folder(files, sheet_path, args, input_dir.name, quiet=args.quiet)
-    if output_dir is None and not build_sheet:
+        return RollOutcome(write_sheet_from_folder(files, sheet_path, args, title, quiet=args.quiet))
+    if output_dir is None and not plan.build_sheet:
         print(console.success(f"Nothing to do — {sheet_path} already exists (--skip-existing)."))
-        return 0
+        return RollOutcome(0)
 
-    thumbnails = Path(tempfile.mkdtemp(prefix="halide-contact-")) if build_sheet and not args.dry_run else None
+    thumbnails = Path(tempfile.mkdtemp(prefix="halide-contact-")) if plan.build_sheet and not args.dry_run else None
     try:
         if thumbnails is not None:
             jobs = [replace(job, thumbnail_path=thumbnails / f"{i:04d}.png") for i, job in enumerate(jobs)]
         return _run(
-            args, stage, input_dir, jobs, roll_jobs=roll_jobs, output_dir=output_dir,
-            skipped_frames=skipped_frames, build_sheet=build_sheet, left_out=left_out, kept=kept,
-            existing=existing, sheet_exists=sheet_exists,
+            args, stage, input_dir, jobs, roll_jobs=plan.jobs, output_dir=output_dir,
+            skipped_frames=plan.skipped_frames, build_sheet=plan.build_sheet, left_out=plan.left_out,
+            kept=plan.kept, existing=plan.existing, sheet_exists=plan.sheet_exists, roll_name=plan.name,
         )
     finally:
         if thumbnails is not None:
@@ -381,7 +595,7 @@ def run(args: argparse.Namespace) -> int:
 def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[BatchJob], sheet: console.RunSheet,
              stack: contextlib.ExitStack, skipped_frames: int = 0, left_out=None,
              roll_jobs: list[BatchJob] | None = None, existing: int = 0,
-             sheet_exists: bool = False):
+             sheet_exists: bool = False, roll_name: str | None = None):
     """Everything decided before developing starts — scan checks, scan-exposure matching,
     calibration, print settings, how the GPU is used, worker count — each reported on the run sheet
     as it's decided. On a GPU the shared GPU service starts here and runs until `stack` closes.
@@ -396,7 +610,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
         roll_jobs = jobs
     dry = args.dry_run
     would_create = dry and args.output_dir is not None and not Path(args.output_dir).exists()
-    roll_row(sheet, input_dir, len(jobs), _destination(args, would_create))
+    roll_row(sheet, input_dir, len(jobs), _destination(args, would_create), name=roll_name)
     skipped_row(sheet, left_out)
     cleanup_row(sheet, Path(args.output_dir) if args.output_dir else None, dry)
     if skipped_frames:
@@ -511,20 +725,13 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
          roll_jobs: list[BatchJob] | None = None, output_dir: Path | None = None, skipped_frames: int = 0,
          build_sheet: bool = True,
          left_out=None, kept: Sequence[str] = (), existing: int = 0,
-         sheet_exists: bool = False) -> int:
-    if stage is not Stage.INVERT_ONLY and not args.dry_run:  # a dry run never asks
-        choose_calibration_source(args, "this roll")  # before the run sheet, and before anything reads args.profile
-    # --auto-density-roll vs --profile/--auto-density is argparse's (exclusive group); only the
-    # manual values need this hand check.
-    if args.auto_density_roll and manual_calibration_given(args):
-        raise SystemExit("manual overrides (--rm/--bm/--rs/--bs) can't be combined with --auto-density-roll")
-
+         sheet_exists: bool = False, roll_name: str | None = None) -> RollOutcome:
     # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
     with contextlib.ExitStack() as stack:
         with console.RunSheet(quiet=args.quiet) as sheet:
             jobs, density_profile, tone_params, scan_reference, workers, device, compute = _prepare(
                 args, stage, input_dir, jobs, sheet, stack, skipped_frames=skipped_frames, left_out=left_out,
-                roll_jobs=roll_jobs, existing=existing, sheet_exists=sheet_exists,
+                roll_jobs=roll_jobs, existing=existing, sheet_exists=sheet_exists, roll_name=roll_name,
             )
 
         if args.dry_run:
@@ -534,7 +741,9 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
                 sheet=str(args.contact_sheet) if sheet_exists else None,
                 preview_sheet=str(args.contact_sheet) if output_dir is None else None,
             ))
-            return 0
+            if args.name:
+                print_rename_list(jobs)
+            return RollOutcome(0)
 
         record = RunRecord(args, "develop", output_dir)
         record.start(sheet, jobs, list(kept))
@@ -567,9 +776,10 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
             raise
 
     failures = [r for r in results if r.error]
+    outcome = RollOutcome(0, developed=len(results) - len(failures), failed=len(failures))
 
     if cancelled:
-        return 130
+        return replace(outcome, code=130)
 
     sheet_failed = False
     if args.contact_sheet and build_sheet:
@@ -581,11 +791,11 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
 
             sheet_path = Path(args.contact_sheet)
             files, _ = discover_processed_files(output_dir, sheet_path)
-            sheet_code = write_sheet_from_folder(files, sheet_path, args, input_dir.name, quiet=args.quiet)
+            sheet_code = write_sheet_from_folder(files, sheet_path, args, roll_name or input_dir.name, quiet=args.quiet)
             if sheet_code == 130:
-                return 130
+                return replace(outcome, code=130)
             sheet_failed = sheet_code != 0
         else:
             settings = _settings_summary(args, stage, tone_params, scan_reference, args.match_scan_exposure)
-            write_contact_sheet(args, jobs, results, args.contact_sheet, input_dir.name, settings)
-    return 1 if (failures or sheet_failed) else 0
+            write_contact_sheet(args, jobs, results, args.contact_sheet, roll_name or input_dir.name, settings)
+    return replace(outcome, code=1 if (failures or sheet_failed) else 0)

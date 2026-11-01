@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from halide.batch.orchestrator import (
-    BatchJob,
+    jobs_for_files,
     plan_compute,
     default_worker_count,
     memory_budget_warning,
@@ -26,6 +26,7 @@ from halide.batch.progress import cancel_notice, make_renderer
 from halide.calibration.profile_store import damaged_profile_message, load_tone_override, resolve_profile_path
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
+from halide.cli._naming import CLASH_FIX, add_name_argument, naming_for, stock_for_print_or_export
 from halide.cli._help import add_workers_argument
 from halide.cli._output_policy import (
     add_dry_run_argument,
@@ -48,6 +49,7 @@ from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
     dry_run_line,
+    print_rename_list,
     frame_count,
     outputs_row,
     roll_row,
@@ -81,7 +83,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "controls), if it has one. Its density calibration is ignored: a flat positive already has "
         "it applied",
     )
-    parser.add_argument("--suffix", default="", help="Text to add to each output file name when `input` is a folder")
+    add_name_argument(parser, "Text to add to each output file name when `input` is a folder")
     add_workers_argument(parser)
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
     add_device_argument(parser)
@@ -151,23 +153,24 @@ def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCur
 def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveParams, device: ComputeDevice) -> int:
     output_dir = Path(args.output)
     dry = args.dry_run
-    if dry:
-        check_output_folder(output_dir)  # a dry run creates nothing
-    else:
-        prepare_output_folder(output_dir)
-
     files, left_out = list_scans(input_dir)
     if not files:
         print(f"No TIFF files found in {input_dir}")
         return 1
-    jobs = [BatchJob(input_path=f, output_path=output_dir / f"{f.stem}{args.suffix}.tif") for f in files]
+    name = naming_for(args, input_dir.resolve().name, stock_for_print_or_export(args, files))
+    if dry:
+        check_output_folder(output_dir)  # a dry run creates nothing
+    else:
+        prepare_output_folder(output_dir)
+    jobs = jobs_for_files(files, output_dir, name=name, extension=".tif")
+    fix = CLASH_FIX if args.name else "rename one of them"
 
     all_jobs = jobs
     existing = 0
     if dry:  # never asks, never refuses for want of a terminal
-        jobs, skipped, _, existing = plan_bulk_jobs(jobs, args)
+        jobs, skipped, _, existing = plan_bulk_jobs(jobs, args, fix=fix)
     else:
-        jobs, skipped, _ = resolve_bulk_jobs(jobs, args, interactive=is_interactive())
+        jobs, skipped, _ = resolve_bulk_jobs(jobs, args, interactive=is_interactive(), fix=fix)
     developing = {j.output_path for j in jobs}
     kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
     if not jobs:
@@ -202,6 +205,8 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
         if dry:
             print(dry_run_line("print", len(jobs), str(output_dir), kept=len(kept), existing=existing,
                                policy=policy_from_args(args)))
+            if args.name:
+                print_rename_list(jobs)
             return 0
 
         record = RunRecord(args, "print", output_dir)

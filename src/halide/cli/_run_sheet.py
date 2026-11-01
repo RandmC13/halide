@@ -27,9 +27,9 @@ def frame_count(n: int) -> str:
     return console.plural(n, "frame")
 
 
-def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str) -> None:
+def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str, name: str | None = None) -> None:
     # resolve(): `halide batch .` would otherwise name the roll "" (Path(".").name is empty).
-    sheet.row("Roll", f"{input_dir.resolve().name}{RunSheet.SEP}{frame_count(n_frames)} → {destination}")
+    sheet.row("Roll", f"{name or input_dir.resolve().name}{RunSheet.SEP}{frame_count(n_frames)} → {destination}")
 
 
 def skipped_row(sheet: RunSheet, skipped) -> None:
@@ -200,3 +200,9 @@ def dry_run_line(verb: str, n_frames: int, destination: str, *, kept: int, exist
             f"{_exist_phrase(existing, sheet, policy)} (a real run would ask whether to replace {plural_them})"
         )
     return console.success(f"Dry run — nothing {past}. {'; '.join(parts)}.")
+
+
+def print_rename_list(jobs) -> None:
+    """A dry run's `--name` check: each frame's output, in the order `{n}` numbers them."""
+    for job in jobs:
+        print(f"{job.input_path.name} → {job.output_path.name}")

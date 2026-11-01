@@ -92,7 +92,7 @@ def check_not_input(pairs: list[tuple[Path, Path]], *, suggest_suffix: bool = Tr
     raise SystemExit(f"{first} is the scan itself{more} — halide never writes over a scan. {fix}")
 
 
-def check_unique_outputs(pairs: list[tuple[Path, Path]]) -> None:
+def check_unique_outputs(pairs: list[tuple[Path, Path]], fix: str = "rename one of them") -> None:
     """Refuse two scans that would be written to one output (a.tif and a.tiff both become a.png).
     Compared case-insensitively, because macOS disks are."""
     seen: dict[str, tuple[Path, Path]] = {}
@@ -105,7 +105,7 @@ def check_unique_outputs(pairs: list[tuple[Path, Path]]) -> None:
         return
     a, b, out = clashes[0]
     more = f" (and {len(clashes) - 1} more)" if len(clashes) > 1 else ""
-    raise SystemExit(f"{a.name} and {b.name} would both be written to {out}{more} — rename one of them")
+    raise SystemExit(f"{a.name} and {b.name} would both be written to {out}{more} — {fix}")
 
 
 def resolve_existing(
@@ -132,7 +132,8 @@ def resolve_existing(
         )
         decline_hint = "(--skip-existing leaves it as is.)"
     else:
-        where = existing[0][1] if n == 1 else existing[0][1].parent
+        folders = {out.parent for _, out in existing}
+        where = existing[0][1] if n == 1 else folders.pop() if len(folders) == 1 else f"{len(folders)} folders"
         question = f"{n} of {total} outputs already exist in {where} — overwrite them?"
         refusal = (
             f"{n} of {total} outputs already exist in {where}. Add --overwrite to replace them, "
@@ -159,6 +160,7 @@ def resolve_bulk_jobs(
     *,
     interactive: bool,
     extra_pairs: list[tuple[Path, Path]] | None = None,
+    fix: str = "rename one of them",
 ) -> tuple[list, int, set[Path]]:
     """The shared `pairs -> check_not_input -> resolve_existing -> filter jobs` sequence every
     bulk command (batch, bulk print, bulk export) needs — each `job` must have `.input_path`/
@@ -172,7 +174,7 @@ def resolve_bulk_jobs(
     and `extra_pairs` outputs alike)."""
     pairs = [(job.input_path, job.output_path) for job in jobs]
     check_not_input(pairs)
-    check_unique_outputs(pairs)
+    check_unique_outputs(pairs, fix)
     _check_log(args, pairs + list(extra_pairs or []))
     all_pairs = pairs + list(extra_pairs or [])
     kept_outputs = {out for _, out in resolve_existing(all_pairs, policy_from_args(args), interactive=interactive)}
@@ -186,6 +188,7 @@ def plan_bulk_jobs(
     args,
     *,
     extra_pairs: list[tuple[Path, Path]] | None = None,
+    fix: str = "rename one of them",
 ) -> tuple[list, int, set[Path], int]:
     """resolve_bulk_jobs for a dry run: the same refusal to write over a scan and the same
     --overwrite / --skip-existing filtering, but the default (ASK) never prompts and never refuses
@@ -194,7 +197,7 @@ def plan_bulk_jobs(
     how many of the *jobs'* outputs already exist)."""
     pairs = [(job.input_path, job.output_path) for job in jobs]
     check_not_input(pairs)
-    check_unique_outputs(pairs)
+    check_unique_outputs(pairs, fix)
     _check_log(args, pairs + list(extra_pairs or []))
     existing = sum(1 for _, out in pairs if out.exists())
     all_pairs = pairs + list(extra_pairs or [])
