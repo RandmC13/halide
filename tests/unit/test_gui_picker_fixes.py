@@ -151,7 +151,7 @@ def test_reopened_status_counts_points_with_plural(tmp_path, app, monkeypatch):
     window.close()
     reopened = MainWindow()
     (tmp_path / "f0.tif").touch()
-    monkeypatch.setattr(reopened, "load_roll", lambda *a, **k: None)  # the folder holds no real scans
+    monkeypatch.setattr(reopened, "_start_rolls", lambda *a, **k: None)  # the folder holds no real scans
     reopened.open_profile(saved)
     assert reopened.status_label.full_text().startswith("Reopened 'p': 2 points")
     reopened.close()
@@ -244,7 +244,7 @@ def test_loading_another_roll_closes_the_contact_sheet(monkeypatch, tmp_path, ap
     window.close()
 
 
-def test_opening_a_profile_whose_roll_folder_has_no_scans_restores_nothing(tmp_path, app, monkeypatch):
+def test_opening_a_profile_whose_roll_folder_has_no_scans_asks_and_keeps_the_points(tmp_path, app, monkeypatch):
     from halide.calibration.profile_store import save_named_profile
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
@@ -255,9 +255,10 @@ def test_opening_a_profile_whose_roll_folder_has_no_scans_restores_nothing(tmp_p
     saved = save_named_profile(window.session.profile_to_save(), "p", overwrite=True, **window.session.sidecars())
     window.close()
     reopened = MainWindow()  # tmp_path holds no .tif files, so the recorded roll folder is empty
+    asked = []
+    monkeypatch.setattr(MainWindow, "_roll_not_found", lambda self, name, folder: asked.append(folder))
     reopened.open_profile(saved)
-    assert reopened.session.points == []
-    assert "no TIFF scans" in reopened.status_label.full_text()
+    assert asked == [tmp_path] and len(reopened.session.points) == 2  # they still count in the fit
     reopened.close()
 
 

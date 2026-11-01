@@ -48,9 +48,7 @@ def setup(tmp_path, monkeypatch, app):
     _click_image(first, SHADOW)
     _click_image(first, HIGHLIGHT)
     session = first.session
-    sidecars = session.sidecars()
-    sidecars["roll"] = None
-    profile_path = save_named_profile(session.profile_to_save(), "Portra 400", **sidecars)
+    profile_path = save_named_profile(session.profile_to_save(), "Portra 400", **session.sidecars())
     old_points = list(session.points)
     _close(first)
     window = _window(app, _roll(tmp_path, "Roll17"))
@@ -109,7 +107,7 @@ def test_update_adds_the_new_points_to_the_profile(setup, monkeypatch):
 
     monkeypatch.setattr(SaveProfileDialog, "exec", update)
     window.primary_button.click()
-    saved, _roll = load_anchors(path)
+    saved = load_anchors(path)
     assert len(saved) == len(old_points) + len(new) == 3
     assert window.session.new_points() == []  # they're the profile's now
 
@@ -127,7 +125,7 @@ def test_save_as_new_leaves_the_old_profile_byte_identical(setup, monkeypatch):
     monkeypatch.setattr(SaveProfileDialog, "exec", save_as_new)
     window.primary_button.click()
     assert path.read_bytes() == before
-    assert len(load_anchors(path.parent / "Portra 400 · Roll17.json")[0]) == 3
+    assert len(load_anchors(path.parent / "Portra 400 · Roll17.json")) == 3
 
 
 def test_clear_all_keeps_the_profiles_points(setup, monkeypatch):

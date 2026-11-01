@@ -102,7 +102,6 @@ def save_profile(
     tone: ToneCurveParams | None = None,
     scan: ScanSettings | None = None,
     anchors: list[dict] | None = None,
-    roll: str | None = None,
 ) -> None:
     """`tone`, if given, is a GUI-picked exposure/contrast override (the calibration picker's Print
     drawer, gui/drawers.py) saved as an extra "tone" sidecar key alongside the profile's own fields -
@@ -116,10 +115,11 @@ def save_profile(
     it was solved at, and --match-scan-exposure needs this reference to correct other frames to it
     (see calibration/scan_consistency.py).
 
-    `anchors`/`roll`, if given, record how the calibration picker built this profile: every neutral
+    `anchors`, if given, record how the calibration picker built this profile: every neutral
     point (frame, position, raw RGB, that frame's scan exposure - see
-    calibration/anchors.py::point_to_dict) and the roll folder, so reopening the profile in the
-    picker restores them. Sidecars like the others; nothing else reads them."""
+    calibration/anchors.py::point_to_dict), so reopening the profile in the picker restores them.
+    The rolls it came from are the folders of those frames. A sidecar like the others; nothing
+    else reads it."""
     data = asdict(profile)
     if tone is not None:
         data["tone"] = {"exposure": tone.exposure, "contrast": tone.contrast}
@@ -127,8 +127,6 @@ def save_profile(
         data["scan"] = asdict(scan)
     if anchors is not None:
         data["anchors"] = anchors
-    if roll is not None:
-        data["roll"] = roll
     with atomic_output(Path(path)) as tmp:
         with tmp.open("w") as f:
             json.dump(data, f, indent=2)
@@ -202,11 +200,10 @@ def save_named_profile(
     tone: ToneCurveParams | None = None,
     scan: ScanSettings | None = None,
     anchors: list[dict] | None = None,
-    roll: str | None = None,
     overwrite: bool = False,
 ) -> Path:
     """Save `profile` under `name` in the profiles directory, stamping its name and creation time.
-    `tone`/`scan`/`anchors`/`roll` are optional sidecars to save alongside it - see save_profile.
+    `tone`/`scan`/`anchors` are optional sidecars to save alongside it - see save_profile.
 
     Raises ProfileNameError for an unusable name (validate_profile_name), and ProfileExistsError
     if a profile of that name already exists (compared case-insensitively, via find_profile) and
@@ -222,7 +219,7 @@ def save_named_profile(
         raise ProfileExistsError(name, existing)
     path = existing if existing is not None else directory / f"{name}.json"
     stamped = replace(profile, name=name, created_at=datetime.now(timezone.utc).isoformat())
-    save_profile(stamped, path, tone=tone, scan=scan, anchors=anchors, roll=roll)
+    save_profile(stamped, path, tone=tone, scan=scan, anchors=anchors)
     return path
 
 
@@ -261,11 +258,10 @@ def load_scan_reference(path: str | Path) -> ScanSettings | None:
         raise _damaged(path, "scan needs exposure_time, f_number and iso") from None
 
 
-def load_anchors(path: str | Path) -> tuple[list[dict], str | None]:
-    """The calibration picker's record of how a profile was built (see save_profile's `anchors`/
-    `roll`): ([], None) for any profile without one - hand-solved, CLI-saved, or older profiles."""
-    data = json.loads(Path(path).read_text())
-    return list(data.get("anchors") or []), data.get("roll")
+def load_anchors(path: str | Path) -> list[dict]:
+    """The calibration picker's record of how a profile was built (see save_profile's `anchors`):
+    [] for any profile without one - hand-solved or CLI-saved."""
+    return list(json.loads(Path(path).read_text()).get("anchors") or [])
 
 
 def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityProfile | None, str | None]]:

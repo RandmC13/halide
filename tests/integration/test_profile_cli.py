@@ -279,45 +279,32 @@ def test_without_a_terminal_a_missing_source_is_still_an_actionable_error(negati
         main(["invert", str(negative_tiff), str(tmp_path / "out.tiff")])
 
 
-def test_show_names_the_roll_and_flags_it_when_moved(tmp_path, capsys, isolated_profiles_dir):
+def test_show_lists_each_roll_with_its_points_and_flags_a_moved_one(tmp_path, capsys, isolated_profiles_dir):
     from halide.calibration.profile_store import save_named_profile
     from halide.core.types import DensityProfile
 
-    roll = tmp_path / "Roll16"
-    roll.mkdir()
-    (roll / "a.tif").write_bytes(b"")
+    roll16, roll17 = tmp_path / "Roll16", tmp_path / "Roll17"
+    for roll in (roll16, roll17):
+        roll.mkdir()
+        (roll / "a.tif").write_bytes(b"")
     anchors = [
-        {"frame": str(roll / n), "x": 1, "y": 1, "rgb": [0.1, 0.1, 0.1], "scan": None} for n in ("a.tif", "b.tif")
+        {"frame": str(f), "x": 1, "y": 1, "rgb": [0.1, 0.1, 0.1], "scan": None}
+        for f in (roll16 / "a.tif", roll16 / "b.tif", roll17 / "a.tif")
     ]
     profile = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0), name="r16")
-    save_named_profile(profile, "r16", anchors=anchors, roll=str(roll))
+    save_named_profile(profile, "r16", anchors=anchors)
 
     assert main(["profile", "show", "r16"]) == 0
     out = capsys.readouterr().out
-    assert f"Roll:           {roll}" in out and "not found" not in out
-    assert "Points:         2 on 2 frames (1 missing)" in out
+    assert f"Rolls:          {roll16} (2 points)\n" in out
+    assert f"\n                {roll17} (1 point)\n" in out and "not found" not in out
+    assert "Points:         3 on 3 frames (1 missing)" in out
 
-    roll.rename(tmp_path / "Roll16-moved")
+    roll17.rename(tmp_path / "Roll17-moved")
     assert main(["profile", "show", "r16"]) == 0
     out = capsys.readouterr().out
-    assert "not found - moved or deleted?" in out
+    assert out.count("not found - moved or deleted?") == 1
     assert "(2 missing)" in out
-
-
-def test_show_doesnt_invent_a_full_path_for_an_older_relative_roll(tmp_path, capsys, monkeypatch, isolated_profiles_dir):
-    from halide.calibration.profile_store import save_named_profile
-    from halide.core.types import DensityProfile
-
-    anchors = [{"frame": "pre-processed/a.tif", "x": 1, "y": 1, "rgb": [0.1, 0.1, 0.1], "scan": None}]
-    profile = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0), name="old")
-    save_named_profile(profile, "old", anchors=anchors, roll="pre-processed")
-    monkeypatch.chdir(tmp_path)
-
-    assert main(["profile", "show", "old"]) == 0
-    out = capsys.readouterr().out
-    assert "Roll:           pre-processed\n" in out
-    assert str(tmp_path / "pre-processed") not in out
-    assert "recorded relative to the folder halide open ran in" in out
 
 
 # --- Profile store safety ----------------------------------------------------

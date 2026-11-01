@@ -61,8 +61,9 @@ def quiet_auto_estimate(image: np.ndarray) -> DensityProfile | None:
 @dataclass
 class Frame:
     path: Path
-    number: int  # 1-based position in the roll (the contact sheet's frame number)
+    number: int  # 1-based position in its own roll (the contact sheet's frame number)
     scan: ScanSettings | None
+    roll: Path = field(default_factory=Path)  # the folder it belongs to
     preview: np.ndarray | None = None  # at the frame's own scan exposure
     estimate: DensityProfile | None = None
     error: str | None = None
@@ -94,7 +95,6 @@ class CalibrationSession:
     details: dict[str, str] = field(default_factory=lambda: {k: "" for k in DETAIL_FIELDS})
     tone_override: ToneCurveParams | None = None  # the Print drawer's pinned exposure/grade, if any
     _reference_override: ScanSettings | None = None  # a reopened profile's recorded reference
-    recorded_roll: Path | None = None  # the roll folder a reopened profile recorded, found or not
     _undo: tuple[list[NeutralPoint], int | None] | None = None  # (points, selected) before the last change
     profile_in_use: Path | None = None  # a saved profile used on this roll ("Use for this roll")
     _profile_points: list[NeutralPoint] = field(default_factory=list)  # ... and the points it came with
@@ -109,7 +109,6 @@ class CalibrationSession:
         self.details = {k: "" for k in DETAIL_FIELDS}
         self.tone_override = None
         self._reference_override = None
-        self.recorded_roll = None
         self._undo = None
         self.profile_in_use = None
         self._profile_points = []
@@ -125,7 +124,6 @@ class CalibrationSession:
         except Exception:
             self.__dict__.update(before.__dict__)
             raise
-        self.recorded_roll = None
         self.profile_in_use = profile_path
         self._profile_points = list(self.points)
 
@@ -144,19 +142,37 @@ class CalibrationSession:
             self._profile_points = list(self.points)
 
     def set_roll(self, paths: list[Path], scans: list[ScanSettings | None], folder: Path | None) -> None:
-        """Load a roll's frames. Points already in the session (a reopened profile) whose frame
-        isn't at its recorded path but has a namesake in this roll - the roll was moved or copied -
-        are re-attached to that frame, so they're shown on it again."""
-        paths = [anchors.absolute(p) for p in paths]
-        folder = anchors.absolute(folder) if folder is not None else None
-        self.frames = [Frame(path=p, number=i + 1, scan=s) for i, (p, s) in enumerate(zip(paths, scans))]
-        self.roll_folder = folder
-        by_name = {p.name: p for p in paths}
-        known = set(paths)
+        self.set_rolls([(folder, paths, scans)])
+
+    def set_rolls(self, rolls: list[tuple[Path | None, list[Path], list[ScanSettings | None]]]) -> None:
+        """Load one or more rolls' frames, numbered from 1 within each. A roll given without a folder
+        (loose scans) belongs to its first scan's folder. Points already in the session (a reopened
+        profile) whose frame is neither loaded nor on disk but has a namesake in the rolls - the roll
+        was moved or copied - are re-attached to that frame, so they're shown on it again."""
+        self.frames = []
+        folders = []
+        for folder, paths, scans in rolls:
+            paths = [anchors.absolute(p) for p in paths]
+            folder = anchors.absolute(folder) if folder is not None else None
+            folders.append(folder)
+            roll = folder or paths[0].parent
+            self.frames += [Frame(path=p, number=i + 1, scan=s, roll=roll) for i, (p, s) in enumerate(zip(paths, scans))]
+        self.roll_folder = folders[0] if len(folders) == 1 else None
+        # shortcut: two moved rolls with the same file names re-attach to the first; match per roll if that ever matters
+        by_name: dict[str, Path] = {}
+        for f in self.frames:
+            by_name.setdefault(f.path.name, f.path)
+        known = {f.path for f in self.frames}
         self.points = [
-            replace(p, frame=by_name[p.frame.name]) if p.frame not in known and p.frame.name in by_name else p
+            replace(p, frame=by_name[p.frame.name])
+            if p.frame not in known and not p.frame.is_file() and p.frame.name in by_name else p
             for p in self.points
         ]
+
+    @property
+    def rolls(self) -> list[Path]:
+        """The folders of the open frames, in order."""
+        return list(dict.fromkeys(f.roll for f in self.frames))
 
     def frame_for(self, path: Path) -> Frame | None:
         for frame in self.frames:
@@ -342,27 +358,18 @@ class CalibrationSession:
             "tone": self.tone_override,
             "scan": self.reference,
             "anchors": [anchors.point_to_dict(p) for p in self.points],
-            # The loaded roll, else the one a reopened profile recorded (kept even when it wasn't found,
-            # so "Continue without" then Save doesn't forget where the roll was).
-            "roll": str(anchors.recorded_path(self.roll_folder or self.recorded_roll))
-            if (self.roll_folder or self.recorded_roll) else None,
         }
 
-    def restore(self, profile_path: Path) -> Path | None:
+    def restore(self, profile_path: Path) -> None:
         """Load a saved profile's picks, extra information, print override and scan reference into this
-        session. Returns the roll folder it recorded, if that folder still exists (the caller loads
-        it); points whose frames are gone stay in the fit - their RGB is stored."""
+        session. Points whose frames are gone stay in the fit - their RGB is stored."""
         profile = load_profile(profile_path)
-        records, roll = load_anchors(profile_path)
-        self.points = [anchors.point_from_dict(r) for r in records]
+        self.points = [anchors.point_from_dict(r) for r in load_anchors(profile_path)]
         self.selected = None
         self._undo = None
         self.details = {k: getattr(profile, k) or "" for k in DETAIL_FIELDS}
         self.tone_override = load_tone_override(profile_path)
         self._reference_override = load_scan_reference(profile_path)
-        folder = anchors.recorded_path(roll) if roll else None  # may stay relative: older profiles
-        self.recorded_roll = folder
-        return folder if folder is not None and folder.is_absolute() and folder.is_dir() else None
 
     def missing_frames(self) -> list[Path]:
         """Frames that points were picked on but that are neither in the loaded roll nor on disk

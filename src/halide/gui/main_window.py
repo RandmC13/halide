@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from halide.io.roll import list_scans
-from halide.calibration.anchors import NeutralPoint
+from halide.calibration.anchors import NeutralPoint, point_rolls
 from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask
 from halide.calibration.scan_consistency import assess_roll, frame_flags
 from halide.calibration.profile_store import default_profiles_dir
@@ -445,6 +445,11 @@ class MainWindow(QWidget):
         self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None)
 
     def _start_roll(self, paths: list[Path], folder: Path | None) -> None:
+        self._start_rolls([(folder, paths)])
+
+    def _start_rolls(self, rolls: list[tuple[Path | None, list[Path]]]) -> None:
+        """Load one or more rolls side by side in the filmstrip. Each roll's scan check is its own:
+        rolls may legitimately differ from one another."""
         self._stop_loaders()
         self._generation += 1
         generation = self._generation
@@ -452,21 +457,31 @@ class MainWindow(QWidget):
         if self._proof is not None:  # its frames belong to the roll being replaced
             old, self._proof = self._proof, None
             old.close()
+        paths = [p for _, roll_paths in rolls for p in roll_paths]
         metadata = read_roll_scan_metadata(paths)
-        scans = [metadata[str(p)][0] for p in paths]
-        self.session.set_roll(paths, scans, folder)
+        self.session.set_rolls([(folder, roll_paths, [metadata[str(p)][0] for p in roll_paths]) for folder, roll_paths in rolls])
         if self._profiles is not None:
-            self._profiles.set_roll_open(folder is not None)
+            self._profiles.set_roll_open(self.session.roll_folder is not None)
         # The counter carries the frame count. A long name is cut, with the full one as the tooltip,
         # so the top bar's buttons always fit the fixed-width window.
-        name = (folder.name if folder is not None else paths[0].stem).upper()
-        self.roll_label.setText(QFontMetrics(self.roll_label.font()).elidedText(name, Qt.TextElideMode.ElideMiddle, _ROLL_NAME_MAX_W))
-        self.roll_label.setToolTip(name)
+        names = [(folder.name if folder is not None else roll_paths[0].stem) for folder, roll_paths in rolls]
+        if len(names) == 1:
+            label, tip = names[0].upper(), names[0].upper()
+        else:
+            label, tip = f"{len(names)} ROLLS", "\n".join(n.upper() for n in names)
+        self.roll_label.setText(QFontMetrics(self.roll_label.font()).elidedText(label, Qt.TextElideMode.ElideMiddle, _ROLL_NAME_MAX_W))
+        self.roll_label.setToolTip(tip)
         if not self.is_pick_session:
-            self.setWindowTitle(f"halide · {folder.name if folder is not None else paths[0].stem}")
-        self.filmstrip.strip.set_frames([f.number for f in self.session.frames])
-        flags = frame_flags(assess_roll(metadata))
-        self.filmstrip.strip.set_flags({i: flags[str(p)] for i, p in enumerate(paths) if str(p) in flags})
+            self.setWindowTitle(f"halide · {names[0] if len(names) == 1 else f'{len(names)} rolls'}")
+        starts, at = [], 0
+        for name, (_, roll_paths) in zip(names, rolls):
+            starts.append((at, name))
+            at += len(roll_paths)
+        self.filmstrip.strip.set_frames([f.number for f in self.session.frames], starts if len(rolls) > 1 else None)
+        flags: dict[str, str] = {}
+        for _, roll_paths in rolls:
+            flags.update(frame_flags(assess_roll({str(p): metadata[str(p)] for p in roll_paths})))
+        self.filmstrip.strip.set_flags({i: flags[str(f.path)] for i, f in enumerate(self.session.frames) if str(f.path) in flags})
         self._sticky_status = None
         self._current = None
         self.full_image = None
@@ -528,18 +543,15 @@ class MainWindow(QWidget):
 
     def open_profile(self, path: Path) -> None:
         try:
-            recorded_folder = CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
+            CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
         except (ValueError, KeyError, OSError) as exc:
             self._status(f"Couldn't open {path.name}: {exc}")
-            return
-        if recorded_folder is not None and not list_scans(recorded_folder)[0]:
-            self._status(f"Couldn't open {path.name}: no TIFF scans in {recorded_folder}")
             return
         if not self._confirm_new_calibration():
             return
         self.session.reset()
         try:
-            folder = self.session.restore(path)
+            self.session.restore(path)
         except (ValueError, KeyError, OSError) as exc:
             self._status(f"Couldn't open {path.name}: {exc}")
             return
@@ -553,54 +565,48 @@ class MainWindow(QWidget):
         self.print_controls.set_override(self.session.tone_override)
         self._refresh_drawer_summaries()
         self._sticky(f"Reopened '{path.stem}': {console.plural(len(self.session.points), 'point')}")
-        recorded = self.session.recorded_roll
-        if folder is not None:
-            self.load_roll(folder, keep_points=True)
-        elif recorded is None and (on_disk := sorted({p.frame for p in self.session.points if p.frame.is_file()})):
+        loaded = []
+        for folder in point_rolls(self.session.points):
+            scans = list_scans(folder)[0] if folder.is_dir() else []
+            if not scans:
+                folder = self._roll_not_found(path.stem, folder)
+                scans = list_scans(folder)[0] if folder is not None else []
+            if scans:
+                loaded.append((folder, scans))
+        if loaded:
+            self._start_rolls(loaded)
+        elif on_disk := sorted({p.frame for p in self.session.points if p.frame.is_file()}):
             self.load_files(on_disk, keep_points=True)  # made from single scans, not a roll folder
         else:
             self._refresh_points()
-        if recorded is not None and folder is None:
-            self._roll_not_found(path.stem, recorded)
-        else:
-            self._warn_missing_frames()
+        self._warn_missing_frames()
         self._saved_points = list(self.session.points)
 
-    def _roll_not_found(self, profile_name: str, recorded: Path) -> None:
-        """The reopened profile's roll folder has gone: say so, and offer to point at where it went
-        (points re-attach to the moved scans by file name - CalibrationSession.set_roll)."""
+    def _roll_not_found(self, profile_name: str, missing: Path) -> Path | None:
+        """One of the reopened profile's rolls has gone: say so, and offer to point at where it went
+        (points re-attach to the moved scans by file name - CalibrationSession.set_rolls). Returns the
+        folder chosen to take its place, or None to continue without it."""
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("Roll not found")
-        if recorded.is_absolute():
-            box.setText(f"'{profile_name}' was made from\n{recorded}\nwhich has been moved or deleted.")
-        else:  # an older profile: it recorded the roll relative to wherever `halide open` ran
-            box.setText(
-                f"'{profile_name}' recorded its roll only as '{recorded}', relative to the folder "
-                "halide open was started in - and it isn't in this folder."
-            )
+        box.setText(f"'{profile_name}' was made from\n{missing}\nwhich has been moved or deleted.")
         box.setInformativeText(
-            f"Its {len(self.session.points)} point(s) still count in the fit. Point to the roll's new "
+            "Its points on that roll still count in the fit. Point to the roll's new "
             "folder to see them on their frames again."
-            if recorded.is_absolute()
-            else f"Its {len(self.session.points)} point(s) still count in the fit. Point to the roll's "
-            "folder to see them on their frames again - saving the profile then records its full path."
         )
         box.addButton("Continue without", QMessageBox.ButtonRole.RejectRole)
         find = box.addButton("Find roll…", QMessageBox.ButtonRole.AcceptRole)
         box.setDefaultButton(find)
         box.exec()
         self._repaint_all()
-        if box.clickedButton() is not find:
-            self._status(f"Roll not found: {recorded} - its points still count in the fit")
-            return
-        start = next((str(p) for p in recorded.parents if recorded.is_absolute() and p.is_dir()), str(Path.home()))
-        chosen = QFileDialog.getExistingDirectory(self, "Find the roll (its folder of scans)", start)
-        if chosen:
-            self.load_roll(Path(chosen), keep_points=True)
-            self._warn_missing_frames()
-        else:
-            self._status(f"Roll not found: {recorded} - its points still count in the fit")
+        chosen = None
+        if box.clickedButton() is find:
+            start = next((str(q) for q in missing.parents if q.is_dir()), str(Path.home()))
+            chosen = QFileDialog.getExistingDirectory(self, "Find the roll (its folder of scans)", start)
+        if not chosen:
+            self._status(f"Roll not found: {missing} - its points still count in the fit")
+            return None
+        return Path(chosen)
 
     def _warn_missing_frames(self) -> None:
         """Frames points were picked on that aren't in the loaded roll or on disk any more."""
@@ -660,9 +666,12 @@ class MainWindow(QWidget):
                 self._refresh_thumbnail(previous)
         self._pending_flash = None
         self.filmstrip.show_frame(index)
-        digits = 3 if len(self.session.frames) > 99 else 2
+        in_roll = sum(f.roll == frame.roll for f in self.session.frames)
+        digits = 3 if in_roll > 99 else 2
+        rolls = self.session.rolls
+        which = f" · ROLL {rolls.index(frame.roll) + 1} OF {len(rolls)}" if len(rolls) > 1 else ""
         self.frame_counter.setText(
-            f"FRAME <span style='color:{theme.TEXT}'>{frame.number:0{digits}d}</span> / {len(self.session.frames):0{digits}d}"
+            f"FRAME <span style='color:{theme.TEXT}'>{frame.number:0{digits}d}</span> / {in_roll:0{digits}d}{which}"
         )
         number = 1 if self.is_pick_session else frame.number
         self.image_view.set_edge_print(f"{number}  →{number}A")  # the contact sheet's own arrow
@@ -962,7 +971,12 @@ class MainWindow(QWidget):
         self._refresh_details(views)
         fitted = self.session.profile() is not None
         self.primary_button.setEnabled(fitted)
-        self.proof_button.setEnabled(fitted and bool(self.session.frames))
+        one_roll = len(self.session.rolls) <= 1
+        self.proof_button.setEnabled(fitted and bool(self.session.frames) and one_roll)
+        self.proof_button.setToolTip(
+            "A zoomable contact sheet of the whole roll printed with this calibration" if one_roll
+            else "The contact sheet shows one roll: open a single roll to print one"
+        )
 
     def _profile_card(self) -> list[str] | None:
         """A profile in use with nothing added yet shows as a card instead of its points' rows."""

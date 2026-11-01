@@ -58,7 +58,7 @@ def points_text(path: Path) -> str:
     """The Points column, from the profile's recorded picks: "6 on 3 frames", or a dash for a profile
     made without the window (hand-entered or automatic)."""
     try:
-        records, _roll = load_anchors(path)
+        records = load_anchors(path)
     except (ValueError, OSError):
         return "—"
     if not records:

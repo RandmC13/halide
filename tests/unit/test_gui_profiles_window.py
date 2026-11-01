@@ -128,6 +128,7 @@ def test_a_calibration_file_from_elsewhere_changes_nothing_in_the_profiles_folde
 
     monkeypatch.setattr(MainWindow, "_warn_missing_frames", lambda self: None)  # its frames aren't on disk
     monkeypatch.setattr(MainWindow, "_confirm_close", lambda self, count: True)
+    monkeypatch.setattr(MainWindow, "_roll_not_found", lambda self, name, folder: None)  # its roll isn't on disk
 
     elsewhere = tmp_path / "Roll16-developed" / "halide-calibration.json"
     elsewhere.parent.mkdir()
