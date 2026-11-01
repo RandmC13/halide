@@ -1,6 +1,6 @@
 """The neutral-point list in the picker's side panel: one compact row per point - number, frame,
-density, agreement with the other points, remove. Fixed height: past a handful of points it scrolls
-rather than growing the window (the window is a fixed size, see main_window.py). Clicking a row
+density, agreement with the other points, remove. It takes the panel's spare height and scrolls past
+that, rather than growing the window (the window is a fixed size, see main_window.py). Clicking a row
 selects that point and jumps to its frame; the markers on the image and the step wedge's ticks use
 the same numbers and colours.
 """
@@ -115,7 +115,7 @@ class PointList(QScrollArea):
     rowClicked = Signal(int)
     removeClicked = Signal(int)
 
-    def __init__(self, visible_rows: int = 5, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -123,7 +123,6 @@ class PointList(QScrollArea):
         # One row: the list is what gives up height first when the panel is squeezed (a drawer open
         # with the reliability note showing, smallest window) so nothing below it clips.
         self.setMinimumHeight(ROW_HEIGHT + 4)
-        self.setMaximumHeight(ROW_HEIGHT * visible_rows + 12)
         self._body = QWidget()
         self._layout = QVBoxLayout(self._body)
         self._layout.setContentsMargins(0, 0, 4, 0)

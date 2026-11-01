@@ -573,7 +573,7 @@ class MainWindow(QWidget):
         panel_widget.setFixedWidth(_PANEL_WIDTH)
         panel_widget.setLayout(panel)
 
-        coverage_title = QLabel("COVERAGE")
+        coverage_title = QLabel("Coverage of the roll's densities")
         coverage_title.setProperty("role", "section")
         panel.addWidget(coverage_title)
         self.wedge = StepWedge()
@@ -583,18 +583,19 @@ class MainWindow(QWidget):
         self.reliability_note.setWordWrap(True)
         self.reliability_note.setStyleSheet(f"color: {theme.TEXT_WARNING};")
         self.reliability_note.setVisible(False)
-        self.reliability_note.setContentsMargins(0, 0, 0, 4)  # a gap above the NEUTRAL POINTS title
+        self.reliability_note.setContentsMargins(0, 0, 0, 4)  # a gap above the Neutral points title
         panel.addWidget(self.reliability_note)
 
         points_header = QHBoxLayout()
-        points_title = QLabel("NEUTRAL POINTS  (?)")
-        points_title.setProperty("role", "section")
-        points_title.setToolTip(CC_EXPLANATION)
-        points_header.addWidget(points_title)
+        self.points_title = QLabel("Neutral points")
+        self.points_title.setProperty("role", "section")
+        points_header.addWidget(self.points_title)
         points_header.addStretch(1)
-        self.point_count = QLabel("")
-        self.point_count.setProperty("role", "section")
-        points_header.addWidget(self.point_count)
+        cc_help = QLabel("what\u2019s CC?")
+        cc_help.setStyleSheet(f"color: {theme.TEXT_DIM}; text-decoration: underline dotted;")
+        cc_help.setToolTip(CC_EXPLANATION)
+        cc_help.setCursor(Qt.CursorShape.WhatsThisCursor)
+        points_header.addWidget(cc_help)
         panel.addLayout(points_header)
         self.point_list = PointList()
         self.point_list.rowClicked.connect(self._on_row_clicked)
@@ -620,12 +621,6 @@ class MainWindow(QWidget):
         self.notice.setMinimumHeight(30)
         panel.addWidget(self.notice)
 
-        # Spare panel height goes here (not into the drawers as gaps around their headers) - except
-        # while the expanding Details drawer is open, which takes it instead (_on_drawer_opened).
-        self._panel_spacer = QWidget()
-        self._panel_spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        panel.addWidget(self._panel_spacer)  # stretch 0: only what the point list (stretch 1) leaves
-
         self.details_form = RollDetailsForm()
         self.details_form.changed.connect(self._on_details_changed)
         self.print_controls = PrintControls()
@@ -642,10 +637,12 @@ class MainWindow(QWidget):
         details_layout.addWidget(self.auto_overlay)
         details_layout.addWidget(self.details_label)
         self.print_drawer = Drawer("Print", self.print_controls, max_height=150)
-        drawers = [Drawer("Extra information", self.details_form, max_height=140), self.print_drawer]
-        drawers.append(Drawer("Details", details_body, max_height=140, expanding=True))
+        self.extra_drawer = Drawer("Extra information", self.details_form, max_height=140)
+        self.details_drawer = Drawer("Details", details_body, max_height=140, expanding=True)
+        drawers = [self.extra_drawer, self.print_drawer, self.details_drawer]
         if self.is_pick_session:
             drawers = drawers[1:]  # one-shot develop: nothing to save extra information into
+        self.details_drawer.set_summary("numbers behind the fit")
         self._panel = panel
         self._accordion = Accordion(drawers)
         self._accordion.openChanged.connect(self._on_drawer_opened)
@@ -657,6 +654,7 @@ class MainWindow(QWidget):
         self.primary_button.clicked.connect(self._on_primary_clicked)
         panel.addWidget(self.primary_button)
         body.addWidget(panel_widget)
+        self._refresh_drawer_summaries()
 
     # --- loading --------------------------------------------------------------------------------
 
@@ -689,6 +687,7 @@ class MainWindow(QWidget):
             self._profile_name = ""
             self.details_form.set_values(self.session.details)
             self.print_controls.set_override(None)
+            self._refresh_drawer_summaries()
         self._start_roll(paths, folder)
         if left_out:
             self._sticky(f"Skipped {left_out.describe()}")
@@ -753,6 +752,7 @@ class MainWindow(QWidget):
         self._show_profile_name(path.stem)
         self.details_form.set_values(self.session.details)
         self.print_controls.set_override(self.session.tone_override)
+        self._refresh_drawer_summaries()
         self._sticky(f"Reopened '{path.stem}': {console.plural(len(self.session.points), 'point')}")
         recorded = self.session.recorded_roll
         if folder is not None:
@@ -1117,7 +1117,7 @@ class MainWindow(QWidget):
     def _refresh_points(self) -> None:
         views = self.session.views()
         self.point_list.set_rows(views, self.session.selected)
-        self.point_count.setText(str(len(views)) if views else "")
+        self.points_title.setText(f"Neutral points ({len(views)})" if views else "Neutral points")
         self._refresh_wedge(views)
         counts = self.session.point_counts()
         self.filmstrip.strip.set_counts([counts.get(f.path, 0) for f in self.session.frames])
@@ -1195,10 +1195,9 @@ class MainWindow(QWidget):
         self._thumbs_timer.start(0)
 
     def _on_drawer_opened(self, drawer: Drawer | None) -> None:
-        """An expanding drawer (Details) gets the panel's spare height: the spacer steps aside and
-        the point list shrinks to its minimum while it's open."""
+        """The point list takes the panel's spare height; an expanding drawer (Details) takes it
+        instead while it's open, and the list shrinks to its minimum."""
         expanding = drawer is not None and drawer.expanding
-        self._panel_spacer.setVisible(not expanding)
         self._panel.setStretchFactor(self.point_list, 0 if expanding else 1)
         self._panel.setStretchFactor(self._accordion, 1 if expanding else 0)
 
@@ -1226,11 +1225,18 @@ class MainWindow(QWidget):
 
     def _on_details_changed(self, values: dict) -> None:
         self.session.details = values
+        self._refresh_drawer_summaries()
+
+    def _refresh_drawer_summaries(self) -> None:
+        stock = self.session.details.get("film_stock", "").strip()
+        self.extra_drawer.set_summary(stock or "film stock, process, scanner")
+        self.print_drawer.set_summary("pinned for every frame" if self.print_controls.pinned else "fitted per frame")
 
     def _on_print_changed(self, tone: ToneCurveParams | None, flat: bool) -> None:
         stale = tone != self.session.tone_override
         self.session.tone_override = tone
         self._flat_preview = flat
+        self._refresh_drawer_summaries()
         if stale:
             self._proof_is_stale()
         if self._positive_mode():

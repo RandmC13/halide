@@ -165,8 +165,8 @@ QPushButton[role="remove"]:hover {{
 
 QLabel[role="section"] {{
     color: {TEXT_DIM};
-    font-size: 11px;
-    letter-spacing: 1px;
+    font-size: 12px;
+    font-weight: 600;
 }}
 
 QLineEdit {{

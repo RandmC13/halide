@@ -116,17 +116,17 @@ def test_opening_a_drawer_closes_the_other_and_details_takes_the_spare_height(wi
     extra, print_, details = window._accordion.drawers
     panel = window._panel
     list_stretch = lambda: panel.stretch(panel.indexOf(window.point_list))  # noqa: E731
-    assert window._panel_spacer.isVisibleTo(window) and list_stretch() == 1
+    assert list_stretch() == 1
 
     QTest.mouseClick(extra.header, LEFT)
     assert extra.header.isChecked()
     QTest.mouseClick(details.header, LEFT)
     assert details.header.isChecked() and not extra.header.isChecked()
-    assert not window._panel_spacer.isVisibleTo(window) and list_stretch() == 0
+    assert list_stretch() == 0
 
     QTest.mouseClick(details.header, LEFT)
     assert not any(d.header.isChecked() for d in (extra, print_, details))
-    assert window._panel_spacer.isVisibleTo(window) and list_stretch() == 1
+    assert list_stretch() == 1
 
 
 @pytest.mark.parametrize(("button", "left"), [("clear_frame_button", 1), ("clear_all_button", 0)])
@@ -154,3 +154,46 @@ def test_save_and_contact_sheet_need_two_separated_points(window):
     assert not window.primary_button.isEnabled() and not window.proof_button.isEnabled()
     _click_image(window, HIGHLIGHT)
     assert window.primary_button.isEnabled() and window.proof_button.isEnabled()
+
+
+def test_drawer_summaries_follow_the_film_stock_and_the_print_sliders(window):
+    extra, print_, _details = window._accordion.drawers
+    QTest.mouseClick(window.positive_button, LEFT)  # the Print drawer only works on the positive
+    assert extra.header.summary == "film stock, process, scanner" and print_.header.summary == "fitted per frame"
+    window.details_form.fields["film_stock"].setText("Portra 400")
+    assert extra.header.summary == "Portra 400"
+    window.print_controls.exposure.setValue(window.print_controls.exposure.value() + 10)
+    assert print_.header.summary == "pinned for every frame"
+    window.print_controls.reset_button.click()
+    assert print_.header.summary == "fitted per frame"
+
+
+def _show_with_points(window, app, size):
+    window.setFixedSize(*size)
+    _click_image(window, SHADOW)
+    _click_image(window, HIGHLIGHT)
+    app.processEvents()
+
+
+def test_point_list_uses_the_spare_height_at_1080p(window, app):
+    from halide.gui.point_list import ROW_HEIGHT
+
+    _show_with_points(window, app, (1056, 756))
+    assert window.point_list.viewport().height() >= 8 * ROW_HEIGHT
+
+
+def test_nothing_in_the_panel_is_clipped_at_the_smallest_window_with_print_open(window, app):
+    from PySide6.QtWidgets import QWidget
+
+    _show_with_points(window, app, (900, 700))
+    QTest.mouseClick(window.positive_button, LEFT)
+    QTest.mouseClick(window.print_drawer.header, LEFT)
+    window.reliability_note.setText("Fit reliable over D 0.9-1.3 only - add a point near the ends")
+    window.reliability_note.setVisible(True)
+    app.processEvents()
+    panel = window._panel.parentWidget()
+    inside = panel.rect()
+    for child in panel.findChildren(QWidget):
+        if child.isVisibleTo(panel):
+            rect = child.rect().translated(child.mapTo(panel, QPoint(0, 0)))
+            assert inside.contains(rect), (type(child).__name__, rect, inside)
