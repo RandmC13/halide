@@ -225,3 +225,15 @@ def test_two_scans_with_one_output_are_refused_before_anything_is_written(tmp_pa
         main([command, str(src), str(out), *(["--dry-run"] if dry else [])])
     assert "would both be written to" in str(exc.value.code) and "rename one of them" in str(exc.value.code)
     assert not any(out.glob("*.*")) if out.exists() else True
+
+
+def test_a_second_batch_into_the_same_folder_skips_the_positives(roll, capsys):
+    assert _batch(roll, roll, "--suffix", "_d") == 0
+    assert len(list(roll.glob("*_d.tif"))) == 3
+    _negative(roll / "frame_03.tif", 3)
+    capsys.readouterr()
+    assert _batch(roll, roll, "--suffix", "_d", "--skip-existing") == 0
+    assert (roll / "frame_03_d.tif").exists()
+    screen = _ANSI.sub("", capsys.readouterr().out)
+    assert "3 halide positives" in screen and "already a halide positive" not in screen
+    assert len(list(roll.glob("*.tif"))) == 8

@@ -288,11 +288,11 @@ def run(args: argparse.Namespace) -> int:
             check_output_folder(output_dir)  # a dry run creates nothing
         else:
             prepare_output_folder(output_dir)
-        files, left_out = list_scans(input_dir)
+        files, left_out = list_scans(input_dir, skip_positives=True)
         jobs = jobs_for_files(files, output_dir, suffix=args.suffix)
     else:
         output_dir = None
-        files, left_out = list_scans(input_dir)
+        files, left_out = list_scans(input_dir, skip_positives=True)
         jobs = [BatchJob(input_path=f, output_path=None) for f in files]
     # Roll-wide decisions (scan checks, the scan-exposure reference, the --auto-density-roll
     # estimate) are made from every frame of the roll, never from just the ones left to develop
