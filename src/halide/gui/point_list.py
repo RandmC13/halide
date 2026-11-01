@@ -46,12 +46,12 @@ class _ElidedNameLabel(QLabel):
         super().__init__()
         self._full = text
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        # An ordinary name ("#12  IMG_0138") keeps the width it always had, so the row looks as it did
+        # An ordinary name ("IMG_0138") keeps the width it always had, so the row looks as it did
         # before eliding existed; only a name longer than that gives way, at whatever width the row
         # really gives the label (resizeEvent), never a fixed one.
         self.ensurePolished()
         metrics = QFontMetrics(self.font())
-        self.setMinimumWidth(min(metrics.horizontalAdvance(text), metrics.horizontalAdvance("#00  IMG_0000")))
+        self.setMinimumWidth(min(metrics.horizontalAdvance(text), metrics.horizontalAdvance("IMG_0000")))
         self._elide()
 
     def _elide(self) -> None:
@@ -83,10 +83,18 @@ class _Row(QFrame):
         number.setStyleSheet(f"color: {colour}; font-weight: bold;")
         layout.addWidget(number)
 
-        frame_text = f"#{view.frame_number}  {view.point.frame.stem}" if view.frame_number else f"{view.point.frame.stem} (missing)"
+        # The frame number in the edge-print face, as on the filmstrip, then the file's stem, dim.
+        number_label = QLabel(str(view.frame_number) if view.frame_number else "—")
+        number_label.setFont(theme.edge_font(12))
+        number_label.setStyleSheet(f"color: {theme.TEXT};")
+        layout.addWidget(number_label)
+
+        stem = view.point.frame.stem
+        name_text = stem if view.frame_number else f"{stem} (missing)"
         if view.note:
-            frame_text += "  ⚠"
-        frame = _ElidedNameLabel(frame_text)
+            name_text += "  ⚠"
+        frame = _ElidedNameLabel(name_text)
+        frame.setStyleSheet(f"color: {theme.TEXT_DIM};")
         frame.setToolTip(f"{view.point.frame}\n{view.note}" if view.note else str(view.point.frame))
         layout.addWidget(frame, stretch=1)
 

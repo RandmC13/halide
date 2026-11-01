@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 import pytest
 from PySide6.QtCore import QEvent, QRect, QThread, Signal
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QLabel
 
 from halide.calibration import anchors
 from halide.calibration.anchors import NeutralPoint
@@ -189,13 +189,20 @@ def _list_names(app, tmp_path, stem):
 
 def test_a_normal_frame_name_is_not_elided_at_the_1080p_panel_width(app, tmp_path):
     window, labels = _list_names(app, tmp_path, "IMG_0138")
-    assert labels and all(label.text() == label._full and "…" not in label.text() for label in labels)
+    assert labels and all(label.text() == label._full == "IMG_0138" for label in labels)
+    window.close()
+
+
+def test_a_row_shows_the_frame_number_then_the_stem(app, tmp_path):
+    window, _labels = _list_names(app, tmp_path, "IMG_0138")
+    texts = [label.text() for label in window.point_list._rows[0].findChildren(QLabel)]
+    assert "1" in texts and any(t.startswith("IMG_") for t in texts) and not any("#" in t for t in texts)
     window.close()
 
 
 def test_a_very_long_frame_name_is_elided_with_the_full_path_as_tooltip(app, tmp_path):
     window, labels = _list_names(app, tmp_path, "IMG_0138_scanned_at_the_lab_on_a_tuesday_afternoon")
-    assert labels and all(label.text().endswith("…") for label in labels)
+    assert labels and all(label.text().endswith("…") and label.text().startswith("IMG_") for label in labels)
     assert all("tuesday_afternoon" in label.toolTip() for label in labels)
     window.close()
 
