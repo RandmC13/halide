@@ -360,3 +360,93 @@ def test_list_scans_uses_natural_order(tmp_path):
         (tmp_path / f"f{n}.tif").write_bytes(b"")
     files, _ = list_scans(tmp_path)
     assert [f.name for f in files] == ["f1.tif", "f2.tif", "f10.tif"]
+
+
+# --- finding rolls under a folder -----------------------------------------------------------------
+
+
+def _scan(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return _negative(path)
+
+
+def _output(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return _positive(path)
+
+
+def test_find_rolls_in_the_users_layout(tmp_path):
+    from halide.io.roll import find_rolls
+
+    top = tmp_path / "Holiday"
+    for roll in ("Roll1", "Roll2"):
+        _scan(top / roll / "pre-processed" / "IMG_0001.tif")
+        (top / roll / "IMG_0001.CR2").write_bytes(b"raw")
+    _output(top / "Roll1" / "inversion" / "IMG_0001.tif")
+    rolls, skipped = find_rolls(top)
+    assert [(r.name, r.folder.relative_to(top).as_posix()) for r in rolls] == [
+        ("Roll1", "Roll1/pre-processed"), ("Roll2", "Roll2/pre-processed")]
+    assert [f.name for f in rolls[0].files] == ["IMG_0001.tif"]
+    assert skipped.halide_outputs == 1
+    assert skipped.describe() == "1 folder of halide output"
+
+
+def test_a_mixed_folder_is_a_roll_and_reports_its_positives(tmp_path):
+    from halide.io.roll import find_rolls
+
+    _scan(tmp_path / "T" / "a.tif")
+    _output(tmp_path / "T" / "a_d.tif")
+    rolls, skipped = find_rolls(tmp_path / "T")
+    assert [f.name for f in rolls[0].files] == ["a.tif"] and rolls[0].left_out.positives == 1
+    assert skipped.halide_outputs == 0
+
+
+def test_destinations_are_excluded_even_when_new(tmp_path):
+    from halide.io.roll import find_rolls
+
+    top = tmp_path / "T"
+    _scan(top / "A" / "x.tif")
+    _scan(top / "A" / "out" / "x.tif")  # a copy, not a halide output
+    rolls, skipped = find_rolls(top, exclude=lambda p: p == top / "A" / "out")
+    assert [r.name for r in rolls] == ["A"] and skipped.destinations == 1
+    assert skipped.describe() == "1 output folder of this run"
+
+
+def test_flat_layout_and_the_input_itself(tmp_path):
+    from halide.io.roll import find_rolls
+
+    top = tmp_path / "Scans"
+    _scan(top / "a.tif")
+    _scan(top / "RollA" / "a.tif")
+    rolls, _ = find_rolls(top)
+    assert [r.name for r in rolls] == ["Scans", "RollA"]
+
+
+def test_hidden_and_symlinked_folders_are_not_entered(tmp_path):
+    from halide.io.roll import find_rolls
+
+    top = tmp_path / "T"
+    _scan(top / ".cache" / "a.tif")
+    _scan(tmp_path / "elsewhere" / "a.tif")
+    (top / "link").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    rolls, _ = find_rolls(top)
+    assert rolls == []
+
+
+def test_two_scan_folders_in_one_roll_get_unique_names(tmp_path):
+    from halide.io.roll import find_rolls
+
+    top = tmp_path / "H"
+    _scan(top / "Roll1" / "pre-processed" / "a.tif")
+    _scan(top / "Roll1" / "rescans" / "a.tif")
+    rolls, _ = find_rolls(top)
+    assert [r.name for r in rolls] == ["Roll1 - pre-processed", "Roll1 - rescans"]
+
+
+def test_rolls_come_in_natural_order(tmp_path):
+    from halide.io.roll import find_rolls
+
+    for name in ("Roll10", "Roll2"):
+        _scan(tmp_path / "T" / name / "a.tif")
+    rolls, _ = find_rolls(tmp_path / "T")
+    assert [r.name for r in rolls] == ["Roll2", "Roll10"]

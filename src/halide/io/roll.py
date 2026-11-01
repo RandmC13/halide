@@ -6,9 +6,11 @@ the CLI's start-up path."""
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 TIFF_SUFFIXES = (".tif", ".tiff")
 RAW_SUFFIXES = (".nef", ".cr2", ".cr3", ".arw", ".raf", ".dng", ".orf", ".rw2")
@@ -136,3 +138,65 @@ def _is_halide_positive(path: Path) -> bool:
         return read_provenance(read_tiff_description(path)) is not None
     except Exception:  # an unreadable header is a scan that will fail with its own error later
         return False
+
+
+@dataclass(frozen=True)
+class Roll:
+    """One folder of scans under a folder of rolls. `left_out` is what listing it skipped."""
+
+    name: str
+    folder: Path
+    files: list[Path]
+    left_out: Skipped
+
+
+@dataclass
+class RollsSkipped:
+    """Folders under the input that are not rolls — one run-sheet row, never one line per folder."""
+
+    halide_outputs: int = 0  # holding only halide's own positives
+    destinations: int = 0  # where this run is about to write
+
+    def describe(self) -> str:
+        """e.g. "2 folders of halide output, 1 output folder of this run"."""
+        parts = []
+        if self.halide_outputs:
+            parts.append(f"{self.halide_outputs} folder{'s' if self.halide_outputs > 1 else ''} of halide output")
+        if self.destinations:
+            parts.append(f"{self.destinations} output folder{'s' if self.destinations > 1 else ''} of this run")
+        return ", ".join(parts)
+
+
+def find_rolls(
+    top: Path | str, exclude: Callable[[Path], bool] = lambda p: False
+) -> tuple[list[Roll], RollsSkipped]:
+    """Every folder under `top` (itself included) that holds scans is a roll, in natural order.
+
+    Hidden and symlinked folders are not entered (no loops). A folder left with nothing but halide
+    positives is an earlier run's output, and a folder `exclude` names is this run's own destination:
+    neither is a roll, so a second run never develops the first one's results. A roll is named for
+    the folder directly under `top` that holds it; two scan folders under one such folder get their
+    path below `top` joined with " - " instead, so names stay unique."""
+    top = Path(top)
+    skipped = RollsSkipped()
+    found: list[tuple[tuple[str, ...], Path, list[Path], Skipped]] = []
+    for here, dirnames, _ in os.walk(top, followlinks=False):
+        dirnames[:] = sorted(
+            (d for d in dirnames if not d.startswith(".") and not os.path.islink(os.path.join(here, d))),
+            key=natural_key,
+        )
+        folder = Path(here)
+        files, left_out = list_scans(folder, skip_positives=True)
+        if not files:
+            if left_out.positives:
+                skipped.halide_outputs += 1
+        elif exclude(folder):
+            skipped.destinations += 1
+        else:
+            found.append((folder.relative_to(top).parts, folder, files, left_out))
+    heads = [parts[0] if parts else top.resolve().name for parts, *_ in found]
+    rolls = []
+    for (parts, folder, files, left_out), head in zip(found, heads):
+        name = head if heads.count(head) == 1 else " - ".join(parts) or head
+        rolls.append(Roll(name, folder, files, left_out))
+    return rolls, skipped
