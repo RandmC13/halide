@@ -549,6 +549,13 @@ class MainWindow(QWidget):
         self.source_note.setProperty("role", "dim")
         switch_row.addSpacing(8)
         switch_row.addWidget(self.source_note, stretch=1)
+        self.auto_overlay = QCheckBox("Show likely neutrals")
+        self.auto_overlay.setToolTip(
+            "Marks the pixels the automatic estimate counts as neutral candidates. "
+            "A hint for where to click, not a guarantee they really were neutral."
+        )
+        self.auto_overlay.toggled.connect(lambda _c: self._refresh_image())
+        switch_row.addWidget(self.auto_overlay)
         left.addLayout(switch_row)
 
         self.image_view = ImageView()
@@ -629,12 +636,9 @@ class MainWindow(QWidget):
         self.details_label.setWordWrap(True)
         self.details_label.setProperty("role", "dim")
         self.details_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.auto_overlay = QCheckBox("Show auto-detected neutral candidates")
-        self.auto_overlay.toggled.connect(lambda _c: self._refresh_image())
         details_body = QWidget()
         details_layout = QVBoxLayout(details_body)
         details_layout.setContentsMargins(4, 2, 4, 2)
-        details_layout.addWidget(self.auto_overlay)
         details_layout.addWidget(self.details_label)
         self.print_drawer = Drawer("Print", self.print_controls, max_height=150)
         self.extra_drawer = Drawer("Extra information", self.details_form, max_height=140)

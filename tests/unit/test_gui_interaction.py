@@ -197,3 +197,16 @@ def test_nothing_in_the_panel_is_clipped_at_the_smallest_window_with_print_open(
         if child.isVisibleTo(panel):
             rect = child.rect().translated(child.mapTo(panel, QPoint(0, 0)))
             assert inside.contains(rect), (type(child).__name__, rect, inside)
+
+
+def test_show_likely_neutrals_sits_by_the_switch_and_marks_the_image(window, app):
+    import numpy as np
+
+    assert not window.details_drawer.isAncestorOf(window.auto_overlay)
+    mask = np.zeros(window.display.shape[:2], dtype=bool)
+    mask[:4, :4] = True
+    window._auto_mask = mask  # the synthetic frame has no candidates of its own
+    before = window.image_view._pixmap.toImage()
+    QTest.mouseClick(window.auto_overlay, LEFT)
+    assert window.auto_overlay.isChecked()
+    assert window.image_view._pixmap.toImage() != before
