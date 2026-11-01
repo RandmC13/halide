@@ -72,3 +72,12 @@ def test_with_motion_the_tray_holds_until_done(app, monkeypatch):
     assert strip.print_phase(0) == "lights"
     pump(0.3)
     assert strip.print_phase(0) == "printed" and np.array_equal(strip._prints[0][3], POS)
+
+
+def test_frames_left_mid_print_go_back_to_negatives_when_the_run_ends(app):
+    strip = _strip()
+    strip.print_start(0, NEG, POS)
+    strip.print_start(1, NEG, POS)
+    strip.print_done(0, True)
+    strip.drop_unfinished()
+    assert [strip.print_phase(i) for i in range(2)] == ["printed", None]

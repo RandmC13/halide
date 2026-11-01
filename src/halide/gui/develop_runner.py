@@ -32,6 +32,10 @@ class DevelopRunner(QObject):
     def is_running(self) -> bool:
         return self._process is not None
 
+    def pending(self) -> bool:
+        """Whether a run_after command is still to come (true inside the first one's `finished`)."""
+        return bool(self._queue)
+
     def run(self, command: list[str]) -> None:
         self._queue = []
         self.step = -1

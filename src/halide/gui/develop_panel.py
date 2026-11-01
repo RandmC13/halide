@@ -42,6 +42,7 @@ class DevelopPanel(QWidget):
 
     backClicked = Signal()
     developClicked = Signal(object, object)  # (DevelopSettings, the calibration choice)
+    cancelClicked = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -143,7 +144,15 @@ class DevelopPanel(QWidget):
         self.develop_button = QPushButton("Develop")
         self.develop_button.setProperty("role", "primary")
         self.develop_button.clicked.connect(self._on_develop)
-        col.addWidget(self.develop_button)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setToolTip("Stop after the frames in hand, as Ctrl-C does")
+        self.cancel_button.clicked.connect(self.cancelClicked)
+        self.cancel_button.hide()
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.develop_button, 1)
+        bottom.addWidget(self.cancel_button)
+        col.addLayout(bottom)
+        self._running = False
 
         for edit in (self.names, self.into_input):
             edit.textChanged.connect(lambda _t: self._refresh())
@@ -302,5 +311,24 @@ class DevelopPanel(QWidget):
         self.develop_button.setToolTip(reason)
 
     def _on_develop(self) -> None:
-        self.developClicked.emit(self.settings(), self.choice_value())
+        if not self._running:
+            self.developClicked.emit(self.settings(), self.choice_value())
+
+    def set_running(self, text: str | None) -> None:
+        """While a roll develops: every control off, the red button showing `text`, Cancel beside
+        it. None puts the panel back as it was."""
+        self._running = text is not None
+        for child in self.findChildren(QWidget):
+            if child not in (self.develop_button, self.cancel_button) and child.parent() is self:
+                child.setEnabled(not self._running)
+        self.cancel_button.setVisible(self._running)
+        self.cancel_button.setEnabled(True)
+        if self._running:
+            self.develop_button.setText(text)
+            self.develop_button.setToolTip("")
+        else:
+            self._refresh()
+
+    def skip_existing(self) -> None:
+        self.existing.set_index(EXISTING.index("skip"))
 

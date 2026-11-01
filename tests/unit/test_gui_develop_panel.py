@@ -38,6 +38,8 @@ def window(tmp_path, monkeypatch, app):
     win.load_roll(_roll(tmp_path))
     _pump(app, lambda: _frame_ready(win, 0))
     yield win
+    win._runner.cancel()  # a run left going would ask before closing, and a modal hangs offscreen
+    win._runner.wait()
     win.close()
 
 
@@ -68,7 +70,7 @@ def test_the_panel_turns_over_and_back(window):
     assert window._stack.currentIndex() == 0
     window._turn_to(2)
     assert window._stack.currentIndex() == 2
-    window.summary_back.click()
+    window.summary_panel.back_button.click()
     assert window._stack.currentIndex() == 0
 
 
@@ -290,6 +292,7 @@ def test_pressing_develop_emits_the_settings_and_the_choice(window):
     panel = _develop_side(window)
     panel.choice.set_index(1)
     got = []
+    panel.developClicked.disconnect(window._start_develop)  # only what the panel says, no run
     panel.developClicked.connect(lambda s, c: got.append((s, c)))
     panel.develop_button.click()
     assert got and got[0][1] == "once" and got[0][0] == panel.settings()

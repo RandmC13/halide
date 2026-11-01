@@ -169,6 +169,13 @@ class _Strip(QWidget):
 
         motion.animate(self, key, 0.0, 1.0, LIGHTS_MS, lights, on_done=printed, curve=QEasingCurve.Type.Linear)
 
+    def drop_unfinished(self) -> None:
+        """The run ended (cancelled, or the child stopped): frames still being printed are negatives again."""
+        for index in [i for i, entry in self._prints.items() if entry[0] in ("expose", "tray")]:
+            motion.stop(self, f"print-{index}")
+            del self._prints[index]
+        self.update()
+
     def clear_prints(self) -> None:
         for index in list(self._prints):
             motion.stop(self, f"print-{index}")

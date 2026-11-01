@@ -114,10 +114,7 @@ def test_long_roll_and_profile_names_are_cut_so_the_top_bar_buttons_fit(tmp_path
     window._on_saved("Kodak Portra 400 at box speed, home C-41 kit, camera scan", "saved")
     app.processEvents()
     assert window.roll_label.toolTip() == long_name.upper() and "…" in window.roll_label.text()
-    from PySide6.QtWidgets import QPushButton
-
-    top = [b for b in window.findChildren(QPushButton) if b.text() in ("Contact sheet", "Profiles", "Load roll…")]
-    assert len(top) == 3
+    top = [window.proof_button, window.profiles_button, window.load_button]
     for button in top:  # whole, and inside the window
         assert button.mapTo(window, button.rect().bottomRight()).x() <= window.width()
         assert button.width() >= button.sizeHint().width()
