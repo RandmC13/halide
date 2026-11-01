@@ -196,6 +196,8 @@ class MainWindow(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self._remove_selected)
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, activated=self._remove_selected)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._deselect)
+        QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self, activated=self._undo)
+        self.setAcceptDrops(self.show_load_controls)  # not in the one-frame `invert --pick` window
         self._refresh_points()
 
     # --- layout ---------------------------------------------------------------------------------
@@ -380,6 +382,21 @@ class MainWindow(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Load roll (a folder of scans)")
         if folder:
             self.load_roll(Path(folder))
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt override
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+        event.acceptProposedAction()
+        if len(paths) == 1 and paths[0].is_dir():
+            self.load_roll(paths[0])
+        elif paths and all(p.is_file() and p.suffix.lower() in (".tif", ".tiff") for p in paths):
+            if self._confirm_new_calibration():
+                self.load_files(paths)
+        else:
+            self._status("Drop a folder of scans, or TIFF scans")
 
     def _confirm_new_calibration(self) -> bool:
         if not self.session.points:
@@ -825,6 +842,17 @@ class MainWindow(QWidget):
     def _remove_selected(self) -> None:
         if self.session.selected is not None:
             self._remove_point(self.session.selected)
+
+    def _undo(self) -> None:
+        change = self.session.undo()
+        if change is None:
+            return
+        self._nudge = None
+        self._points_changed()
+        if change > 0:
+            self._status(f"Restored {console.plural(change, 'point')}")
+        elif change < 0:
+            self._status(f"Took back {console.plural(-change, 'point')}")
 
     def _deselect(self) -> None:
         self.session.selected = None

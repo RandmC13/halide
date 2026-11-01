@@ -93,6 +93,7 @@ class CalibrationSession:
     tone_override: ToneCurveParams | None = None  # the Print drawer's pinned exposure/grade, if any
     _reference_override: ScanSettings | None = None  # a reopened profile's recorded reference
     recorded_roll: Path | None = None  # the roll folder a reopened profile recorded, found or not
+    _undo: tuple[list[NeutralPoint], int | None] | None = None  # (points, selected) before the last change
 
     # --- the roll -----------------------------------------------------------------------------
 
@@ -105,6 +106,7 @@ class CalibrationSession:
         self.tone_override = None
         self._reference_override = None
         self.recorded_roll = None
+        self._undo = None
 
     def set_roll(self, paths: list[Path], scans: list[ScanSettings | None], folder: Path | None) -> None:
         """Load a roll's frames. Points already in the session (a reopened profile) whose frame
@@ -155,6 +157,7 @@ class CalibrationSession:
     def add_point(self, point: NeutralPoint) -> str | None:
         """Add a point (never refused) and select it. Returns the nudge to show, if it adds little."""
         duplicate = anchors.near_duplicate(point, self.points, self.reference)
+        self._remember()
         self.points.append(point)
         self.selected = len(self.points) - 1
         if duplicate is None:
@@ -165,6 +168,7 @@ class CalibrationSession:
         )
 
     def remove_point(self, index: int) -> None:
+        self._remember()
         del self.points[index]
         if self.selected is not None:
             if self.selected == index:
@@ -177,10 +181,24 @@ class CalibrationSession:
         keep = [p for p in self.points if frame is not None and p.frame != frame]
         removed = len(self.points) - len(keep)
         if removed:
+            self._remember()
             selected = self.points[self.selected] if self.selected is not None else None
             self.points = keep
             self.selected = keep.index(selected) if selected in keep else None
         return removed
+
+    def _remember(self) -> None:
+        self._undo = (list(self.points), self.selected)
+
+    def undo(self) -> int | None:
+        """Put the points back as they were before the last add, remove or clear (one level only).
+        Returns how many points that brought back (negative: an added point taken away), or None if
+        there was nothing to undo."""
+        if self._undo is None:
+            return None
+        before = len(self.points)
+        (self.points, self.selected), self._undo = self._undo, None
+        return len(self.points) - before
 
     def point_at(self, frame: Path, x: int, y: int, radius: int) -> int | None:
         """The point on `frame` within `radius` full-resolution pixels of (x, y) - a click there
@@ -301,6 +319,7 @@ class CalibrationSession:
         records, roll = load_anchors(profile_path)
         self.points = [anchors.point_from_dict(r) for r in records]
         self.selected = None
+        self._undo = None
         self.details = {k: getattr(profile, k) or "" for k in DETAIL_FIELDS}
         self.tone_override = load_tone_override(profile_path)
         self._reference_override = load_scan_reference(profile_path)

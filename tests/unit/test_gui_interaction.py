@@ -268,3 +268,97 @@ def test_changing_frame_drops_a_preview_but_keeps_a_pin(window, app):
     assert controls.grade.value() == round(pinned.contrast * 100)  # the sliders show the pin again
     controls.reset_button.click()
     assert window.session.tone_override is None and controls.status.text() == "Fitted per frame"
+
+
+# --- undo, and dropping a roll on the window ----------------------------------------------------------
+
+
+def _undo(window):
+    QTest.keyClick(window, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+
+
+@pytest.fixture
+def active(window):
+    """Window shortcuts (Ctrl+Z, Delete) fire only in the active window, and a window closed by an
+    earlier test can still hold that on the offscreen platform."""
+    window.activateWindow()
+    assert QTest.qWaitForWindowActive(window)
+    return window
+
+
+def test_undo_takes_back_an_added_point_once(active, window):
+    _click_image(window, SHADOW)
+    _click_image(window, HIGHLIGHT)
+    _undo(window)
+    assert len(window.session.points) == 1 and window.status_label.full_text() == "Took back 1 point"
+    _undo(window)  # one level only
+    assert len(window.session.points) == 1
+
+
+def test_undo_restores_a_removed_point_and_its_selection(active, window):
+    _click_image(window, SHADOW)
+    _click_image(window, HIGHLIGHT)
+    kept = list(window.session.points)
+    _click_marker(window, 1)
+    QTest.keyClick(window, Qt.Key.Key_Delete)
+    assert len(window.session.points) == 1
+    _undo(window)
+    assert window.session.points == kept and window.session.selected == 1
+    assert window.status_label.full_text() == "Restored 1 point"
+
+
+@pytest.mark.parametrize("button", ["clear_frame_button", "clear_all_button"])
+def test_undo_restores_cleared_points(active, window, monkeypatch, button):
+    monkeypatch.setattr(window, "_confirm", lambda question: True)
+    for xy in (SHADOW, HIGHLIGHT, (4, 10)):
+        _click_image(window, xy)
+    kept = list(window.session.points)
+    getattr(window, button).click()
+    assert window.session.points == []
+    _undo(window)
+    assert window.session.points == kept and window.status_label.full_text() == "Restored 3 points"
+
+
+def test_undo_with_nothing_to_undo_does_nothing(active, window):
+    before = window.status_label.full_text()
+    _undo(window)
+    assert window.session.points == [] and window.status_label.full_text() == before
+
+
+def _drop(window, paths):
+    from PySide6.QtCore import QMimeData, QPointF, QUrl
+    from PySide6.QtGui import QDropEvent
+
+    data = QMimeData()
+    data.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
+    event = QDropEvent(QPointF(10, 10), Qt.DropAction.CopyAction, data, LEFT, Qt.KeyboardModifier.NoModifier)
+    window.dropEvent(event)
+
+
+def test_dropping_a_folder_loads_it_as_a_roll_after_asking(window, tmp_path, monkeypatch, app):
+    asked = []
+    monkeypatch.setattr(window, "_confirm_new_calibration", lambda: asked.append(1) or True)
+    other = tmp_path / "Roll17"
+    other.mkdir()
+    for i in range(3):
+        _write_frame(other / f"f_{i}.tiff", seed=i)
+    _drop(window, [other])
+    assert asked == [1] and window.session.roll_folder.name == "Roll17" and len(window.session.frames) == 3
+    _pump(app, lambda: _frame_ready(window, 0))
+
+
+def test_dropping_tiffs_loads_them_as_scans(window, tmp_path, monkeypatch, app):
+    monkeypatch.setattr(window, "_confirm_new_calibration", lambda: True)
+    loose = [_write_frame(tmp_path / f"loose_{i}.tif", seed=i) or tmp_path / f"loose_{i}.tif" for i in range(2)]
+    _drop(window, loose)
+    assert [f.path.name for f in window.session.frames] == ["loose_0.tif", "loose_1.tif"]
+    _pump(app, lambda: _frame_ready(window, 0))
+
+
+def test_dropping_anything_else_says_what_to_drop(window, tmp_path):
+    jpeg = tmp_path / "print.jpg"
+    jpeg.write_bytes(b"not a scan")
+    frames = list(window.session.frames)
+    _drop(window, [jpeg])
+    assert window.session.frames == frames
+    assert window.status_label.full_text() == "Drop a folder of scans, or TIFF scans"

@@ -31,7 +31,7 @@ class ImageView(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self._pixmap: QPixmap | None = None
-        self._placeholder = "Load a roll to begin"
+        self._placeholder = "Drop a roll folder here, or Load roll…"
         self._edge_print = ""
         self.markers: list[tuple[int, int, int, str, bool]] = []  # (x, y, number, colour, selected)
         self._flash: int | None = None  # number of a marker currently flashing
