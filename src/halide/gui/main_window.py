@@ -314,8 +314,8 @@ class ImageView(QWidget):
             painter.drawText(label, Qt.AlignmentFlag.AlignLeft, str(number))
             painter.setOpacity(1.0)
         if self._loupe is not None:
-            pixmap, density, _ = self._loupe
-            paint_loupe(painter, self.loupe_rect(), pixmap, density)
+            pixmap, density, cursor = self._loupe
+            paint_loupe(painter, self.loupe_rect(), pixmap, density, cursor)
 
     def _paint_edge_print(self, painter: QPainter) -> None:
         if not self._edge_print:
@@ -487,24 +487,25 @@ class SaveStamp(QWidget):
 
 _PILL_PAD = 2  # the switch's recess around its two buttons
 _LOUPE = 120  # the lens's diameter
-_LOUPE_OFFSET = QPointF(22, -150)  # from the cursor to the lens's top-left: above and to the right
+_LOUPE_REACH = 52  # from the cursor to the lens's centre, along each axis: its edge is ~14 px from the tip
 _READOUT_SIZE = QSizeF(80, 22)
 
 
 def loupe_rect(cursor: QPointF, bounds: QRectF) -> QRectF:
     """Where the lens goes for a cursor at `cursor`: above and to the right of it, flipped below or to
     the left where that would leave `bounds` (the image view), so it never hides under an edge."""
-    x, y = cursor.x() + _LOUPE_OFFSET.x(), cursor.y() + _LOUPE_OFFSET.y()
-    if x + _LOUPE > bounds.right():
-        x = cursor.x() - _LOUPE_OFFSET.x() - _LOUPE
-    if y < bounds.top():
-        y = cursor.y() + _LOUPE_OFFSET.x()
-    return QRectF(x, y, _LOUPE, _LOUPE)
+    cx, cy = cursor.x() + _LOUPE_REACH, cursor.y() - _LOUPE_REACH
+    if cx + _LOUPE / 2 > bounds.right():
+        cx = cursor.x() - _LOUPE_REACH
+    if cy - _LOUPE / 2 - _READOUT_SIZE.height() - 4 < bounds.top():  # the readout sits above the lens
+        cy = cursor.y() + _LOUPE_REACH
+    return QRectF(cx - _LOUPE / 2, cy - _LOUPE / 2, _LOUPE, _LOUPE)
 
 
-def paint_loupe(painter: QPainter, lens: QRectF, pixmap: QPixmap, density: float) -> None:
+def paint_loupe(painter: QPainter, lens: QRectF, pixmap: QPixmap, density: float, cursor: QPointF) -> None:
     """A round lens of `pixmap` with a crosshair and a ring on the pixel a click would sample, and
-    the density that click would read in edge print underneath."""
+    the density that click would read in edge print on the lens's far side from the cursor (where
+    neither the cursor nor the spot being read is covered)."""
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setOpacity(1.0)
@@ -526,7 +527,9 @@ def paint_loupe(painter: QPainter, lens: QRectF, pixmap: QPixmap, density: float
     painter.drawLine(QPointF(centre.x(), lens.top() + 6), QPointF(centre.x(), centre.y() - 8))
     painter.drawLine(QPointF(centre.x(), centre.y() + 8), QPointF(centre.x(), lens.bottom() - 6))
     painter.drawEllipse(centre, 8, 8)
-    readout = QRectF(centre.x() - _READOUT_SIZE.width() / 2, lens.bottom() + 4, _READOUT_SIZE.width(), _READOUT_SIZE.height())
+    above = centre.y() < cursor.y()
+    readout_y = lens.top() - 4 - _READOUT_SIZE.height() if above else lens.bottom() + 4
+    readout = QRectF(centre.x() - _READOUT_SIZE.width() / 2, readout_y, _READOUT_SIZE.width(), _READOUT_SIZE.height())
     painter.setBrush(QColor(theme.READOUT_BG))
     painter.setPen(QColor(theme.BORDER))
     painter.drawRoundedRect(readout, 3, 3)

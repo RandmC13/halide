@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -24,12 +24,53 @@ _TICK_ROW = _BAR_TOP + _BAR_HEIGHT + 3
 _LABEL_H = 13
 _RELIABLE_H = 8  # the reliable-range bracket's row, between the tick labels and the caption
 _STUB = 4  # length of a point's tick inside the bar, from each edge
+_DOT = 5  # a point's dot under the bar
+_DOT_BIN = 7  # points closer than this (px) on the bar share a column, stacked
+_STACK_H = 10  # a column's dots fit in this height, packed tighter as it grows
+_LABEL_GAP = 16  # two numbers closer than this (px) would overprint: the less important one is left out
 
 
 def band_labels(density_range: tuple[float, float], steps: int) -> list[str]:
     """The density at the centre of each band, to 2 decimals."""
     low, high = density_range
     return [f"{low + (i + 0.5) / steps * (high - low):.2f}" for i in range(steps)]
+
+
+def dot_stacks(xs: list[float]) -> list[tuple[float, int, int]]:
+    """For each point's x on the bar: (column x, its place in the column, the column's size). Points
+    within _DOT_BIN px of each other share a column, so a cluster reads as a pile instead of
+    overprinting lines."""
+    # Grouped by distance along the bar, not by rounding to a grid, which would split two close
+    # points that fall either side of a grid line.
+    columns: list[list[int]] = []
+    for i in sorted(range(len(xs)), key=lambda i: xs[i]):
+        if columns and xs[i] - xs[columns[-1][0]] < _DOT_BIN:
+            columns[-1].append(i)
+        else:
+            columns.append([i])
+    placed: list[tuple[float, int, int]] = [(0.0, 0, 0)] * len(xs)
+    for members in columns:
+        centre = sum(xs[i] for i in members) / len(members)  # under its points, not on a grid
+        for rank, i in enumerate(members):
+            placed[i] = (centre, rank, len(members))
+    return placed
+
+
+def labelled(ticks: list["WedgeTick"], xs: list[float]) -> list[int]:
+    """Which ticks get their number: only those worth acting on - the selected point, then red, then
+    amber ones - and never two closer than _LABEL_GAP px. A calm point's number is in the list and on
+    its marker; printing every number is what made a long calibration unreadable here."""
+    def priority(i: int) -> int:
+        tick = ticks[i]
+        return 0 if tick.selected else 1 if tick.colour == theme.AGREE_RED else 2 if tick.colour == theme.AGREE_AMBER else 3
+
+    chosen: list[int] = []
+    for i in sorted(range(len(ticks)), key=priority):
+        if priority(i) == 3:
+            break
+        if all(abs(xs[i] - xs[j]) >= _LABEL_GAP for j in chosen):
+            chosen.append(i)
+    return chosen
 
 
 @dataclass(frozen=True)
@@ -141,25 +182,31 @@ class StepWedge(QWidget):
             lo, hi = min(xs), max(xs)
             painter.drawLine(int(lo), _BAR_TOP - 3, int(hi), _BAR_TOP - 3)
 
-            # Labels in two alternating rows by position, so neighbouring ticks don't overprint.
-            order = sorted(range(len(self._ticks)), key=lambda i: xs[i])
-            for rank, i in enumerate(order):
-                tick, x = self._ticks[i], xs[i]
-                colour = QColor(tick.colour)
+            stacks = dot_stacks(xs)
+            for i, tick in enumerate(self._ticks):
+                x, colour = xs[i], QColor(tick.colour)
                 dy = -self._drop if tick.number == self._drop_number else 0.0
                 painter.setPen(QPen(colour, 3 if tick.selected else 1.5))
                 # Two stubs on the bar's edges, not a line across it: the band's density label sits in the middle.
                 top, bottom = _BAR_TOP + dy, _BAR_TOP + _BAR_HEIGHT + dy
                 painter.drawLine(int(x), int(top), int(x), int(top + _STUB))
                 painter.drawLine(int(x), int(bottom - _STUB), int(x), int(bottom + 2))
-                row_y = _TICK_ROW + (rank % 2) * _LABEL_H + dy
-                label = QRectF(x - 12, row_y, 24, _LABEL_H)
-                if tick.selected:
-                    bold = QFont(small)
-                    bold.setBold(True)
-                    painter.setFont(bold)
-                painter.drawText(label, Qt.AlignmentFlag.AlignCenter, str(tick.number))
-                painter.setFont(small)
+                column_x, rank, size = stacks[i]
+                spacing = _DOT if size <= 2 else _STACK_H / (size - 1)
+                centre = QPointF(column_x, _TICK_ROW + 3 + rank * spacing + dy)
+                painter.setPen(QPen(QColor(theme.TEXT), 1.5) if tick.selected else Qt.PenStyle.NoPen)
+                painter.setBrush(colour)
+                painter.drawEllipse(centre, _DOT / 2 + (1 if tick.selected else 0), _DOT / 2 + (1 if tick.selected else 0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            label_y = _TICK_ROW + _STACK_H + 6
+            for i in labelled(self._ticks, xs):
+                tick = self._ticks[i]
+                font = QFont(small)
+                font.setBold(tick.selected)
+                painter.setFont(font)
+                painter.setPen(QColor(tick.colour))
+                painter.drawText(QRectF(xs[i] - 12, label_y, 24, _LABEL_H), Qt.AlignmentFlag.AlignCenter, str(tick.number))
+            painter.setFont(small)
 
         bracket_y = _TICK_ROW + 2 * _LABEL_H + _RELIABLE_H - 2
         if self._reliable is not None:

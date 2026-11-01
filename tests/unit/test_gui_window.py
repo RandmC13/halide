@@ -439,3 +439,21 @@ def test_grade_slider_never_reaches_zero(app):
     controls.set_override(ToneCurveParams(mode="paper", exposure=0.0, contrast=0.0))  # an old saved zero
     controls.exposure.setValue(10)
     assert emitted[-1].contrast == pytest.approx(0.01)
+
+
+def test_coverage_dots_stack_close_points_and_only_points_to_act_on_get_numbers():
+    from halide.gui import theme
+    from halide.gui.step_wedge import WedgeTick, dot_stacks, labelled
+
+    xs = [100.0, 101.0, 102.5, 200.0]
+    stacks = dot_stacks(xs)
+    assert [s[1] for s in stacks[:3]] == [0, 1, 2] and stacks[0][2] == 3  # one pile of three
+    assert stacks[3] == (200.0, 0, 1)
+    calm = [WedgeTick(n + 1, 1.0, theme.AGREE_CALM) for n in range(30)]
+    many = [float(10 * n) for n in range(30)]
+    assert labelled(calm, many) == []  # thirty agreeing points: no numbers at all
+    ticks = list(calm)
+    ticks[3] = WedgeTick(4, 1.0, theme.AGREE_CALM, selected=True)
+    ticks[10] = WedgeTick(11, 1.0, theme.AGREE_RED)
+    ticks[11] = WedgeTick(12, 1.0, theme.AGREE_AMBER)  # 10 px from point 11: would overprint it
+    assert sorted(labelled(ticks, many)) == [3, 10]
