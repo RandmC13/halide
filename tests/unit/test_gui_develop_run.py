@@ -183,7 +183,7 @@ def test_sharing_copies(window, app, fmt, index):
     _develop(window, app, sharing=index)
     sharing = window._dev["settings"].sharing_dir
     assert sorted(p.suffix for p in sharing.iterdir()) == [f".{fmt}"] * 2
-    assert window._dev["sharing"].startswith("2 files, ")
+    assert window._dev["sharing"].startswith(f"2 files, {fmt.upper().replace('JPG', 'JPEG')}, in")
 
 
 def test_the_summary_opens_the_folder_and_saves_more_for_sharing(window, app, monkeypatch):
@@ -266,3 +266,18 @@ def test_sharing_skipped_by_a_stop_says_so_not_that_frames_failed(window, app, t
     monkeypatch.setattr(mw, "batch_command", lambda settings: [sys.executable, str(script)])
     _develop(window, app, sharing=1)
     assert window._dev["sharing"].startswith("not saved — developing was stopped first")
+
+
+@pytest.mark.parametrize("size", [(1056, 756), (900, 716)])
+def test_no_summary_button_is_cut(window, app, size):
+    from PySide6.QtCore import QSize
+
+    window.setFixedSize(QSize(*size))
+    _develop(window, app)
+    app.processEvents()
+    summary = window.summary_panel
+    buttons = (summary.contact_button, summary.share_button, summary.open_button)
+    for button in buttons:
+        assert button.width() >= button.sizeHint().width(), button.text()
+    # One per row: offscreen fonts are narrower than a desktop's, where two side by side were cut.
+    assert len({button.y() for button in buttons}) == len(buttons)

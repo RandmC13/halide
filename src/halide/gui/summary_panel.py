@@ -51,10 +51,9 @@ class SummaryPanel(QWidget):
         self.share_button = QPushButton("Save more for sharing…")
         self.share_button.setToolTip("sRGB JPEG or PNG copies of the prints, in the sharing folder")
         self.share_button.clicked.connect(self.shareClicked)
-        quiet = QHBoxLayout()
-        quiet.addWidget(self.contact_button)
-        quiet.addWidget(self.share_button)
-        col.addLayout(quiet)
+        # One per row: side by side, a wider desktop font cut the second label.
+        col.addWidget(self.contact_button)
+        col.addWidget(self.share_button)
         self.open_button = QPushButton("Open folder")
         self.open_button.clicked.connect(self.openClicked)
         self.carry_on_button = QPushButton("Carry on")

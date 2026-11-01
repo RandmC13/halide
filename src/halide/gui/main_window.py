@@ -157,6 +157,9 @@ def _qimage(rgb: np.ndarray) -> QImage:
     return QImage(rgb.data, width, height, 3 * width, QImage.Format.Format_RGB888).copy()
 
 
+_FORMAT_NAMES = {"jpg": "JPEG", "png": "PNG"}  # as the develop panel's sharing choice names them
+
+
 class MainWindow(QWidget):
     """`is_pick_session=True` is the one-shot `invert --pick` variant (see quick_pick.py): one frame,
     so no filmstrip, roll loading or contact sheet; the red button reads "Develop" and emits
@@ -682,6 +685,7 @@ class MainWindow(QWidget):
         self._nudge = None
         self._points_changed()
         self._status(f"Using '{path.stem}' on this roll: {console.plural(len(self.session.points), 'point')}")
+        self._close_profiles()
 
     def open_profile(self, path: Path) -> None:
         if self._busy():
@@ -726,6 +730,12 @@ class MainWindow(QWidget):
             self._refresh_points()
         self._warn_missing_frames()
         self._saved_points = list(self.session.points)
+        self._close_profiles()
+
+    def _close_profiles(self) -> None:
+        """A profile was put to use: the Profiles window has done its job and steps aside."""
+        if self._profiles is not None:
+            self._profiles.close()
 
     def _roll_not_found(self, profile_name: str, missing: Path) -> Path | None:
         """One of the reopened profile's rolls has gone: say so, and offer to point at where it went
@@ -1564,7 +1574,7 @@ class MainWindow(QWidget):
                 dev["sharing"] = f"not saved — {why}; Save more for sharing… makes them"
             self._end_develop()
             return
-        where = f"{dev['settings'].sharing.upper()}, in {dev['settings'].sharing_dir}"
+        where = f"{_FORMAT_NAMES[dev['settings'].sharing]}, in {dev['settings'].sharing_dir}"
         dev["sharing"] = f"{console.plural(developed, 'file')}, {where}" if total else f"already saved, {where}"
         self._end_develop()
 
