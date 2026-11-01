@@ -36,6 +36,9 @@ def _default_device_is_cpu_in_tests(monkeypatch):
     # 12 wording/help tests in a shell that had FORCE_COLOR=3. Tests about colour set them.
     for name in ("FORCE_COLOR", "NO_COLOR"):
         monkeypatch.delenv(name, raising=False)
+    # The picker's animations (gui/motion.py) otherwise land after a delay; with HALIDE_MOTION=0 each
+    # one jumps to its end state synchronously, so widget tests are instant and deterministic.
+    monkeypatch.setenv("HALIDE_MOTION", "0")
 
 
 @pytest.fixture(autouse=True)

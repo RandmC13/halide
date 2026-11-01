@@ -56,7 +56,7 @@ from halide.cli import console
 from halide.core.tone_render import ResolvedTone
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.device import ComputeDevice
-from halide.gui import theme
+from halide.gui import motion, theme
 from halide.gui.drawers import Accordion, Drawer, PrintControls, RollDetailsForm
 from halide.gui.filmstrip import Filmstrip
 from halide.gui.loaders import FrameLoader, PreviewLoader
@@ -183,12 +183,43 @@ class ImageView(QWidget):
         self._flash_timer = QTimer(self)
         self._flash_timer.timeout.connect(self._flash_step)
         self._flash_steps = 0
+        self._old_pixmap: QPixmap | None = None  # the picture being faded out, if a fade is running
+        self._blend = 1.0  # how much of the new picture shows
+        self._fade = None
+        self._probe_number: int | None = None  # the marker still closing in on its spot
+        self._probe = 1.0
 
-    def set_image(self, pixmap: QPixmap | None, placeholder: str = "") -> None:
+    def set_image(self, pixmap: QPixmap | None, placeholder: str = "", fade: bool = False) -> None:
+        """`fade`: cross-fade from the picture shown now (the Negative/Positive switch)."""
+        if self._fade is not None:
+            self._fade.stop()
+        self._old_pixmap = self._pixmap if fade and pixmap is not None else None
         self._pixmap = pixmap
         if placeholder:
             self._placeholder = placeholder
+
+        def set_blend(value: float) -> None:
+            self._blend = value
+            self.update()
+
+        def done() -> None:
+            self._old_pixmap = None
+
+        self._blend = 0.0 if self._old_pixmap is not None else 1.0
+        self._fade = motion.animate(self, 0.0, 1.0, 250, set_blend, done) if self._old_pixmap is not None else None
         self.update()
+
+    def probe(self, number: int) -> None:
+        """Close marker `number` in on its spot, as a probe lands (a newly added point)."""
+        def set_probe(value: float) -> None:
+            self._probe = value
+            self.update()
+
+        def done() -> None:
+            self._probe_number = None
+
+        self._probe_number = number
+        motion.animate(self, 0.0, 1.0, 200, set_probe, done)
 
     def set_edge_print(self, text: str) -> None:
         self._edge_print = text
@@ -232,7 +263,11 @@ class ImageView(QWidget):
             return
         painter.fillRect(self.rect(), QColor(theme.FILM_REBATE))
         self._paint_edge_print(painter)
+        if self._old_pixmap is not None and self._blend < 1.0:
+            painter.drawPixmap(rect, self._old_pixmap, QRectF(self._old_pixmap.rect()))
+        painter.setOpacity(self._blend)
         painter.drawPixmap(rect, self._pixmap, QRectF(self._pixmap.rect()))
+        painter.setOpacity(1.0)
 
         scale = self._scale()
         label_font = QFont(self.font())
@@ -243,16 +278,20 @@ class ImageView(QWidget):
             if number == self._flash and not self._flash_on:
                 continue
             centre = QPointF(rect.x() + (x + 0.5) * scale, rect.y() + (y + 0.5) * scale)
+            landing = number == self._probe_number
+            radius = _MARKER_RADIUS * (1 + 1.6 * (1 - self._probe)) if landing else _MARKER_RADIUS
+            painter.setOpacity(self._probe if landing else 1.0)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor(0, 0, 0, 170), 4 if selected else 3))
-            painter.drawEllipse(centre, _MARKER_RADIUS, _MARKER_RADIUS)
+            painter.drawEllipse(centre, radius, radius)
             painter.setPen(QPen(QColor(colour), 2.5 if selected else 1.5))
-            painter.drawEllipse(centre, _MARKER_RADIUS, _MARKER_RADIUS)
+            painter.drawEllipse(centre, radius, radius)
             label = QRectF(centre.x() + _MARKER_RADIUS, centre.y() - _MARKER_RADIUS - 12, 22, 14)
             painter.setPen(QColor(0, 0, 0, 200))
             painter.drawText(label.translated(1, 1), Qt.AlignmentFlag.AlignLeft, str(number))
             painter.setPen(QColor(colour))
             painter.drawText(label, Qt.AlignmentFlag.AlignLeft, str(number))
+            painter.setOpacity(1.0)
 
     def _paint_edge_print(self, painter: QPainter) -> None:
         if not self._edge_print:
@@ -301,6 +340,98 @@ class ImageView(QWidget):
 
     def display_scale(self) -> float:
         return self._scale()
+
+
+class ViewSwitch(QWidget):
+    """The Negative | Positive switch: two checkable buttons (exclusive, in a QButtonGroup) with an
+    amber highlight painted behind the checked one that slides across when the choice changes."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.negative_button = QPushButton("Negative")
+        self.positive_button = QPushButton("Positive")
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        for button in (self.negative_button, self.positive_button):
+            button.setProperty("role", "segment")
+            button.setCheckable(True)
+            self.group.addButton(button)
+            row.addWidget(button)
+        self.negative_button.setChecked(True)
+        self._from: QRectF | None = None  # where a slide in progress began
+        self._progress = 1.0
+        self.group.buttonToggled.connect(lambda button, checked: checked and self._slide_from_other(button))
+
+    def _checked_rect(self) -> QRectF:
+        button = self.group.checkedButton()
+        return QRectF(button.geometry()) if button is not None else QRectF()
+
+    def highlight_rect(self) -> QRectF:
+        target = self._checked_rect()
+        if self._from is None or self._progress >= 1.0:
+            return target
+        t = self._progress
+        return QRectF(
+            self._from.x() + (target.x() - self._from.x()) * t, target.y(),
+            self._from.width() + (target.width() - self._from.width()) * t, target.height(),
+        )
+
+    def _slide_from_other(self, checked) -> None:
+        other = self.positive_button if checked is self.negative_button else self.negative_button
+        self._from = QRectF(other.geometry())
+
+        def set_progress(value: float) -> None:
+            self._progress = value
+            self.update()
+
+        self._progress = 0.0
+        motion.animate(self, 0.0, 1.0, 220, set_progress)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme.AMBER))
+        painter.drawRoundedRect(self.highlight_rect(), 6, 6)
+
+
+class SaveStamp(QWidget):
+    """"<NAME> → SAVED" stamped in edge print over a strip of rebate, settling from wide letter
+    spacing to tight as it fades in."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._text = ""
+        self._progress = 1.0
+        self.setFixedHeight(22)
+        self.hide()
+
+    def text(self) -> str:
+        return self._text
+
+    def stamp(self, name: str) -> None:
+        self._text = f"{name.upper()} \u2192 SAVED"
+        self.show()
+
+        def set_progress(value: float) -> None:
+            self._progress = value
+            self.update()
+
+        self._progress = 0.0
+        motion.animate(self, 0.0, 1.0, 350, set_progress)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(theme.FILM_REBATE))
+        font = theme.edge_font(11)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 4 - 2.8 * self._progress)
+        painter.setFont(font)
+        painter.setOpacity(self._progress)
+        painter.setPen(QColor(theme.EDGE_PRINT))
+        text = QFontMetrics(font).elidedText(self._text, Qt.TextElideMode.ElideRight, self.width() - 16)
+        painter.drawText(self.rect().adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
 
 
 class Magnifier(QWidget):
@@ -483,6 +614,7 @@ class MainWindow(QWidget):
         self._positive_gain = 1.0
         self._flat_preview = False
         self._nudge: str | None = None
+        self._shown_positive = False  # the view the image last rendered in
         self._pending_flash: int | None = None
         # A status worth keeping ("Reopened …", "Skipped …"): loading doesn't replace it until the
         # person moves to another frame themselves.
@@ -570,16 +702,11 @@ class MainWindow(QWidget):
         left = QVBoxLayout()
         left.setSpacing(6)
         switch_row = QHBoxLayout()
-        self.negative_button = QPushButton("Negative")
-        self.positive_button = QPushButton("Positive")
-        self.view_group = QButtonGroup(self)
-        self.view_group.setExclusive(True)
-        for button in (self.negative_button, self.positive_button):
-            button.setProperty("role", "segment")
-            button.setCheckable(True)
-            self.view_group.addButton(button)
-            switch_row.addWidget(button)
-        self.negative_button.setChecked(True)
+        self.view_switch = ViewSwitch()
+        self.negative_button = self.view_switch.negative_button
+        self.positive_button = self.view_switch.positive_button
+        self.view_group = self.view_switch.group
+        switch_row.addWidget(self.view_switch)
         self.view_group.buttonToggled.connect(lambda _b, checked: checked and self._on_view_changed())
         self.source_note = QLabel("")
         self.source_note.setProperty("role", "dim")
@@ -686,6 +813,8 @@ class MainWindow(QWidget):
         self._panel = panel
         self._accordion = Accordion(drawers)
         self._accordion.openChanged.connect(self._on_drawer_opened)
+        self.save_stamp = SaveStamp()
+        panel.addWidget(self.save_stamp)
         panel.addWidget(self._accordion)
 
         self.primary_button = QPushButton("Develop" if self.is_pick_session else "Save calibration profile")
@@ -1036,6 +1165,9 @@ class MainWindow(QWidget):
         else:
             self.source_note.setText("Raw negative" if frame is not None else "")
         self.print_drawer.setEnabled(positive)
+        # Only a changed view fades; adding a point re-renders the same view in place.
+        fade = positive != self._shown_positive
+        self._shown_positive = positive
 
         if self.display is None:
             self._refresh_markers()
@@ -1050,7 +1182,7 @@ class MainWindow(QWidget):
         if self.auto_overlay.isChecked() and self._auto_mask is not None:
             shown = shown.copy()
             shown[self._auto_mask] = shown[self._auto_mask] * 0.6 + _OVERLAY_TINT * 0.4
-        self.image_view.set_image(QPixmap.fromImage(_qimage(shown)))
+        self.image_view.set_image(QPixmap.fromImage(_qimage(shown)), fade=fade)
         self._refresh_markers()
 
     def _refresh_markers(self) -> None:
@@ -1085,6 +1217,9 @@ class MainWindow(QWidget):
         point = NeutralPoint(frame=frame.path, x=int(x), y=int(y), rgb=tuple(float(v) for v in rgb), scan=frame.scan)
         self._nudge = self.session.add_point(point)
         self._points_changed()
+        number = len(self.session.points)
+        self.image_view.probe(number)
+        self.wedge.drop_in(number)
 
     def _on_row_clicked(self, index: int) -> None:
         self.session.selected = index
@@ -1113,6 +1248,7 @@ class MainWindow(QWidget):
 
     def _points_changed(self) -> None:
         """The fit may have changed: everything that shows it follows."""
+        self.save_stamp.hide()
         self._refresh_points()
         self._proof_is_stale()
         if self._positive_mode():
@@ -1333,6 +1469,7 @@ class MainWindow(QWidget):
         self._profile_name = name
         self._show_profile_name(name)
         self._saved_points = list(self.session.points)
+        self.save_stamp.stamp(name)
         self._status(message)
 
     def _repaint_all(self) -> None:

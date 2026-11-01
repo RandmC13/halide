@@ -14,9 +14,10 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from halide.gui import theme
+from halide.gui import motion, theme
 
 _STEPS = 11
+_DROP_PX = 6
 _BAR_TOP = 14
 _BAR_HEIGHT = 18  # tall enough for the density labels inside the bands
 _TICK_ROW = _BAR_TOP + _BAR_HEIGHT + 3
@@ -45,6 +46,8 @@ class StepWedge(QWidget):
         self._ticks: list[WedgeTick] = []
         self._reliable: tuple[float, float] | None = None
         self._measuring = True
+        self._drop_number: int | None = None  # the tick still settling into place
+        self._drop = 0.0  # px it sits above its final place
         self.setFixedHeight(_TICK_ROW + 2 * _LABEL_H + _RELIABLE_H + 18)
         self.setToolTip(
             "The roll's density range as a printed step wedge: the film-base end prints black, the "
@@ -67,6 +70,18 @@ class StepWedge(QWidget):
         self._reliable = reliable
         self._measuring = measuring
         self.update()
+
+    def drop_in(self, number: int) -> None:
+        """Let the tick for point `number` drop onto the bar from just above it."""
+        def set_drop(progress: float) -> None:
+            self._drop = _DROP_PX * (1 - progress)
+            self.update()
+
+        def done() -> None:
+            self._drop_number = None
+
+        self._drop_number = number
+        motion.animate(self, 0.0, 1.0, 200, set_drop, done)
 
     def _x(self, density: float, left: float, width: float) -> float:
         low, high = self._range
@@ -127,9 +142,10 @@ class StepWedge(QWidget):
             for rank, i in enumerate(order):
                 tick, x = self._ticks[i], xs[i]
                 colour = QColor(tick.colour)
+                dy = -self._drop if tick.number == self._drop_number else 0.0
                 painter.setPen(QPen(colour, 3 if tick.selected else 1.5))
-                painter.drawLine(int(x), _BAR_TOP, int(x), _BAR_TOP + _BAR_HEIGHT + 2)
-                row_y = _TICK_ROW + (rank % 2) * _LABEL_H
+                painter.drawLine(int(x), int(_BAR_TOP + dy), int(x), int(_BAR_TOP + _BAR_HEIGHT + 2 + dy))
+                row_y = _TICK_ROW + (rank % 2) * _LABEL_H + dy
                 label = QRectF(x - 12, row_y, 24, _LABEL_H)
                 if tick.selected:
                     bold = QFont(small)

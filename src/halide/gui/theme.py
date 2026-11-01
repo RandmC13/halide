@@ -126,7 +126,7 @@ QPushButton[role="primary"]:disabled {{
 }}
 
 QPushButton[role="segment"] {{
-    background-color: {BACKGROUND_ALT};
+    background-color: transparent;
     color: {TEXT_DIM};
     border: 1px solid {BORDER};
     border-radius: 6px;
@@ -139,8 +139,8 @@ QPushButton[role="segment"]:focus {{
     border: 1px solid {AMBER_ACTIVE};
     padding: 4px 14px;
 }}
+/* the amber behind the checked segment is painted by ViewSwitch, so it can slide */
 QPushButton[role="segment"]:checked {{
-    background-color: {AMBER};
     color: {TEXT};
     border: 1px solid {AMBER};
 }}
