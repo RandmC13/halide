@@ -106,7 +106,7 @@ def test_update_adds_the_new_points_to_the_profile(setup, monkeypatch):
         dialog.update_button.click()
 
     monkeypatch.setattr(SaveProfileDialog, "exec", update)
-    window.primary_button.click()
+    window.save_button.click()
     saved = load_anchors(path)
     assert len(saved) == len(old_points) + len(new) == 3
     assert window.session.new_points() == []  # they're the profile's now
@@ -123,7 +123,7 @@ def test_save_as_new_leaves_the_old_profile_byte_identical(setup, monkeypatch):
         dialog._save_button.click()
 
     monkeypatch.setattr(SaveProfileDialog, "exec", save_as_new)
-    window.primary_button.click()
+    window.save_button.click()
     assert path.read_bytes() == before
     assert len(load_anchors(path.parent / "Portra 400 · Roll17.json")) == 3
 
@@ -157,7 +157,7 @@ def test_removing_one_of_the_profiles_points_can_be_saved_back(setup, monkeypatc
     window._remove_point(0)  # one of them, leaving two that still fit
     offered = []
     monkeypatch.setattr(SaveProfileDialog, "exec", lambda dialog: offered.append(dialog.update_button.text()))
-    window._on_primary_clicked()
+    window._on_save_clicked()
     assert offered == ["Update 'Portra 400'"]
     assert "(edited)" in window.profile_chip.text()
     assert window._profile_card() is None  # the rows show, not the card
@@ -173,7 +173,7 @@ def test_renaming_the_profile_in_use_is_followed_and_deleting_it_forgets_it(setu
     assert window.session.profile_in_use is None and window._profile_name == ""
     seen = []
     monkeypatch.setattr(SaveProfileDialog, "exec", lambda dialog: seen.append(dialog.update_button))
-    window._on_primary_clicked()
+    window._on_save_clicked()
     assert seen == [None]  # no "Update" that would bring the deleted file back
 
 

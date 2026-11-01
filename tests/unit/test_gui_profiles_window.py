@@ -141,3 +141,35 @@ def test_a_calibration_file_from_elsewhere_changes_nothing_in_the_profiles_folde
     assert sorted(p.name for p in profiles.iterdir()) == before
     window._closing = True
     window.close()
+
+
+def test_the_window_steps_aside_once_a_profile_is_put_to_use(tmp_path, monkeypatch, app):
+    from halide.calibration.profile_store import save_named_profile
+    from halide.core.types import DensityProfile
+    from halide.gui import main_window as mw
+    from tests.unit.test_gui_develop_panel import _fit, _roll
+    from tests.unit.test_gui_picker_smoke import _frame_ready, _pump
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    path = save_named_profile(DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78)), "Typed")
+    window = mw.MainWindow()
+    window._confirm_close = lambda count: True
+    window.show()
+    window.load_roll(_roll(tmp_path))
+    _pump(app, lambda: _frame_ready(window, 0))
+
+    _fit(window)  # unsaved points: Use asks first, and No keeps everything, the Profiles window too
+    profiles = window.show_profiles()
+    monkeypatch.setattr(mw.QMessageBox, "question", lambda *a, **k: mw.QMessageBox.StandardButton.No)
+    profiles.useRequested.emit(path)
+    assert profiles.isVisible() and window.session.profile_in_use is None
+
+    monkeypatch.setattr(mw.QMessageBox, "question", lambda *a, **k: mw.QMessageBox.StandardButton.Yes)
+    profiles.useRequested.emit(path)
+    assert window.session.profile_in_use == path and not profiles.isVisible()
+
+    profiles = window.show_profiles()
+    assert profiles.isVisible()
+    profiles.editRequested.emit(path)
+    assert not profiles.isVisible()
+    window.close()

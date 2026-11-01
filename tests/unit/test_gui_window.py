@@ -346,10 +346,18 @@ def test_only_the_one_primary_button_is_red(app):
     # In the stylesheet, RED colours nothing but the primary button's states.
     blocks = [b for b in theme.STYLESHEET.split("}") if theme.RED in b or theme.RED_HOVER in b or theme.RED_ACTIVE in b]
     assert blocks and all('QPushButton[role="primary"]' in b for b in blocks)
-    # And each window has exactly one such button.
+    # And each window shows exactly one such button at a time, on whichever side the panel is on.
     for window in (MainWindow(), MainWindow(is_pick_session=True)):
-        primaries = [b for b in window.findChildren(QPushButton) if b.property("role") == "primary"]
-        assert primaries == [window.primary_button]
+        def shown():
+            return [b for b in window.findChildren(QPushButton)
+                    if b.property("role") == "primary" and b.isVisibleTo(window)]
+
+        assert shown() == [window.primary_button]
+        if not window.is_pick_session:
+            window._stack.setCurrentIndex(1)
+            assert shown() == [window.develop_panel.develop_button]
+            window._stack.setCurrentIndex(2)
+            assert shown() == []  # the summary side's red button comes with the summary
         window.close()
 
 

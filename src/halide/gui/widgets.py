@@ -1,11 +1,11 @@
-"""Small widgets of the picker's window: the eliding status label, the Negative | Positive switch and
+"""Small widgets of the picker's window: the eliding status label, the segmented choice (and the Negative | Positive switch) and
 the saved-profile stamp."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from halide.gui import motion, theme
 
@@ -41,31 +41,51 @@ class ElidedLabel(QLabel):
         self._elide()
 
 
-class ViewSwitch(QWidget):
-    """The Negative | Positive switch: one recessed pill holding two checkable buttons (exclusive, in
-    a QButtonGroup), with an amber highlight painted behind the checked one that slides across when
-    the choice changes. The buttons are bare text; the pill, highlight and focus mark are painted
-    here."""
+class Segmented(QWidget):
+    """A row (or, `vertical`, a column) of exclusive, checkable text buttons in one recessed pill, with
+    an amber highlight painted behind the chosen one that slides across when the choice changes.
+    The buttons are bare text; the pill, highlight and focus mark are painted here. `checked=None`
+    starts with nothing chosen (no highlight)."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    changed = Signal(int)  # the index just chosen
+
+    def __init__(self, labels: list[str], checked: int | None = 0, vertical: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.negative_button = QPushButton("Negative")
-        self.positive_button = QPushButton("Positive")
+        self.buttons = [QPushButton(label) for label in labels]
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
-        row = QHBoxLayout(self)
+        row = QVBoxLayout(self) if vertical else QHBoxLayout(self)
         row.setContentsMargins(_PILL_PAD, _PILL_PAD, _PILL_PAD, _PILL_PAD)
         row.setSpacing(0)
-        for button in (self.negative_button, self.positive_button):
+        for button in self.buttons:
             button.setProperty("role", "segment")
             button.setCheckable(True)
             self.group.addButton(button)
             button.installEventFilter(self)  # repaint the focus mark as focus moves
             row.addWidget(button)
-        self.negative_button.setChecked(True)
-        self._from: QRectF | None = None  # where a slide in progress began
+        self._prev: QPushButton | None = None  # the button chosen before, where a slide starts
+        if checked is not None:
+            self.buttons[checked].setChecked(True)
+            self._prev = self.buttons[checked]
+        self._from: QRectF | None = None
         self._progress = 1.0
-        self.group.buttonToggled.connect(lambda button, checked: checked and self._slide_from_other(button))
+        self.group.buttonToggled.connect(lambda button, on: on and self._chosen(button))
+
+    def index(self) -> int | None:
+        button = self.group.checkedButton()
+        return self.buttons.index(button) if button is not None else None
+
+    def set_index(self, index: int) -> None:
+        self.buttons[index].setChecked(True)
+
+    def clear(self) -> None:
+        """Back to nothing chosen."""
+        self.group.setExclusive(False)
+        for button in self.buttons:
+            button.setChecked(False)
+        self.group.setExclusive(True)
+        self._prev = None
+        self.update()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
         if event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
@@ -80,15 +100,15 @@ class ViewSwitch(QWidget):
         target = self._checked_rect()
         if self._from is None or self._progress >= 1.0:
             return target
-        t = self._progress
+        t, a = self._progress, self._from
         return QRectF(
-            self._from.x() + (target.x() - self._from.x()) * t, target.y(),
-            self._from.width() + (target.width() - self._from.width()) * t, target.height(),
+            a.x() + (target.x() - a.x()) * t, a.y() + (target.y() - a.y()) * t,
+            a.width() + (target.width() - a.width()) * t, a.height() + (target.height() - a.height()) * t,
         )
 
-    def _slide_from_other(self, checked) -> None:
-        other = self.positive_button if checked is self.negative_button else self.negative_button
-        self._from = QRectF(other.geometry())
+    def _chosen(self, button) -> None:
+        self._from = QRectF(self._prev.geometry()) if self._prev is not None else None
+        self._prev = button
 
         def set_progress(value: float) -> None:
             self._progress = value
@@ -96,6 +116,7 @@ class ViewSwitch(QWidget):
 
         self._progress = 0.0
         motion.animate(self, "slide", 0.0, 1.0, 220, set_progress)
+        self.changed.emit(self.buttons.index(button))
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
@@ -106,11 +127,19 @@ class ViewSwitch(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(theme.AMBER))
         painter.drawRoundedRect(self.highlight_rect(), 3, 3)
-        focused = next((b for b in (self.negative_button, self.positive_button) if b.hasFocus()), None)
+        focused = next((b for b in self.buttons if b.hasFocus()), None)
         if focused is not None:  # keyboard focus: the bare-text buttons draw none of their own
             painter.setPen(QPen(QColor(theme.TEXT), 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(QRectF(focused.geometry()).adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
+
+
+class ViewSwitch(Segmented):
+    """The Negative | Positive switch."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(["Negative", "Positive"], 0, parent=parent)
+        self.negative_button, self.positive_button = self.buttons
 
 
 class SaveStamp(QWidget):

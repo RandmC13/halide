@@ -98,6 +98,7 @@ class CalibrationSession:
     _undo: tuple[list[NeutralPoint], int | None] | None = None  # (points, selected) before the last change
     profile_in_use: Path | None = None  # a saved profile used on this roll ("Use for this roll")
     _profile_points: list[NeutralPoint] = field(default_factory=list)  # ... and the points it came with
+    _profile_fit: DensityProfile | None = None  # ... or, with no points, its saved balance
 
     # --- the roll -----------------------------------------------------------------------------
 
@@ -112,6 +113,7 @@ class CalibrationSession:
         self._undo = None
         self.profile_in_use = None
         self._profile_points = []
+        self._profile_fit: DensityProfile | None = None
 
     def use_profile(self, profile_path: Path) -> None:
         """Put a saved profile on the roll that's open, keeping its frames: the profile's points,
@@ -126,6 +128,9 @@ class CalibrationSession:
             raise
         self.profile_in_use = profile_path
         self._profile_points = list(self.points)
+        # A profile saved from typed values or an automatic estimate has no points: its own
+        # balance is the calibration until points are clicked.
+        self._profile_fit = None if self.points else load_profile(profile_path)
 
     def new_points(self) -> list[NeutralPoint]:
         """The points clicked on this roll on top of a profile in use (all of them without one)."""
@@ -278,7 +283,10 @@ class CalibrationSession:
 
     def profile(self) -> DensityProfile | None:
         """The live fit, once there are enough points - else None (the Positive view then shows
-        the auto estimate)."""
+        the auto estimate). A profile in use with no points of its own is its saved balance, until
+        points are clicked."""
+        if not self.points and self.profile_in_use is not None and self._profile_fit is not None:
+            return self._profile_fit
         if not self.can_fit():
             return None
         try:

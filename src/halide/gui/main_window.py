@@ -10,8 +10,9 @@ Layout (landscape, fixed size, never scrolls - see _compute_window_size):
                   the negative; never soften it) · status line
   right panel     step wedge (gui/step_wedge.py) · neutral points list (gui/point_list.py) · notice
                   line · Extra information / Print / Details drawers (gui/drawers.py,
-                  accordion) · the one red primary button: Save profile (Develop in the
-                  one-shot `invert --pick` flow)
+                  accordion) · Save profile (quiet) and Develop roll… (the one red button), which turns the
+                  panel over to the develop side (gui/develop_panel.py) and its summary; in the
+                  one-shot `invert --pick` flow a single red Develop
 
 All picking state and logic is in gui/roll.py::CalibrationSession (no Qt); this module lays out the
 widgets and keeps them in step with it. Picks always sample the raw full-resolution negative
@@ -21,11 +22,23 @@ widgets and keeps them in step with it. Picks always sample the raw full-resolut
 from __future__ import annotations
 
 import html
+import sys
+import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, QRect, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QEvent, QPointF, QProcess, QRect, QSize, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QDesktopServices,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QImage,
+    QKeySequence,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -33,6 +46,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -41,12 +55,23 @@ from halide.io.roll import list_scans
 from halide.calibration.anchors import NeutralPoint, point_rolls
 from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask
 from halide.calibration.scan_consistency import assess_roll, frame_flags
-from halide.calibration.profile_store import default_profiles_dir, find_profile
+from halide.calibration.profile_store import (
+    ProfileError,
+    default_profiles_dir,
+    find_profile,
+    load_tone_override,
+    save_named_profile,
+    save_profile,
+    validate_profile_name,
+)
 from halide.cli import console
 from halide.core.tone_render import ResolvedTone
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.device import ComputeDevice
-from halide.gui import theme
+from halide.gui import motion, theme
+from halide.gui.develop import DevelopSettings, existing_outputs, export_command, batch_command, frame_count
+from halide.gui.develop_panel import DevelopPanel
+from halide.gui.develop_runner import DevelopRunner
 from halide.gui.drawers import Accordion, Drawer, PrintControls, RollDetailsForm
 from halide.gui.filmstrip import Filmstrip
 from halide.gui.image_view import ImageView
@@ -69,6 +94,7 @@ from halide.gui.sampling import (
     snap_to_representative_pixel,
 )
 from halide.gui.step_wedge import StepWedge, WedgeTick
+from halide.gui.summary_panel import SummaryPanel
 from halide.gui.widgets import PROFILE_NAME_MAX_W, SaveStamp, ViewSwitch
 from halide.io.contact_sheet import downsample_linear
 from halide.processing import read_roll_scan_metadata
@@ -131,6 +157,9 @@ def _qimage(rgb: np.ndarray) -> QImage:
     return QImage(rgb.data, width, height, 3 * width, QImage.Format.Format_RGB888).copy()
 
 
+_FORMAT_NAMES = {"jpg": "JPEG", "png": "PNG"}  # as the develop panel's sharing choice names them
+
+
 class MainWindow(QWidget):
     """`is_pick_session=True` is the one-shot `invert --pick` variant (see quick_pick.py): one frame,
     so no filmstrip, roll loading or contact sheet; the red button reads "Develop" and emits
@@ -173,6 +202,16 @@ class MainWindow(QWidget):
         # person moves to another frame themselves.
         self._sticky_status: str | None = None
         self._scan_flags_by_index: dict[int, str] = {}
+        self._loose = False  # the open frames are loose scans, not a roll folder
+        self._hold_side = False  # refreshing the points mustn't turn the panel (a save as part of developing)
+        self._dev: dict | None = None  # the develop run in hand: its settings, progress and summary
+        self._runner = DevelopRunner(self)
+        self._runner.frameStarted.connect(self._on_frame_started)
+        self._runner.frameDone.connect(self._on_frame_done)
+        self._runner.summaryRow.connect(self._on_summary_row)
+        self._runner.finished.connect(self._on_develop_finished)
+        self._runner.failed.connect(self._on_develop_failed)
+        self._exposure_differs = False  # the scan check found frames digitized at different exposures
         self._proof: ProofWindow | None = None
         self._preview_loader: PreviewLoader | None = None
         self._frame_loader: FrameLoader | None = None
@@ -238,14 +277,14 @@ class MainWindow(QWidget):
         self.proof_button.clicked.connect(self._on_proof)
         top.addWidget(self.proof_button)
         if self.show_load_controls:
-            profiles_button = QPushButton("Profiles")
-            profiles_button.setToolTip("Your saved profiles: use one on this roll, edit its points, rename or delete it")
-            profiles_button.clicked.connect(self.show_profiles)
-            top.addWidget(profiles_button)
-            load_button = QPushButton("Load roll…")
-            load_button.setToolTip("Choose a folder of scans (one roll)")
-            load_button.clicked.connect(self._on_load_roll)
-            top.addWidget(load_button)
+            self.profiles_button = QPushButton("Profiles")
+            self.profiles_button.setToolTip("Your saved profiles: use one on this roll, edit its points, rename or delete it")
+            self.profiles_button.clicked.connect(self.show_profiles)
+            top.addWidget(self.profiles_button)
+            self.load_button = QPushButton("Load roll…")
+            self.load_button.setToolTip("Choose a folder of scans (one roll)")
+            self.load_button.clicked.connect(self._on_load_roll)
+            top.addWidget(self.load_button)
         root.addLayout(top)
 
         self.filmstrip = Filmstrip()
@@ -310,7 +349,6 @@ class MainWindow(QWidget):
         panel = QVBoxLayout()
         panel.setSpacing(6)
         panel_widget = QWidget()
-        panel_widget.setFixedWidth(_PANEL_WIDTH)
         panel_widget.setLayout(panel)
 
         coverage_title = QLabel("Coverage of the roll's densities")
@@ -385,12 +423,41 @@ class MainWindow(QWidget):
         self._accordion.openChanged.connect(self._on_drawer_opened)
         panel.addWidget(self._accordion)
 
-        self.primary_button = QPushButton("Develop" if self.is_pick_session else "Save profile")
+        # The points state ends in Save profile (quiet) and Develop roll… (the one red button); the
+        # one-shot `invert --pick` window has just a red Develop.
+        self.primary_button = QPushButton("Develop" if self.is_pick_session else "Develop roll\u2026")
         self.primary_button.setProperty("role", "primary")
         self.primary_button.setEnabled(False)
-        self.primary_button.clicked.connect(self._on_primary_clicked)
-        panel.addWidget(self.primary_button)
-        body.addWidget(panel_widget)
+        if self.is_pick_session:
+            self.primary_button.clicked.connect(self._on_primary_clicked)
+            panel.addWidget(self.primary_button)
+        else:
+            self.primary_button.clicked.connect(self._open_develop)
+            self.save_button = QPushButton("Save profile")
+            self.save_button.setEnabled(False)
+            self.save_button.clicked.connect(self._on_save_clicked)
+            buttons = QHBoxLayout()
+            buttons.addWidget(self.save_button)
+            buttons.addWidget(self.primary_button)
+            panel.addLayout(buttons)
+        # The right panel is a stack of three states: points, develop, summary.
+        self._stack = QStackedWidget()
+        self._stack.setFixedWidth(_PANEL_WIDTH)
+        self._stack.addWidget(panel_widget)
+        if not self.is_pick_session:
+            self.develop_panel = DevelopPanel()
+            self.develop_panel.backClicked.connect(lambda: self._turn_to(0))
+            self.develop_panel.developClicked.connect(self._start_develop)
+            self.develop_panel.cancelClicked.connect(self._cancel_develop)
+            self._stack.addWidget(self.develop_panel)
+            self.summary_panel = SummaryPanel()
+            self.summary_panel.backClicked.connect(lambda: self._turn_to(0))
+            self.summary_panel.contactClicked.connect(self._developed_contact_sheet)
+            self.summary_panel.shareClicked.connect(self._save_more_for_sharing)
+            self.summary_panel.openClicked.connect(self._open_developed_folder)
+            self.summary_panel.carryOnClicked.connect(self._carry_on)
+            self._stack.addWidget(self.summary_panel)
+        body.addWidget(self._stack)
         self._refresh_drawer_summaries()
 
     # --- loading --------------------------------------------------------------------------------
@@ -428,6 +495,8 @@ class MainWindow(QWidget):
         return answer == QMessageBox.StandardButton.Yes
 
     def load_roll(self, folder: Path, keep_points: bool = False) -> None:
+        if self._busy():
+            return
         paths, left_out = list_scans(folder)
         if not paths:
             self._error("No TIFF scans", f"No TIFF scans in {folder}")
@@ -459,20 +528,24 @@ class MainWindow(QWidget):
 
     def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
         """Individual scans as a roll of their own (`halide open a.tif b.tif`, `invert --pick`)."""
+        if self._busy():
+            return
         if not keep_points:
             self._new_calibration()
-        self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None)
+        self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None, loose=True)
 
-    def _start_roll(self, paths: list[Path], folder: Path | None) -> None:
-        self._start_rolls([(folder, paths)])
+    def _start_roll(self, paths: list[Path], folder: Path | None, loose: bool = False) -> None:
+        self._start_rolls([(folder, paths)], loose)
 
-    def _start_rolls(self, rolls: list[tuple[Path | None, list[Path]]]) -> None:
+    def _start_rolls(self, rolls: list[tuple[Path | None, list[Path]]], loose: bool = False) -> None:
         """Load one or more rolls side by side in the filmstrip. Each roll's scan check is its own:
         rolls may legitimately differ from one another."""
         self._stop_loaders()
         self._generation += 1
         generation = self._generation
+        self._loose = loose
         self._pending_flash = None
+        self._turn_to(0, animate=False)  # the roll the develop side was set up for is gone
         if self._proof is not None:  # its frames belong to the roll being replaced
             old, self._proof = self._proof, None
             old.close()
@@ -498,8 +571,11 @@ class MainWindow(QWidget):
             at += len(roll_paths)
         self.filmstrip.strip.set_frames([f.number for f in self.session.frames], starts if len(rolls) > 1 else None)
         flags: dict[str, str] = {}
+        self._exposure_differs = False
         for _, roll_paths in rolls:
-            flags.update(frame_flags(assess_roll({str(p): metadata[str(p)] for p in roll_paths})))
+            report = assess_roll({str(p): metadata[str(p)] for p in roll_paths})
+            flags.update(frame_flags(report))
+            self._exposure_differs = self._exposure_differs or report.exposure_inconsistent
         # Keyed by the paths as given (relative when typed so on the command line), in frame order.
         self._scan_flags_by_index = {i: flags[str(p)] for i, p in enumerate(paths) if str(p) in flags}
         self.filmstrip.strip.set_flags(self._scan_flags_by_index)
@@ -584,7 +660,7 @@ class MainWindow(QWidget):
     def use_profile(self, path: Path) -> None:
         """Put a saved profile on the open roll ("Use for this roll"): its fit drives the positive at
         once, and points clicked now refine it."""
-        if self.session.roll_folder is None:
+        if self.session.roll_folder is None or self._busy():
             return
         unsaved = len(self.session.points) if self.session.points != self._saved_points else 0
         if unsaved:
@@ -609,8 +685,11 @@ class MainWindow(QWidget):
         self._nudge = None
         self._points_changed()
         self._status(f"Using '{path.stem}' on this roll: {console.plural(len(self.session.points), 'point')}")
+        self._close_profiles()
 
     def open_profile(self, path: Path) -> None:
+        if self._busy():
+            return
         try:
             CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
         except (ValueError, KeyError, OSError) as exc:
@@ -651,6 +730,12 @@ class MainWindow(QWidget):
             self._refresh_points()
         self._warn_missing_frames()
         self._saved_points = list(self.session.points)
+        self._close_profiles()
+
+    def _close_profiles(self) -> None:
+        """A profile was put to use: the Profiles window has done its job and steps aside."""
+        if self._profiles is not None:
+            self._profiles.close()
 
     def _roll_not_found(self, profile_name: str, missing: Path) -> Path | None:
         """One of the reopened profile's rolls has gone: say so, and offer to point at where it went
@@ -932,7 +1017,7 @@ class MainWindow(QWidget):
     # --- points ---------------------------------------------------------------------------------
 
     def _on_image_clicked(self, disp_x: int, disp_y: int) -> None:
-        if self.full_image is None or self._current is None:
+        if self.full_image is None or self._current is None or self._developing():
             return
         frame = self.session.frames[self._current]
         h, w = self.full_image.shape[:2]
@@ -970,10 +1055,12 @@ class MainWindow(QWidget):
         self._points_changed()
 
     def _remove_selected(self) -> None:
-        if self.session.selected is not None:
+        if self.session.selected is not None and not self._developing():
             self._remove_point(self.session.selected)
 
     def _undo(self) -> None:
+        if self._developing():
+            return
         change = self.session.undo()
         if change is None:
             return
@@ -1034,6 +1121,8 @@ class MainWindow(QWidget):
             self._proof.mark_stale(self._on_proof)
 
     def _refresh_points(self) -> None:
+        if not self._developing() and not self._hold_side:
+            self._turn_to(0)  # the develop side was set up for the calibration as it was
         views = self.session.views()
         self.point_list.set_rows(views, self.session.selected, self._profile_card())
         self._refresh_using_chip()
@@ -1045,8 +1134,18 @@ class MainWindow(QWidget):
         self._refresh_notice(views)
         self._refresh_details(views)
         fitted = self.session.profile() is not None
-        self.primary_button.setEnabled(fitted)
         one_roll = len(self.session.rolls) <= 1
+        if self.is_pick_session:
+            self.primary_button.setEnabled(fitted)
+        else:
+            self.save_button.setEnabled(fitted)
+            folder = self._develop_folder()
+            self.primary_button.setEnabled(fitted and folder is not None)
+            self.primary_button.setToolTip(
+                "Develop the whole roll with this calibration" if fitted and folder is not None
+                else "Develop works on one roll folder: open a single roll" if fitted
+                else "Click two neutral points of different densities first, or use a profile"
+            )
         self.proof_button.setEnabled(fitted and bool(self.session.frames) and one_roll)
         self.proof_button.setToolTip(
             "A zoomable contact sheet of the whole roll printed with this calibration" if one_roll
@@ -1233,20 +1332,340 @@ class MainWindow(QWidget):
 
     # --- save / develop -------------------------------------------------------------------------
 
-    def _on_primary_clicked(self) -> None:
-        profile = self.session.profile()
-        if profile is None:
-            return
+    def _print_view_notes(self) -> None:
         for view in self.session.views():
             if view.note:
                 print(console.warning(view.note))
-        if self.is_pick_session:
-            self._pick_result_emitted = True
-            reliability = self.session.reliability()
-            note = reliability.warning() if reliability is not None else None
-            self.pickCompleted.emit((profile, self.session.tone_override, note))
-            self.close()
+
+    def _on_primary_clicked(self) -> None:
+        """The one-shot pick window's Develop: hand the profile back and close."""
+        profile = self.session.profile()
+        if profile is None:
             return
+        self._print_view_notes()
+        self._pick_result_emitted = True
+        reliability = self.session.reliability()
+        note = reliability.warning() if reliability is not None else None
+        self.pickCompleted.emit((profile, self.session.tone_override, note))
+        self.close()
+
+    def _develop_folder(self) -> Path | None:
+        """The one roll folder Develop works on; None for several rolls or loose scans."""
+        return None if self._loose or len(self.session.rolls) != 1 else self.session.roll_folder
+
+    def _turn_to(self, index: int, animate: bool = True) -> None:
+        """Turn the right panel over to another state (0 points, 1 develop, 2 summary): the new one
+        swings in from the side it lies on."""
+        if self.is_pick_session or index == self._stack.currentIndex():
+            return
+        forward = index > self._stack.currentIndex()
+        self._stack.setCurrentIndex(index)
+        page = self._stack.currentWidget()
+        if not animate:
+            return
+        shift = _PANEL_WIDTH // 3 * (1 if forward else -1)
+
+        def swing(value: float) -> None:
+            page.move(round(shift * (1 - value)), 0)
+
+        motion.animate(self._stack, "turn", 0.0, 1.0, 280, swing, lambda: page.setGeometry(self._stack.rect()))
+
+    def _open_develop(self) -> None:
+        folder = self._develop_folder()
+        session = self.session
+        if folder is None or session.profile() is None:
+            return
+        in_use = session.profile_in_use
+        path = None
+        if in_use is not None:
+            changed = session.changed_from_profile() or not self._tone_as_saved(in_use)
+            case, path, name = ("refined" if changed else "profile"), in_use, in_use.stem
+        elif (self._profile_name and session.points == self._saved_points
+              and (path := find_profile(self._profile_name)) and self._tone_as_saved(path)):
+            case, name = "profile", self._profile_name
+        else:
+            case, name = "new", ""
+        self.develop_panel.prepare(
+            folder, case, profile_path=path, name=name, new_points=len(session.new_points()),
+            suggested_name="" if in_use is not None else self._profile_name, exposure_differs=self._exposure_differs,
+            device=self.device.kind if self.device is not None else None,
+        )
+        self._turn_to(1)
+
+    # --- developing the roll --------------------------------------------------------------------
+    # The real `halide batch` runs as a child (gui/develop_runner.py), so the prints are exactly the
+    # terminal's; this window only follows its progress.
+
+    def _developing(self) -> bool:
+        return self._runner.is_running()
+
+    def _tone_as_saved(self, path: Path) -> bool:
+        """Whether the print pin in hand is the one saved in the profile at `path`: batch prints with
+        the file's, so a pin made since must be saved (or used once) first."""
+        try:
+            return load_tone_override(path) == self.session.tone_override
+        except (OSError, ValueError):
+            return False
+
+    def _busy(self) -> bool:
+        """Developing: nothing may replace the roll or the calibration until it ends."""
+        if self._developing():
+            self._status("Developing — wait for it to finish, or cancel it first")
+        return self._developing()
+
+    def _start_develop(self, settings: DevelopSettings, choice: str) -> None:
+        """Develop pressed: settle the calibration file the run will name (saving a profile first if
+        that was the choice), settle what to do with prints already there, then start the run."""
+        try:
+            frame_count(settings)
+        except ValueError as exc:
+            self._error("Can't develop", str(exc))
+            return
+        self._hold_side = True
+        try:
+            settings = self._calibration_for_develop(settings, choice)
+        except (ProfileError, OSError) as exc:
+            self._error("Couldn't save the calibration", f"Nothing was developed: {exc}")
+            return
+        finally:
+            self._hold_side = False
+        if settings.existing == "ask":
+            try:
+                existing, total = existing_outputs(settings), frame_count(settings)
+            except ValueError as exc:
+                self._error("Can't develop", str(exc))
+                return
+            if existing:
+                answer = self._ask_existing(len(existing), total, settings.into)
+                if answer is None:
+                    return
+                settings = replace(settings, existing=answer)
+        self._run_develop(settings)
+
+    def _calibration_for_develop(self, settings: DevelopSettings, choice: str) -> DevelopSettings:
+        session = self.session
+        if choice == "profile":
+            return settings
+        if choice in ("save", "add"):
+            if choice == "save":
+                name = validate_profile_name(self.develop_panel.name_input.text())
+                path = save_named_profile(session.profile_to_save(), name, **session.sidecars())
+            else:
+                name = session.profile_in_use.stem
+                path = save_named_profile(session.profile_to_save(), name, overwrite=True, **session.sidecars())
+            self._on_saved(name, f"Saved profile '{name}' to {path}")
+            return replace(settings, profile=path)
+        # Used once, or for this roll only: beside the prints, never in the profiles folder.
+        settings.into.mkdir(parents=True, exist_ok=True)
+        path = settings.into / "halide-calibration.json"
+        save_profile(session.profile_to_save(), path, **session.sidecars())
+        return replace(settings, profile=path)
+
+    def _ask_existing(self, count: int, total: int, into: Path) -> str | None:
+        """The terminal's overwrite question, once for the roll: "replace", "skip" or None (cancel)."""
+        box = QMessageBox(
+            QMessageBox.Icon.Question, "Prints already there",
+            f"{count} of {console.plural(total, 'output')} already exist in {into} — overwrite them?",
+            parent=self,
+        )
+        replace_button = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+        skip_button = box.addButton("Skip existing", QMessageBox.ButtonRole.AcceptRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(skip_button)
+        box.setEscapeButton(cancel_button)
+        box.exec()
+        self._repaint_all()
+        return {replace_button: "replace", skip_button: "skip"}.get(box.clickedButton())
+
+    def _run_develop(self, settings: DevelopSettings) -> None:
+        try:
+            total = frame_count(settings)
+            if settings.existing == "skip":
+                total -= len(existing_outputs(settings))
+        except ValueError as exc:
+            self._error("Can't develop", str(exc))
+            return
+        if total == 0:  # batch would only say so, without a run to follow
+            self.notice_bar.show_activity(f"Nothing to do — every print in {settings.into} is already there")
+            return
+        self._dev = {
+            "settings": settings, "total": total, "done": 0, "failed": 0, "names": {}, "rows": [],
+            "end": "", "cancelled": False, "started": time.monotonic(), "sharing": None, "phase": "develop",
+        }
+        self.filmstrip.strip.clear_prints()
+        self._lock_for_develop(True)
+        self._show_develop_progress()
+        self._runner.run(batch_command(settings))
+        if settings.sharing != "none":
+            self._runner.run_after(export_command(settings))
+
+    def _lock_for_develop(self, locked: bool) -> None:
+        self.develop_panel.set_running(f"Developing… 0 of {self._dev['total']}" if locked else None)
+        for button in (getattr(self, "load_button", None), getattr(self, "profiles_button", None), self.proof_button):
+            if button is not None:
+                button.setEnabled(not locked)
+        self.setAcceptDrops(not locked and self.show_load_controls)
+        if not locked:
+            self._hold_side = True
+            try:
+                self._refresh_points()  # the buttons as the calibration allows
+            finally:
+                self._hold_side = False
+
+    def _show_develop_progress(self) -> None:
+        dev = self._dev
+        text = f"Developing… {dev['done']} of {dev['total']}"
+        self.develop_panel.set_running(text)
+        roll = self._develop_folder()
+        self.notice_bar.show_activity(f"Developing {roll.name if roll else 'the roll'} — {dev['done']} of {dev['total']}", lasting=True)
+
+    def _frame_index(self, name: str) -> int | None:
+        return next((i for i, f in enumerate(self.session.frames) if f.path.name == name), None)
+
+    def _print_thumbnails(self, frame: Frame) -> tuple[np.ndarray, np.ndarray] | None:
+        """The frame's negative and its print with this run's calibration, as the strip shows them."""
+        profile, _is_fit, gain = self.session.positive_source(frame)
+        if frame.preview is None or profile is None:
+            return None
+        negative = negative_display(frame.preview, compute_stretch_bounds(frame.preview))
+        positive = positive_display(frame.preview, profile, self._tone(False), gain)[0]
+        return (negative, positive) if negative.shape == positive.shape else None
+
+    def _on_frame_started(self, index: int, name: str) -> None:
+        if self._dev["phase"] != "develop":
+            return  # sharing copies: activity text only, the strip already shows the prints
+        self._dev["names"][index] = name
+        frame_index = self._frame_index(name)
+        thumbs = self._print_thumbnails(self.session.frames[frame_index]) if frame_index is not None else None
+        if thumbs is not None:
+            self.filmstrip.strip.print_start(frame_index, *thumbs)
+
+    def _on_frame_done(self, index: int, ok: bool, detail: str) -> None:
+        dev = self._dev
+        if dev["phase"] != "develop":
+            dev["sharing_done"] = dev.get("sharing_done", 0) + 1
+            self.notice_bar.show_activity(f"Saving for sharing — {dev['sharing_done']} of {dev['total']}", lasting=True)
+            return
+        dev["done"] += 1
+        dev["failed"] += not ok
+        frame_index = self._frame_index(dev["names"].get(index, ""))
+        if frame_index is not None:
+            self.filmstrip.strip.print_done(frame_index, ok, detail)
+        self._show_develop_progress()
+
+    def _on_summary_row(self, label: str, value: str) -> None:
+        if self._dev["phase"] == "develop":
+            self._dev["rows"].append((label, value))
+
+    def _on_develop_finished(self, developed: int, total: int, cancelled: bool) -> None:
+        dev = self._dev
+        if dev["phase"] == "develop":
+            dev["cancelled"] = cancelled
+            if cancelled:
+                dev["end"] = console.cancelled_message("invert", developed, total).split("\n")[0]
+            else:
+                dev["end"] = console.finish_message(
+                    "invert", developed, total, dev["failed"], time.monotonic() - dev["started"])
+            if self._runner.pending():  # the sharing copies come next, of every print in the folder
+                dev.update(phase="sharing", sharing_done=0, total=self._prints_in(dev["settings"].into))
+                return
+            if dev["settings"].sharing != "none" and not cancelled:
+                why = "some frames failed" if dev["failed"] else "developing was stopped first"
+                dev["sharing"] = f"not saved — {why}; Export JPEG or PNG… makes them"
+            self._end_develop()
+            return
+        where = f"{_FORMAT_NAMES[dev['settings'].sharing]}, in {dev['settings'].sharing_dir}"
+        dev["sharing"] = f"{console.plural(developed, 'file')}, {where}" if total else f"already saved, {where}"
+        self._end_develop()
+
+    def _on_develop_failed(self, message: str) -> None:
+        if self._dev is not None and self._dev["phase"] == "sharing":
+            self._dev["sharing"] = f"not saved — {message.splitlines()[-1]}"
+            self._end_develop()
+            return
+        self._error("Developing didn't start", message)
+        self.filmstrip.strip.drop_unfinished()
+        self._lock_for_develop(False)
+        self.notice_bar.show_activity("")
+
+    def _end_develop(self) -> None:
+        dev = self._dev
+        dev["phase"] = "ended"
+        self.filmstrip.strip.drop_unfinished()
+        self._lock_for_develop(False)
+        self.summary_panel.setEnabled(True)
+        rows = list(dev["rows"])
+        if dev["sharing"]:
+            rows.append(("Sharing", dev["sharing"]))
+        self.summary_panel.show_result(dev["end"], rows, dev["cancelled"])
+        self.notice_bar.show_activity(dev["end"])
+        self._turn_to(2)
+
+    def _cancel_develop(self) -> None:
+        self.develop_panel.cancel_button.setEnabled(False)
+        self.notice_bar.show_activity("Cancelling — the frames in hand finish first", lasting=True)
+        self._runner.cancel()
+
+    def _carry_on(self) -> None:
+        self.develop_panel.skip_existing()
+        self._run_develop(replace(self._dev["settings"], existing="skip"))
+        self._turn_to(1)
+
+    def _save_more_for_sharing(self) -> None:
+        box = QMessageBox(QMessageBox.Icon.Question, "Export JPEG or PNG",
+                          "sRGB copies of the prints, full size. Which format?", parent=self)
+        jpeg = box.addButton("JPEG", QMessageBox.ButtonRole.AcceptRole)
+        png = box.addButton("PNG", QMessageBox.ButtonRole.AcceptRole)
+        cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.setEscapeButton(cancel)
+        box.exec()
+        self._repaint_all()
+        fmt = {jpeg: "jpg", png: "png"}.get(box.clickedButton())
+        if fmt is None:
+            return
+        settings = replace(self._dev["settings"], sharing=fmt, existing="skip")
+        self._dev.update(settings=settings, sharing=None, sharing_done=0, total=self._prints_in(settings.into),
+                         phase="sharing")
+        self._lock_for_develop(True)
+        self.summary_panel.setEnabled(False)
+        self.notice_bar.show_activity("Saving for sharing…", lasting=True)
+        self._runner.run(export_command(settings))
+
+    @staticmethod
+    def _prints_in(folder: Path) -> int:
+        try:
+            return len(list_scans(folder)[0])
+        except OSError:
+            return 0
+
+    def _open_developed_folder(self) -> None:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._dev["settings"].into)))
+
+    def _developed_contact_sheet(self) -> None:
+        """`halide contact` on the developed folder, saved beside the prints, then shown."""
+        into = self._dev["settings"].into
+        sheet = into / f"{into.name}-contact-sheet.jpg"
+        process = QProcess(self)
+        self.summary_panel.contact_button.setEnabled(False)
+        self.notice_bar.show_activity("Printing the contact sheet…", lasting=True)
+
+        def done(code: int, _status) -> None:
+            process.deleteLater()
+            self.summary_panel.contact_button.setEnabled(True)
+            if code == 0:
+                self.notice_bar.show_activity(f"Contact sheet saved to {sheet}")
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(sheet)))
+            else:
+                tail = bytes(process.readAllStandardError()).decode("utf-8", "replace").strip()
+                self._error("No contact sheet", tail or f"halide contact stopped (exit code {code})")
+
+        process.finished.connect(done)
+        process.start(sys.executable, ["-m", "halide.cli.main", "contact", str(into), str(sheet), "--overwrite"])
+
+    def _on_save_clicked(self) -> None:
+        if self.session.profile() is None:
+            return
+        self._print_view_notes()
         in_use = self.session.profile_in_use
         dialog = SaveProfileDialog(
             self, self.session.profile_to_save(), self.session.sidecars(),
@@ -1325,11 +1744,28 @@ class MainWindow(QWidget):
         self._repaint_all()
         return box.clickedButton() is close
 
+    def _confirm_stop_developing(self) -> bool:
+        box = QMessageBox(QMessageBox.Icon.Question, "Stop developing?",
+                          "Developing is still running. Stop it and close?", parent=self)
+        stop = box.addButton("Stop and close", QMessageBox.ButtonRole.DestructiveRole)
+        keep = box.addButton("Keep developing", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep)
+        box.setEscapeButton(keep)
+        box.exec()
+        self._repaint_all()
+        return box.clickedButton() is stop
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._developing() and not self._confirm_stop_developing():
+            event.ignore()
+            return
         points = self.session.points
         if points and points != self._saved_points and not self._pick_result_emitted and not self._confirm_close(len(points)):
             event.ignore()
             return
+        if self._developing():
+            self._runner.cancel()  # Ctrl-C for the child: the frames in hand finish whole
+            self._runner.wait()
         self.hide()  # closing feels instant even while a frame finishes loading
         self._closing = True
         self._stop_loaders(wait=True)

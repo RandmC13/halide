@@ -212,7 +212,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
         record = RunRecord(args, "print", output_dir)
         record.start(sheet, jobs, list(kept))
         try:
-            renderer = make_renderer(len(jobs), "print", quiet=args.quiet)
+            renderer = make_renderer(len(jobs), "print", quiet=args.quiet, names=[j.input_path.name for j in jobs])
             job_index = {job: i for i, job in enumerate(jobs)}
 
             def on_start(job):
