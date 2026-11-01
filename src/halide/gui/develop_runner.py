@@ -94,6 +94,8 @@ class DevelopRunner(QObject):
             self._line(self._buffer.decode("utf-8", "replace").split("\t"))
         self._process.deleteLater()
         self._process = None
+        if not self._ended and code == 0 and status == QProcess.ExitStatus.NormalExit:
+            self._ended, self._last_end = True, (0, 0, False)  # nothing to do: every output was there
         if not self._ended:
             self._queue = []
             tail = "\n".join(self._stderr) or f"halide stopped (exit code {code})"

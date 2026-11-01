@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from halide.calibration.profile_store import ProfileNameError, default_profiles_dir, find_profile, validate_profile_name
 from halide.cli import console
-from halide.gui.develop import DEFAULT_NAME, DevelopSettings, example_name, frame_count, shown_command
+from halide.gui.develop import DEFAULT_NAME, DevelopSettings, preview, shown_command
 from halide.gui.widgets import ElidedLabel, Segmented
 
 OUTPUTS = ("print", "flat")
@@ -290,8 +290,8 @@ class DevelopPanel(QWidget):
         self.name_error.setVisible(bool(problem))
         count, refusal = None, ""
         try:
-            count = frame_count(s)
-            self.example.set_full_text(example_name(s))
+            count, example = preview(s)
+            self.example.set_full_text(example)
         except ValueError as exc:
             refusal = str(exc)
             self.example.set_full_text("")

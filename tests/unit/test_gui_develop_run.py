@@ -226,3 +226,26 @@ def test_the_summarys_contact_sheet_is_saved_beside_the_prints_and_shown(window,
     _pump(app, lambda: opened or "error" in window.notice_bar.notices(), timeout=120)
     into = window._dev["settings"].into
     assert opened == [str(into / "developed-contact-sheet.jpg")] and (into / "developed-contact-sheet.jpg").exists()
+
+
+def test_nothing_replaces_the_roll_while_it_develops(window, app, slow):
+    panel = _develop_side(window)
+    panel.choice.set_index(_ONCE)
+    panel.develop_button.click()
+    _pump(app, lambda: window._dev["done"] == 1)
+    frames = list(window.session.frames)
+    window.load_roll(window.session.roll_folder)
+    window.load_files([frames[0].path])
+    assert window.session.frames == frames and window._stack.currentIndex() == 1
+    assert "Developing" in window.notice_bar.activity.text()
+
+
+def test_declining_either_question_on_close_keeps_the_run_going(window, app, slow, monkeypatch):
+    panel = _develop_side(window)
+    panel.choice.set_index(_ONCE)
+    panel.develop_button.click()
+    _pump(app, lambda: window._dev["done"] == 1)
+    monkeypatch.setattr(window, "_confirm_stop_developing", lambda: True)
+    monkeypatch.setattr(window, "_confirm_close", lambda count: False)  # keep the unsaved points
+    window.close()
+    assert window.isVisible() and window._runner.is_running()

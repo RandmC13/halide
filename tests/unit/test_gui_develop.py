@@ -40,7 +40,7 @@ def test_defaults_pass_nothing_extra(settings):
 
 @pytest.mark.parametrize("change,flags", [
     ({"output": "flat"}, ["--output", "flat"]),
-    ({"name": "{roll}_{n:02}"}, ["--name", "{roll}_{n:02}"]),
+    ({"name": "{roll}_{n:02}"}, ["--name={roll}_{n:02}"]),
     ({"existing": "replace"}, ["--overwrite"]),
     ({"existing": "skip"}, ["--skip-existing"]),
     ({"match_scan_exposure": True}, ["--match-scan-exposure"]),
@@ -77,3 +77,7 @@ def test_example_name_and_a_refused_template(settings):
         example_name(replace(settings, name="{date}"))
     with pytest.raises(ValueError, match="hidden file"):
         example_name(replace(settings, name=".x{n}"))
+
+
+def test_a_template_starting_with_a_dash_is_a_name_not_a_flag(settings):
+    assert example_name(replace(settings, name="-{stem}")) == "IMG_0001.tif → -IMG_0001.tif"

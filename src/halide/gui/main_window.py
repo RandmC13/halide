@@ -59,6 +59,7 @@ from halide.calibration.profile_store import (
     ProfileError,
     default_profiles_dir,
     find_profile,
+    load_tone_override,
     save_named_profile,
     save_profile,
     validate_profile_name,
@@ -491,6 +492,8 @@ class MainWindow(QWidget):
         return answer == QMessageBox.StandardButton.Yes
 
     def load_roll(self, folder: Path, keep_points: bool = False) -> None:
+        if self._busy():
+            return
         paths, left_out = list_scans(folder)
         if not paths:
             self._error("No TIFF scans", f"No TIFF scans in {folder}")
@@ -522,6 +525,8 @@ class MainWindow(QWidget):
 
     def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
         """Individual scans as a roll of their own (`halide open a.tif b.tif`, `invert --pick`)."""
+        if self._busy():
+            return
         if not keep_points:
             self._new_calibration()
         self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None, loose=True)
@@ -652,7 +657,7 @@ class MainWindow(QWidget):
     def use_profile(self, path: Path) -> None:
         """Put a saved profile on the open roll ("Use for this roll"): its fit drives the positive at
         once, and points clicked now refine it."""
-        if self.session.roll_folder is None:
+        if self.session.roll_folder is None or self._busy():
             return
         unsaved = len(self.session.points) if self.session.points != self._saved_points else 0
         if unsaved:
@@ -679,6 +684,8 @@ class MainWindow(QWidget):
         self._status(f"Using '{path.stem}' on this roll: {console.plural(len(self.session.points), 'point')}")
 
     def open_profile(self, path: Path) -> None:
+        if self._busy():
+            return
         try:
             CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
         except (ValueError, KeyError, OSError) as exc:
@@ -1361,14 +1368,17 @@ class MainWindow(QWidget):
         in_use = session.profile_in_use
         path = None
         if in_use is not None:
-            case, path, name = ("refined" if session.changed_from_profile() else "profile"), in_use, in_use.stem
-        elif self._profile_name and session.points == self._saved_points and (path := find_profile(self._profile_name)):
+            changed = session.changed_from_profile() or not self._tone_as_saved(in_use)
+            case, path, name = ("refined" if changed else "profile"), in_use, in_use.stem
+        elif (self._profile_name and session.points == self._saved_points
+              and (path := find_profile(self._profile_name)) and self._tone_as_saved(path)):
             case, name = "profile", self._profile_name
         else:
             case, name = "new", ""
         self.develop_panel.prepare(
             folder, case, profile_path=path, name=name, new_points=len(session.new_points()),
             suggested_name="" if in_use is not None else self._profile_name, exposure_differs=self._exposure_differs,
+            device=self.device.kind if self.device is not None else None,
         )
         self._turn_to(1)
 
@@ -1379,9 +1389,28 @@ class MainWindow(QWidget):
     def _developing(self) -> bool:
         return self._runner.is_running()
 
+    def _tone_as_saved(self, path: Path) -> bool:
+        """Whether the print pin in hand is the one saved in the profile at `path`: batch prints with
+        the file's, so a pin made since must be saved (or used once) first."""
+        try:
+            return load_tone_override(path) == self.session.tone_override
+        except (OSError, ValueError):
+            return False
+
+    def _busy(self) -> bool:
+        """Developing: nothing may replace the roll or the calibration until it ends."""
+        if self._developing():
+            self._status("Developing — wait for it to finish, or cancel it first")
+        return self._developing()
+
     def _start_develop(self, settings: DevelopSettings, choice: str) -> None:
         """Develop pressed: settle the calibration file the run will name (saving a profile first if
         that was the choice), settle what to do with prints already there, then start the run."""
+        try:
+            frame_count(settings)
+        except ValueError as exc:
+            self._error("Can't develop", str(exc))
+            return
         self._hold_side = True
         try:
             settings = self._calibration_for_develop(settings, choice)
@@ -1439,9 +1468,13 @@ class MainWindow(QWidget):
         return {replace_button: "replace", skip_button: "skip"}.get(box.clickedButton())
 
     def _run_develop(self, settings: DevelopSettings) -> None:
-        total = frame_count(settings)
-        if settings.existing == "skip":
-            total -= len(existing_outputs(settings))
+        try:
+            total = frame_count(settings)
+            if settings.existing == "skip":
+                total -= len(existing_outputs(settings))
+        except ValueError as exc:
+            self._error("Can't develop", str(exc))
+            return
         if total == 0:  # batch would only say so, without a run to follow
             self.notice_bar.show_activity(f"Nothing to do — every print in {settings.into} is already there")
             return
@@ -1458,8 +1491,9 @@ class MainWindow(QWidget):
 
     def _lock_for_develop(self, locked: bool) -> None:
         self.develop_panel.set_running(f"Developing… 0 of {self._dev['total']}" if locked else None)
-        for button in (self.load_button, self.profiles_button, self.proof_button):
-            button.setEnabled(not locked)
+        for button in (getattr(self, "load_button", None), getattr(self, "profiles_button", None), self.proof_button):
+            if button is not None:
+                button.setEnabled(not locked)
         self.setAcceptDrops(not locked and self.show_load_controls)
         if not locked:
             self._hold_side = True
@@ -1522,14 +1556,15 @@ class MainWindow(QWidget):
             else:
                 dev["end"] = console.finish_message(
                     "invert", developed, total, dev["failed"], time.monotonic() - dev["started"])
-            if self._runner.pending():  # the sharing copies come next
-                dev.update(phase="sharing", sharing_done=0, total=developed)
+            if self._runner.pending():  # the sharing copies come next, of every print in the folder
+                dev.update(phase="sharing", sharing_done=0, total=self._prints_in(dev["settings"].into))
                 return
             if dev["settings"].sharing != "none" and not cancelled:
                 dev["sharing"] = "not saved — some frames failed; Save more for sharing… makes them"
             self._end_develop()
             return
-        dev["sharing"] = f"{console.plural(developed, 'file')}, {dev['settings'].sharing.upper()}, in {dev['settings'].sharing_dir}"
+        where = f"{dev['settings'].sharing.upper()}, in {dev['settings'].sharing_dir}"
+        dev["sharing"] = f"{console.plural(developed, 'file')}, {where}" if total else f"already saved, {where}"
         self._end_develop()
 
     def _on_develop_failed(self, message: str) -> None:
@@ -1578,12 +1613,19 @@ class MainWindow(QWidget):
         if fmt is None:
             return
         settings = replace(self._dev["settings"], sharing=fmt, existing="skip")
-        prints = [p for p in settings.into.iterdir() if p.suffix.lower() in (".tif", ".tiff")]
-        self._dev.update(settings=settings, sharing=None, sharing_done=0, total=len(prints), phase="sharing")
+        self._dev.update(settings=settings, sharing=None, sharing_done=0, total=self._prints_in(settings.into),
+                         phase="sharing")
         self._lock_for_develop(True)
         self.summary_panel.setEnabled(False)
         self.notice_bar.show_activity("Saving for sharing…", lasting=True)
         self._runner.run(export_command(settings))
+
+    @staticmethod
+    def _prints_in(folder: Path) -> int:
+        try:
+            return len(list_scans(folder)[0])
+        except OSError:
+            return 0
 
     def _open_developed_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._dev["settings"].into)))
@@ -1703,16 +1745,16 @@ class MainWindow(QWidget):
         return box.clickedButton() is stop
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
-        if self._developing():
-            if not self._confirm_stop_developing():
-                event.ignore()
-                return
-            self._runner.cancel()  # Ctrl-C for the child: the frames in hand finish whole
-            self._runner.wait()
+        if self._developing() and not self._confirm_stop_developing():
+            event.ignore()
+            return
         points = self.session.points
         if points and points != self._saved_points and not self._pick_result_emitted and not self._confirm_close(len(points)):
             event.ignore()
             return
+        if self._developing():
+            self._runner.cancel()  # Ctrl-C for the child: the frames in hand finish whole
+            self._runner.wait()
         self.hide()  # closing feels instant even while a frame finishes loading
         self._closing = True
         self._stop_loaders(wait=True)

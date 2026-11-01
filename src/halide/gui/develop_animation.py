@@ -52,11 +52,13 @@ class PrintFrames:
         f = 1 - (1 - q) ** 2
         return self._safelit(f * self.density)
 
-    def lights(self, t: float) -> np.ndarray:
-        """0 -> 1 over LIGHTS_MS: the safelit tone cross-fades to the colour print."""
+    def lights(self, t: float, start: np.ndarray | None = None) -> np.ndarray:
+        """0 -> 1 over LIGHTS_MS: the safelit print (or `start`, wherever the frame had got to when
+        its worker finished) cross-fades to the colour print."""
         e = t * t * (3 - 2 * t)
-        safelit = self._safelit(self.density).astype(np.float32)
-        return _u8(safelit + (self.positive - safelit) * e)
+        start = self._safelit(self.density) if start is None else start
+        start = start.astype(np.float32)
+        return _u8(start + (self.positive - start) * e)
 
     def _safelit(self, density: np.ndarray) -> np.ndarray:
         v = _encode(10.0 ** -density) / 255.0 * _PAPER

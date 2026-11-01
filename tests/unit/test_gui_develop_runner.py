@@ -120,3 +120,11 @@ def test_run_after_chains_only_after_a_good_end(app, fake):
     time.sleep(0.2)
     app.processEvents()
     assert [e for e in events if e[0] == "finished"] == [("finished", 1, 2, False, 0)]
+
+
+def test_a_child_with_nothing_to_do_ends_well_without_an_end_line(app):
+    runner = DevelopRunner()
+    events = _record(runner)
+    runner.run([sys.executable, "-c", "print('Nothing to do — every output already exists')"])
+    _pump(app, lambda: not runner.is_running() and events)
+    assert events == [("finished", 0, 0, False, 0)]

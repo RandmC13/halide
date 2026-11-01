@@ -160,9 +160,9 @@ def test_each_field_changes_the_command(window):
     assert _command(panel)[-2:] == ["--output", "flat"]
     panel.output.set_index(0)
     panel.names.setText("{roll}_{n:02}")
-    assert "--name" in _command(panel) and "{roll}_{n:02}" in _command(panel)
+    assert "--name={roll}_{n:02}" in _command(panel)
     panel.names.setText("")
-    assert "--name" not in _command(panel)  # a blank template is the default
+    assert not any(a.startswith("--name") for a in _command(panel))  # a blank template is the default
     panel.existing.set_index(1)
     assert "--overwrite" in _command(panel)
     panel.existing.set_index(2)
@@ -312,3 +312,43 @@ def test_a_new_calibration_asks_for_the_choice_again(window):
 
 def test_standalone_panel_is_inert_until_prepared(app):
     DevelopPanel()  # builds without a roll
+
+
+def test_a_profile_without_points_develops_with_its_own_balance(window):
+    from halide.core.types import DensityProfile
+
+    typed = DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78))
+    path = save_named_profile(typed, "Typed")
+    window.use_profile(path)
+    assert window.session.profile().white_balance == typed.white_balance
+    assert window.primary_button.isEnabled()
+    window.primary_button.click()
+    panel = window.develop_panel
+    assert panel.choice_value() == "profile" and panel.develop_button.isEnabled()
+    assert _command(panel)[_command(panel).index("--profile") + 1] == str(path)
+
+
+def test_a_print_pin_made_after_using_a_profile_must_be_settled_before_developing(window):
+    from halide.core.types import DensityProfile, ToneCurveParams
+
+    path = save_named_profile(DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78)), "Typed")
+    window.use_profile(path)
+    window.session.tone_override = ToneCurveParams(exposure=0.3, contrast=0.9)  # Use for the whole roll
+    window.primary_button.click()
+    panel = window.develop_panel
+    assert panel.choice.isVisibleTo(panel) and panel.choice_value() is None  # save it, or use it for this roll
+
+
+def test_the_windows_device_goes_to_the_command(tmp_path, monkeypatch, app):
+    from halide.device import ComputeDevice
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    win = MainWindow(device=ComputeDevice("cpu"))
+    win._confirm_close = lambda count: True
+    win.show()
+    win.load_roll(_roll(tmp_path))
+    _pump(app, lambda: _frame_ready(win, 0))
+    _fit(win)
+    win.primary_button.click()
+    assert _command(win.develop_panel)[-2:] == ["--device", "cpu"]
+    win.close()

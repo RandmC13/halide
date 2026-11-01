@@ -36,7 +36,7 @@ def _batch_args(s: DevelopSettings) -> list[str]:
     if s.output != "print":
         args += ["--output", s.output]
     if s.name != DEFAULT_NAME:
-        args += ["--name", s.name]
+        args.append(f"--name={s.name}")  # one token: a template may start with "-"
     if s.existing == "replace":
         args.append("--overwrite")
     elif s.existing == "skip":
@@ -99,7 +99,11 @@ def frame_count(s: DevelopSettings) -> int:
 def example_name(s: DevelopSettings) -> str:
     """One example for the Names field ("IMG_0138.tif → Roll16_01.tif"); a template batch would
     refuse is a ValueError with batch's own message."""
+    return preview(s)[1]
+
+
+def preview(s: DevelopSettings) -> tuple[int, str]:
+    """(frames, example name) from one plan, for the panel to refresh on every keystroke."""
     jobs = _plan(s).jobs
-    if not jobs:
-        return ""
-    return f"{jobs[0].input_path.name} → {jobs[0].output_path.name}"
+    example = f"{jobs[0].input_path.name} → {jobs[0].output_path.name}" if jobs else ""
+    return len(jobs), example

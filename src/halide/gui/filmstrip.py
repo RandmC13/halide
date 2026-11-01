@@ -157,11 +157,10 @@ class _Strip(QWidget):
             self.mark_failed(index, reason)
             return
         entry[0] = "lights"
-        frames, start = entry[1], entry[3].astype(np.float32)
+        frames, start = entry[1], entry[3]
 
         def lights(t: float) -> None:
-            e = t * t * (3 - 2 * t)
-            self._show_print(index, np.rint(start + (frames.positive - start) * e).astype(np.uint8))
+            self._show_print(index, frames.lights(t, start))
 
         def printed() -> None:
             if index in self._prints:
