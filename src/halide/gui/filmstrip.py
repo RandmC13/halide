@@ -1,7 +1,8 @@
 """The roll as a strip of film across the top of the picker: every frame in order, in the same
 visual language as halide's contact sheets and terminal progress display - black rebate, sprocket
 holes, orange edge-print frame numbers. The current frame is outlined; frames with neutral points on
-them carry a count in the lower rebate. Frames "develop" in as their previews load.
+them carry a count in the lower rebate, and frames scanned differently from the rest of the roll a ⚠
+there. Frames "develop" in as their previews load.
 
 Thumbnails are handed in as QPixmaps (negative or positive, following the main view's switch); this
 widget only lays them out, paints the film and reports clicks.
@@ -9,8 +10,8 @@ widget only lays them out, paints the film and reports clicks.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
+from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QScrollArea, QToolTip, QWidget
 
 from halide.gui import motion, theme
@@ -35,6 +36,7 @@ class _Strip(QWidget):
         super().__init__(parent)
         self._pixmaps: list[QPixmap | None] = []
         self._failed: dict[int, str] = {}  # frame index -> why it didn't load
+        self._flags: dict[int, str] = {}  # frame index -> how it was scanned differently
         self._numbers: list[int] = []
         self._counts: list[int] = []
         self._current: int | None = None
@@ -56,6 +58,7 @@ class _Strip(QWidget):
         self._pixmaps = [None] * len(numbers)
         self._counts = [0] * len(numbers)
         self._failed = {}
+        self._flags = {}
         self._current = None
         self._appear = [1.0] * len(numbers)
         self._generation += 1
@@ -102,17 +105,31 @@ class _Strip(QWidget):
         if self._failed.pop(index, None) is not None:
             self.update(self.frame_rect(index).adjusted(-2, -2, 2, 2))
 
+    def set_flags(self, flags: dict[int, str]) -> None:
+        """Mark frames scanned differently from the rest of the roll: frame index -> the reason."""
+        self._flags = dict(flags)
+        self.update()
+
     def failure_at(self, pos) -> str | None:
         for i in self._failed:
             if self.frame_rect(i).contains(pos):
                 return self._failed[i]
         return None
 
+    def tooltip_at(self, pos) -> str | None:
+        reason = self.failure_at(pos)
+        if reason is not None:
+            return f"Couldn't load this frame: {reason}"
+        for i, flag in self._flags.items():
+            if self.frame_rect(i).adjusted(0, -REBATE, 0, REBATE).contains(pos):
+                return f"Scanned differently: {flag}"
+        return None
+
     def event(self, event) -> bool:
         if event.type() == QEvent.Type.ToolTip:
-            reason = self.failure_at(event.pos())
-            if reason is not None:
-                QToolTip.showText(event.globalPos(), f"Couldn't load this frame: {reason}", self)
+            text = self.tooltip_at(event.pos())
+            if text is not None:
+                QToolTip.showText(event.globalPos(), text, self)
             else:
                 QToolTip.hideText()
                 event.ignore()
@@ -185,6 +202,9 @@ class _Strip(QWidget):
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                     f"● {self._counts[i]} ",
                 )
+            if i in self._flags:
+                _paint_flag(painter, QPointF(rect.x() + 8, rect.bottom() + 1 + REBATE / 2))
+                painter.setFont(edge_font)
             if i == self._current:
                 painter.setPen(QPen(QColor(theme.AMBER_ACTIVE), 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -200,6 +220,23 @@ class _Strip(QWidget):
             if self.frame_rect(i).adjusted(-GAP // 2, -REBATE, GAP // 2, REBATE).contains(pos):
                 self.frameClicked.emit(i)
                 return
+
+
+def _paint_flag(painter: QPainter, centre: QPointF) -> None:
+    """A small filled warning triangle with a "!": the font's ⚠ is a thin outline at rebate size."""
+    w, h = 11.0, 10.0
+    path = QPainterPath()
+    path.moveTo(centre.x(), centre.y() - h / 2)
+    path.lineTo(centre.x() + w / 2, centre.y() + h / 2)
+    path.lineTo(centre.x() - w / 2, centre.y() + h / 2)
+    path.closeSubpath()
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(theme.TEXT_WARNING))
+    painter.drawPath(path)
+    painter.setPen(QPen(QColor(theme.FILM_REBATE), 1.4))
+    painter.drawLine(QPointF(centre.x(), centre.y() - 1.5), QPointF(centre.x(), centre.y() + 2))
+    painter.drawPoint(QPointF(centre.x(), centre.y() + 3.7))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
 
 
 class Filmstrip(QScrollArea):

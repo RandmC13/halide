@@ -11,7 +11,7 @@ from halide.calibration.profile_store import (
     rename_profile,
     save_named_profile,
 )
-from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
+from halide.calibration.scan_consistency import assess_roll, frame_flags, most_common_settings, scan_gain
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.io.scan_metadata import ScanSettings, darktable_state_from_xmp, settings_from_exif
 from halide.io.tiff import read_tiff, write_tiff
@@ -80,6 +80,36 @@ def test_assess_roll_reports_each_kind_of_inconsistency():
     corrected = report.summary_lines(exposure_corrected=True)
     assert len(corrected) == 3 and "evened out by --match-scan-exposure" in corrected[0]
     assert "corrects this" not in corrected[0]
+
+
+
+def test_frame_flags_name_each_frame_scanned_differently_and_why():
+    clean = darktable_state_from_xmp(_xmp([("temperature", "1", _wb_params(1.9, 1.0, 1.8))]))
+    other_wb = darktable_state_from_xmp(_xmp([("temperature", "1", _wb_params(1.95, 1.0, 1.7))]))
+    edited = darktable_state_from_xmp(_xmp([("temperature", "1", _wb_params(1.9, 1.0, 1.8)), ("rgbcurve", "1", "00")]))
+
+    assert frame_flags(assess_roll({"a": (S30, clean), "b": (S30, clean)})) == {}
+
+    flags = frame_flags(assess_roll({
+        "a": (S30, clean), "b": (S60, clean), "c": (S30, other_wb), "d": (S30, edited), "e": (None, None),
+    }))
+    assert set(flags) == {"b", "c", "d", "e"}
+    assert flags["b"] == f"digitized at {S60.describe()}, most of the roll at {S30.describe()}"
+    assert "different raw white balance" in flags["c"]
+    assert flags["d"] == "tone/colour modules active in darktable (rgbcurve)"
+    assert "no camera EXIF" in flags["e"]
+
+
+def test_frame_flags_give_every_reason_for_one_frame():
+    clean = darktable_state_from_xmp(_xmp([("temperature", "1", _wb_params(1.9, 1.0, 1.8))]))
+    edited = darktable_state_from_xmp(_xmp([("temperature", "1", _wb_params(1.9, 1.0, 1.8)), ("rgbcurve", "1", "00")]))
+    flags = frame_flags(assess_roll({"a": (S30, clean), "b": (S30, clean), "c": (S60, edited)}))
+    assert list(flags) == ["c"] and flags["c"].startswith("digitized at") and "; tone/colour" in flags["c"]
+
+
+def test_a_roll_with_no_exif_at_all_flags_no_frame():
+    # A dedicated scanner writes no camera EXIF: marking every frame would say nothing.
+    assert frame_flags(assess_roll({"a": (None, None), "b": (None, None)})) == {}
 
 
 def _negative(tmp_path, name, scale):

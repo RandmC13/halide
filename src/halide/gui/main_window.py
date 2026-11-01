@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 from halide.io.roll import list_scans
 from halide.calibration.anchors import NeutralPoint
 from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask
+from halide.calibration.scan_consistency import assess_roll, frame_flags
 from halide.calibration.profile_store import default_profiles_dir
 from halide.cli import console
 from halide.core.tone_render import ResolvedTone
@@ -402,7 +403,8 @@ class MainWindow(QWidget):
             self._new_calibration()
         self._start_roll(paths, folder)
         if left_out:
-            self._sticky(f"Skipped {left_out.describe()}")
+            scan_check = f" · {self._sticky_status}" if self._sticky_status else ""  # keep the scan check's warning
+            self._sticky(f"Skipped {left_out.describe()}{scan_check}")
 
     def _new_calibration(self) -> None:
         """Forget the calibration in hand: points, profile name, extra information, print pin, and
@@ -441,6 +443,9 @@ class MainWindow(QWidget):
         if not self.is_pick_session:
             self.setWindowTitle(f"halide · {folder.name if folder is not None else paths[0].stem}")
         self.filmstrip.strip.set_frames([f.number for f in self.session.frames])
+        flags = frame_flags(assess_roll(metadata))
+        self.filmstrip.strip.set_flags({i: flags[str(p)] for i, p in enumerate(paths) if str(p) in flags})
+        self._sticky_status = None
         self._current = None
         self.full_image = None
         self.display = None
@@ -451,6 +456,11 @@ class MainWindow(QWidget):
             self._start_thread(self._preview_loader)
         self._select_frame(0)
         self._refresh_points()
+        if flags:
+            self._sticky(
+                f"⚠ {console.plural(len(flags), 'frame')} {'was' if len(flags) == 1 else 'were'} scanned "
+                "differently — see the ⚠ on the strip"
+            )
 
     def _on_open_profile(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
