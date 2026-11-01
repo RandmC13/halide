@@ -79,6 +79,10 @@ class SaveProfileDialog(QDialog):
             self._pending_overwrite_name = None
             self._save_button.setText(self._save_label)
             self._message.setText(self._prompt)
+        if not text.strip():  # nothing typed yet: nothing to save, but nothing wrong either
+            self._name_error.hide()
+            self._save_button.setEnabled(False)
+            return
         try:
             validate_profile_name(text)
         except ProfileNameError as exc:

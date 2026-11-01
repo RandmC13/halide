@@ -71,7 +71,7 @@ def test_use_for_this_roll_keeps_the_roll_and_shows_the_profile_as_a_card(setup)
     assert "Portra 400" in texts and "2 points on Roll16" in texts and "Click points on this roll to refine it" in texts
     assert "Using" in window.profile_chip.text() and "Portra 400" in window.profile_chip.text()
     window.positive_button.setChecked(True)
-    assert window.source_note.text() == "Profile Portra 400 · 2 points"
+    assert window.source_note.text() == "Profile in use · 2 points"
 
 
 def test_new_points_are_listed_after_the_profiles_own_marked_on_their_roll(setup):
@@ -183,3 +183,18 @@ def test_saving_over_a_name_in_another_case_uses_the_file_on_disk(setup, monkeyp
     _click_image(window, SHADOW)
     window._on_saved("portra 400", "saved")  # save_named_profile wrote over Portra 400.json
     assert window.session.profile_in_use == path and window.session.profile_in_use.exists()
+
+
+def test_rows_fit_the_panel_in_the_smallest_window(setup, app):
+    # A row wider than the list made it scroll sideways to the selected row, hiding the point
+    # numbers and the remove buttons.
+    window, path, _ = setup
+    window.setFixedSize(900, 716)
+    window.use_profile(path)
+    _click_image(window, SHADOW)
+    _click_image(window, HIGHLIGHT)
+    for _ in range(20):
+        app.processEvents()
+    width = window.point_list.viewport().width()
+    assert all(row.minimumSizeHint().width() <= width for row in _rows(window))
+    assert window.point_list.horizontalScrollBar().value() == 0

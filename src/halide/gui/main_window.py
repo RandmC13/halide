@@ -401,8 +401,8 @@ class MainWindow(QWidget):
             self._status("Drop a folder of scans, or TIFF scans")
 
     def _confirm_new_calibration(self) -> bool:
-        if not self.session.points:
-            return True
+        if not self.session.points or self.session.points == self._saved_points:
+            return True  # nothing to lose: no points, or just saved or reopened
         answer = QMessageBox.question(
             self,
             "Start a new calibration?",
@@ -842,7 +842,7 @@ class MainWindow(QWidget):
             profile, is_fit, gain = self.session.positive_source(frame, self._display_estimate)
             in_use = self.session.profile_in_use
             if is_fit and in_use is not None:
-                self.source_note.setText(f"Profile {in_use.stem} · {len(self.session.points)} points")
+                self.source_note.setText(f"Profile in use · {len(self.session.points)} points")  # the top bar names it
             elif is_fit:
                 self.source_note.setText(f"Your calibration · {len(self.session.points)} points")
             elif profile is not None:

@@ -75,7 +75,7 @@ class _Row(QFrame):
         self.setStyleSheet(f"QFrame {{ background: {background}; border-radius: 4px; }}")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 0, 2, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
         colour = agreement_colour(view)
         number = QLabel(f"{view.index + 1}")
@@ -85,24 +85,22 @@ class _Row(QFrame):
 
         # The frame number as the filmstrip prints it (edge-print face and colour), so it doesn't read
         # as a second point number, then the file's stem, dim.
-        if view.roll_name and not view.frame_number:  # a profile's point, picked on another roll
-            on_roll = QLabel()
-            on_roll.setText(QFontMetrics(on_roll.font()).elidedText(f"on {view.roll_name}", Qt.TextElideMode.ElideMiddle, 90))
-            on_roll.setToolTip(str(view.point.frame.parent))
-            on_roll.setStyleSheet(f"color: {theme.EDGE_PRINT};")
-            layout.addWidget(on_roll)
+        stem = view.point.frame.stem
+        on_other_roll = bool(view.roll_name) and not view.frame_number
+        if on_other_roll:
+            # A profile's point picked on another roll: where it is, in place of a frame number and file
+            # name that can't be gone to from here (both are in the tooltip). The row stays as narrow.
+            name_text = f"on {view.roll_name}"
         else:
             number_label = QLabel(str(view.frame_number) if view.frame_number else "—")
             number_label.setFont(theme.edge_font(12))
             number_label.setStyleSheet(f"color: {theme.EDGE_PRINT};")
             layout.addWidget(number_label)
-
-        stem = view.point.frame.stem
-        name_text = stem if view.frame_number or view.roll_name else f"{stem} (missing)"
+            name_text = stem if view.frame_number else f"{stem} (missing)"
         if view.note:
             name_text += "  ⚠"
         frame = _ElidedNameLabel(name_text)
-        frame.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        frame.setStyleSheet(f"color: {theme.EDGE_PRINT if on_other_roll else theme.TEXT_DIM};")
         frame.setToolTip(f"{view.point.frame}\n{view.note}" if view.note else str(view.point.frame))
         layout.addWidget(frame, stretch=1)
 
@@ -112,7 +110,8 @@ class _Row(QFrame):
 
         agreement = QLabel(f"● {no_wrap(view.agreement.label())}" if view.agreement else "·")
         agreement.setStyleSheet(f"color: {colour};")
-        agreement.setFixedWidth(104)  # "● CC 20Y + 10M"
+        agreement.ensurePolished()
+        agreement.setFixedWidth(QFontMetrics(agreement.font()).horizontalAdvance("● CC 99M + 99M") + 2)
         layout.addWidget(agreement)
 
         remove = QPushButton("✕")
@@ -201,3 +200,4 @@ class PointList(QScrollArea):
         if shiboken6.isValid(row):
             QCoreApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
             self.ensureWidgetVisible(row)
+            self.horizontalScrollBar().setValue(0)  # vertical only: a sideways scroll hides the point numbers
