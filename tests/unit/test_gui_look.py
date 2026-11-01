@@ -54,6 +54,7 @@ def test_top_bar_counter_chip_and_contact_sheet_button(tmp_path, monkeypatch, ap
 
 def test_contact_sheet_button_hidden_in_a_pick_session(app):
     window = MainWindow(is_pick_session=True)
+    window.show()  # a window never shown makes Qt crash as the test process exits
     assert window.proof_button.isHidden()
     window._closing = True
     window.close()
@@ -116,7 +117,7 @@ def test_long_roll_and_profile_names_are_cut_so_the_top_bar_buttons_fit(tmp_path
     assert window.roll_label.toolTip() == long_name.upper() and "…" in window.roll_label.text()
     from PySide6.QtWidgets import QPushButton
 
-    top = [b for b in window.findChildren(QPushButton) if b.text() in ("Contact sheet", "Open profile…", "Load roll…")]
+    top = [b for b in window.findChildren(QPushButton) if b.text() in ("Contact sheet", "Profiles", "Load roll…")]
     assert len(top) == 3
     for button in top:  # whole, and inside the window
         assert button.mapTo(window, button.rect().bottomRight()).x() <= window.width()

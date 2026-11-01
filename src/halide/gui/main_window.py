@@ -2,7 +2,7 @@
 scene - on any frames of a roll, and fit the film's density balance through all of them.
 
 Layout (landscape, fixed size, never scrolls - see _compute_window_size):
-  top bar         roll name in edge print · FRAME n / N · profile in use · Contact sheet · Open profile… ·
+  top bar         roll name in edge print · FRAME n / N · profile in use · Contact sheet · Profiles ·
                   Load roll…
   filmstrip       the whole roll, current frame outlined, point counts under frames (gui/filmstrip.py)
   left column     Negative | Positive switch + what the positive is · the image with numbered point
@@ -52,6 +52,7 @@ from halide.gui.filmstrip import Filmstrip
 from halide.gui.image_view import ImageView
 from halide.gui.loaders import FrameLoader, PreviewLoader
 from halide.gui.point_list import CC_EXPLANATION, PointList, agreement_colour, no_wrap
+from halide.gui.profiles_window import ProfilesWindow
 from halide.gui.proof_window import ProofWindow, wait_for_stopping_renderers
 from halide.gui.render import negative_display, positive_display, print_patch
 from halide.gui.roll import PREVIEW_LONG_EDGE, CalibrationSession, Frame, PointView, quiet_auto_estimate
@@ -148,6 +149,7 @@ class MainWindow(QWidget):
         self._saved_points: list = []  # the points as last saved or reopened; close asks if they differ
         self._profile_name = ""  # a reopened profile's name, offered again on save
         self.last_saved: tuple[str, Path | None] | None = None  # (profile name, its roll): the last save here
+        self._profiles: ProfilesWindow | None = None
 
         self._current: int | None = None  # index into session.frames
         self.full_image: np.ndarray | None = None  # the current frame, working space, full resolution
@@ -232,10 +234,10 @@ class MainWindow(QWidget):
         self.proof_button.clicked.connect(self._on_proof)
         top.addWidget(self.proof_button)
         if self.show_load_controls:
-            open_button = QPushButton("Open profile…")
-            open_button.setToolTip("Reopen a saved profile's neutral points and extra information to add to or change them")
-            open_button.clicked.connect(self._on_open_profile)
-            top.addWidget(open_button)
+            profiles_button = QPushButton("Profiles")
+            profiles_button.setToolTip("Your saved profiles: use one on this roll, edit its points, rename or delete it")
+            profiles_button.clicked.connect(self.show_profiles)
+            top.addWidget(profiles_button)
             load_button = QPushButton("Load roll…")
             load_button.setToolTip("Choose a folder of scans (one roll)")
             load_button.clicked.connect(self._on_load_roll)
@@ -453,6 +455,8 @@ class MainWindow(QWidget):
         metadata = read_roll_scan_metadata(paths)
         scans = [metadata[str(p)][0] for p in paths]
         self.session.set_roll(paths, scans, folder)
+        if self._profiles is not None:
+            self._profiles.set_roll_open(folder is not None)
         # The counter carries the frame count. A long name is cut, with the full one as the tooltip,
         # so the top bar's buttons always fit the fixed-width window.
         name = (folder.name if folder is not None else paths[0].stem).upper()
@@ -480,12 +484,17 @@ class MainWindow(QWidget):
                 "differently — see the ⚠ on the strip"
             )
 
-    def _on_open_profile(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open calibration profile", str(default_profiles_dir()), "halide profiles (*.json)"
-        )
-        if path:
-            self.open_profile(Path(path))
+    def show_profiles(self) -> ProfilesWindow:
+        if self._profiles is None:
+            self._profiles = ProfilesWindow(self)
+            self._profiles.editRequested.connect(self.open_profile)
+            self._profiles.fileOpened.connect(self.open_profile)
+        self._profiles.set_roll_open(self.session.roll_folder is not None)
+        self._profiles.refresh()
+        self._profiles.show()
+        self._profiles.raise_()
+        self._profiles.activateWindow()
+        return self._profiles
 
     def open_profile(self, path: Path) -> None:
         try:
@@ -504,8 +513,12 @@ class MainWindow(QWidget):
         except (ValueError, KeyError, OSError) as exc:
             self._status(f"Couldn't open {path.name}: {exc}")
             return
-        self._profile_name = path.stem
-        self._show_profile_name(path.stem)
+        if path.parent.resolve() == default_profiles_dir().resolve():
+            self._profile_name = path.stem
+            self._show_profile_name(path.stem)
+        else:  # a calibration file from elsewhere: Save keeps it as a profile, under a name asked for then
+            self._profile_name = ""
+            self._show_profile_name(path.name, "Calibration file")
         self.details_form.set_values(self.session.details)
         self.print_controls.set_override(self.session.tone_override)
         self._refresh_drawer_summaries()
@@ -1089,11 +1102,11 @@ class MainWindow(QWidget):
         dialog.exec()
         self._repaint_all()
 
-    def _show_profile_name(self, name: str) -> None:
+    def _show_profile_name(self, name: str, kind: str = "Profile") -> None:
         bold = QFont(self.profile_chip.font())
         bold.setBold(True)
         short = QFontMetrics(bold).elidedText(name, Qt.TextElideMode.ElideMiddle, PROFILE_NAME_MAX_W)
-        self.profile_chip.setText(f"Profile <b>{html.escape(short)}</b>")
+        self.profile_chip.setText(f"{kind} <b>{html.escape(short)}</b>")
         self.profile_chip.setToolTip(name)
         self.save_stamp.hide()
         self.profile_chip.show()
@@ -1101,6 +1114,8 @@ class MainWindow(QWidget):
     def _on_saved(self, name: str, message: str) -> None:
         self._profile_name = name
         self.last_saved = (name, self.session.roll_folder)
+        if self._profiles is not None:
+            self._profiles.refresh(select=name)
         self._show_profile_name(name)
         self._saved_points = list(self.session.points)
         self.profile_chip.hide()
@@ -1158,6 +1173,8 @@ class MainWindow(QWidget):
         self._stop_loaders(wait=True)
         if self._proof is not None:
             self._proof.close()  # stops its full-quality workers too
+        if self._profiles is not None:
+            self._profiles.close()
         wait_for_stopping_renderers()
         if self.is_pick_session and not self._pick_result_emitted:
             self._pick_result_emitted = True
