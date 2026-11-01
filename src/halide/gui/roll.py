@@ -244,6 +244,11 @@ class CalibrationSession:
             for i, p in enumerate(self.points)
         ]
 
+    def density_at(self, frame: Frame, rgb) -> float:
+        """The green density the point list would show for a point with this rgb on this frame."""
+        point = anchors.NeutralPoint(frame=frame.path, x=0, y=0, rgb=tuple(float(v) for v in rgb), scan=frame.scan)
+        return anchors.green_density(anchors.normalised_rgb(point, self.reference))
+
     def worst(self) -> int | None:
         return anchors.worst(self.points, self.reference)
 

@@ -9,11 +9,11 @@ widget only lays them out, paints the film and reports clicks.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QElapsedTimer, QEvent, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QScrollArea, QToolTip, QWidget
 
-from halide.gui import theme
+from halide.gui import motion, theme
 
 FRAME_HEIGHT = 56
 FRAME_WIDTH = round(FRAME_HEIGHT * 3 / 2)  # a 35mm frame's cell; other shapes fitted inside it
@@ -22,6 +22,10 @@ REBATE = 17  # above and below the frames
 STRIP_HEIGHT = FRAME_HEIGHT + 2 * REBATE
 _HOLES_PER_FRAME = 4  # halved from film's eight so they stay legible at this size
 _HOLE_W, _HOLE_H = 7, 6
+_FEED_OFFSET = 14  # px a frame slides in from the left as it develops
+_FEED_STAGGER_MS = 45
+_FEED_MAX_DELAY_MS = 1000
+_FEED_MS = 260
 
 
 class _Strip(QWidget):
@@ -34,6 +38,9 @@ class _Strip(QWidget):
         self._numbers: list[int] = []
         self._counts: list[int] = []
         self._current: int | None = None
+        self._appear: list[float] = []  # per frame 0 -> 1 as its first thumbnail feeds in
+        self._generation = 0  # bumped per roll, so a late feed-in of a replaced roll does nothing
+        self._since_roll = QElapsedTimer()
         self.setFixedHeight(STRIP_HEIGHT)
         self._resize()
 
@@ -50,14 +57,40 @@ class _Strip(QWidget):
         self._counts = [0] * len(numbers)
         self._failed = {}
         self._current = None
+        self._appear = [1.0] * len(numbers)
+        self._generation += 1
+        self._since_roll.start()
         self._resize()
         self.update()
 
     def set_pixmap(self, index: int, pixmap: QPixmap | None, failed: bool = False, reason: str = "") -> None:
+        first = self._pixmaps[index] is None and pixmap is not None
         self._pixmaps[index] = pixmap
+        if first:  # only the first print feeds in; later re-prints (view switch) stay put
+            self._feed_in(index)
         if failed:
             self._failed[index] = reason or "couldn't load"
         self.update(self.frame_rect(index).adjusted(-2, -2, 2, 2))
+
+    def _feed_in(self, index: int) -> None:
+        """Slide and fade a frame in, staggered by its place in the roll (measured from the roll's start)."""
+        generation = self._generation
+
+        def set_progress(value: float) -> None:
+            if generation == self._generation:
+                self._appear[index] = value
+                self.update(self.frame_rect(index).adjusted(-_FEED_OFFSET - 2, -2, 2, 2))
+
+        def start() -> None:
+            if generation == self._generation:
+                motion.animate(self, f"feed-{index}", 0.0, 1.0, _FEED_MS, set_progress)
+
+        delay = max(0, min(_FEED_MAX_DELAY_MS, _FEED_STAGGER_MS * index) - self._since_roll.elapsed())
+        if motion.duration(_FEED_MS) == 0:
+            set_progress(1.0)
+        else:
+            self._appear[index] = 0.0
+            QTimer.singleShot(delay, self, start)
 
     def mark_failed(self, index: int, reason: str) -> None:
         """Put a warning over a frame (keeping any thumbnail it has), with `reason` as its tooltip."""
@@ -109,14 +142,16 @@ class _Strip(QWidget):
                 painter.drawRoundedRect(QRectF(x, y, _HOLE_W, _HOLE_H), 1.5, 1.5)
             x += pitch
 
-        edge_font = QFont(self.font())
-        edge_font.setPixelSize(9)
-        edge_font.setBold(True)
+        edge_font = theme.edge_font(9)
         painter.setFont(edge_font)
         for i, number in enumerate(self._numbers):
             rect = self.frame_rect(i)
             pixmap = self._pixmaps[i]
             if pixmap is not None:
+                appear = self._appear[i]
+                if appear < 1.0:
+                    painter.fillRect(rect, QColor(theme.FILM_LOADING))
+                painter.setOpacity(appear)
                 # Scaled to device pixels (and tagged with the ratio), so a HiDPI screen gets a sharp
                 # thumbnail rather than a stretched one.
                 ratio = self.devicePixelRatioF()
@@ -126,10 +161,11 @@ class _Strip(QWidget):
                 )
                 scaled.setDevicePixelRatio(ratio)
                 painter.drawPixmap(
-                    rect.x() + round((rect.width() - scaled.width() / ratio) / 2),
+                    rect.x() + round((rect.width() - scaled.width() / ratio) / 2 - _FEED_OFFSET * (1 - appear)),
                     rect.y() + round((rect.height() - scaled.height() / ratio) / 2),
                     scaled,
                 )
+                painter.setOpacity(1.0)
             else:
                 # undeveloped: loading, or a frame that failed to load
                 painter.fillRect(rect, QColor(theme.FILM_FAILED if i in self._failed else theme.FILM_LOADING))

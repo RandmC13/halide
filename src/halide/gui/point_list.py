@@ -1,6 +1,6 @@
 """The neutral-point list in the picker's side panel: one compact row per point - number, frame,
-density, agreement with the other points, remove. Fixed height: past a handful of points it scrolls
-rather than growing the window (the window is a fixed size, see main_window.py). Clicking a row
+density, agreement with the other points, remove. It takes the panel's spare height and scrolls past
+that, rather than growing the window (the window is a fixed size, see main_window.py). Clicking a row
 selects that point and jumps to its frame; the markers on the image and the step wedge's ticks use
 the same numbers and colours.
 """
@@ -46,12 +46,12 @@ class _ElidedNameLabel(QLabel):
         super().__init__()
         self._full = text
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        # An ordinary name ("#12  IMG_0138") keeps the width it always had, so the row looks as it did
+        # An ordinary name ("IMG_0138") keeps the width it always had, so the row looks as it did
         # before eliding existed; only a name longer than that gives way, at whatever width the row
         # really gives the label (resizeEvent), never a fixed one.
         self.ensurePolished()
         metrics = QFontMetrics(self.font())
-        self.setMinimumWidth(min(metrics.horizontalAdvance(text), metrics.horizontalAdvance("#00  IMG_0000")))
+        self.setMinimumWidth(min(metrics.horizontalAdvance(text), metrics.horizontalAdvance("IMG_0000")))
         self._elide()
 
     def _elide(self) -> None:
@@ -83,10 +83,19 @@ class _Row(QFrame):
         number.setStyleSheet(f"color: {colour}; font-weight: bold;")
         layout.addWidget(number)
 
-        frame_text = f"#{view.frame_number}  {view.point.frame.stem}" if view.frame_number else f"{view.point.frame.stem} (missing)"
+        # The frame number as the filmstrip prints it (edge-print face and colour), so it doesn't read
+        # as a second point number, then the file's stem, dim.
+        number_label = QLabel(str(view.frame_number) if view.frame_number else "—")
+        number_label.setFont(theme.edge_font(12))
+        number_label.setStyleSheet(f"color: {theme.EDGE_PRINT};")
+        layout.addWidget(number_label)
+
+        stem = view.point.frame.stem
+        name_text = stem if view.frame_number else f"{stem} (missing)"
         if view.note:
-            frame_text += "  ⚠"
-        frame = _ElidedNameLabel(frame_text)
+            name_text += "  ⚠"
+        frame = _ElidedNameLabel(name_text)
+        frame.setStyleSheet(f"color: {theme.TEXT_DIM};")
         frame.setToolTip(f"{view.point.frame}\n{view.note}" if view.note else str(view.point.frame))
         layout.addWidget(frame, stretch=1)
 
@@ -115,7 +124,7 @@ class PointList(QScrollArea):
     rowClicked = Signal(int)
     removeClicked = Signal(int)
 
-    def __init__(self, visible_rows: int = 5, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -123,7 +132,6 @@ class PointList(QScrollArea):
         # One row: the list is what gives up height first when the panel is squeezed (a drawer open
         # with the reliability note showing, smallest window) so nothing below it clips.
         self.setMinimumHeight(ROW_HEIGHT + 4)
-        self.setMaximumHeight(ROW_HEIGHT * visible_rows + 12)
         self._body = QWidget()
         self._layout = QVBoxLayout(self._body)
         self._layout.setContentsMargins(0, 0, 4, 0)

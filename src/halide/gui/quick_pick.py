@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.gui import theme
+from halide.gui.app import quiet_qt_noise
 from halide.gui.main_window import MainWindow
 
 
@@ -32,6 +33,7 @@ def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None, s
     Runs a local QEventLoop rather than a full QApplication.exec() so this function can return a
     value once the user's done, rather than exiting the process - unlike every other entry point, which runs the full event loop and exits the process.
     """
+    quiet_qt_noise()
     app = QApplication.instance() or QApplication(sys.argv)
     theme.apply(app)
 

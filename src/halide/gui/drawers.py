@@ -5,7 +5,8 @@ grow or scroll (the same reason the original Details panel became a fixed-height
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
@@ -23,10 +24,67 @@ from PySide6.QtWidgets import (
 )
 
 from halide.core.types import ToneCurveParams
+from halide.gui import theme
 from halide.gui.roll import DETAIL_FIELDS
 
 _EXPOSURE_RANGE = (-200, 200)  # hundredths, i.e. -2.00..2.00
 _GRADE_RANGE = (1, 100)  # hundredths, i.e. 0.01..1.00; a grade of 0 has no print to render
+
+
+_HEADER_HEIGHT = 26
+
+
+class _DrawerHeader(QToolButton):
+    """A flat full-width row: the title on the left, a dim summary of what's inside on the right,
+    and a hairline under it. An open drawer's title is bright; hovering brightens the summary
+    instead, so hover never looks like open. Disabled (Print on the negative) it is dimmer still and
+    doesn't react. Keyboard focus draws an outline. The title is also the button's text, for screen
+    readers."""
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        self.title = title
+        self.summary = ""
+        self.setText(title)
+        self.setCheckable(True)
+        self.setFixedHeight(_HEADER_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        w, h = self.width(), self.height()
+        enabled = self.isEnabled()
+        hover = enabled and self.underMouse()
+        painter.setFont(self.font())
+        metrics = QFontMetrics(self.font())
+        title_colour = theme.TEXT if (enabled and self.isChecked()) else theme.TEXT_DIM if enabled else theme.BORDER
+        painter.setPen(QColor(title_colour))
+        title_w = metrics.horizontalAdvance(self.title)
+        painter.drawText(QRectF(2, 0, title_w + 2, h - 1), Qt.AlignmentFlag.AlignVCenter, self.title)
+        room = w - title_w - 24
+        if room > 20:
+            painter.setPen(QColor(theme.TEXT if hover else theme.TEXT_DIM if enabled else theme.BORDER))
+            text = metrics.elidedText(self.summary, Qt.TextElideMode.ElideRight, room)
+            painter.drawText(QRectF(title_w + 16, 0, w - title_w - 18, h - 1), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, text)
+        painter.fillRect(0, h - 1, w, 1, QColor(theme.RULE))
+        if self.hasFocus():
+            painter.setPen(QColor(theme.AMBER_ACTIVE))
+            painter.drawRect(0, 0, w - 1, h - 2)
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            self.setCursor(Qt.CursorShape.PointingHandCursor if self.isEnabled() else Qt.CursorShape.ArrowCursor)
+            self.update()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        super().leaveEvent(event)
+        self.update()
 
 
 class Drawer(QWidget):
@@ -41,11 +99,11 @@ class Drawer(QWidget):
         super().__init__()
         self._title = title
         self.expanding = expanding
+        self._max_height = max_height
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
-        self.header = QToolButton()
-        self.header.setCheckable(True)
+        self.header = _DrawerHeader(title)
         self.header.clicked.connect(lambda checked: self.toggled.emit(self, checked))
         layout.addWidget(self.header)
         self.body = QScrollArea()
@@ -59,13 +117,21 @@ class Drawer(QWidget):
         else:
             # Open to exactly the content's own height (capped): a drawer that opens shorter than its
             # content hides fields behind an inner scrollbar, which reads as broken, not compact.
+            # Measured again on opening (set_open): the stylesheet applied after construction can
+            # make the content taller than it measured here.
             self.body.setFixedHeight(min(max_height, content.sizeHint().height() + 4))
         layout.addWidget(self.body)
         self.set_open(False)
 
+    def set_summary(self, text: str) -> None:
+        self.header.summary = text
+        self.header.update()
+
     def set_open(self, open_: bool) -> None:
+        if open_ and not self.expanding:
+            self.body.setFixedHeight(min(self._max_height, self.body.widget().sizeHint().height() + 4))
         self.header.setChecked(open_)
-        self.header.setText(("▾ " if open_ else "▸ ") + self._title)
+        self.header.update()
         self.body.setVisible(open_)
         # Closed, or a fixed drawer: never take more height than it needs - spare panel height
         # otherwise got shared out as gaps around the drawer headers.
@@ -187,6 +253,10 @@ class PrintControls(QWidget):
             slider.blockSignals(False)
         self.exposure_value.setText(f"{exposure:+.2f}")
         self.grade_value.setText(f"{self.grade.value() / 100:.2f}")
+
+    @property
+    def pinned(self) -> bool:
+        return self._pinned
 
     def show_fitted(self, exposure: float, grade: float) -> None:
         """The current frame's own fit - shown on the sliders unless the user has pinned values."""
