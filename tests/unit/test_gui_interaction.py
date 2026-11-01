@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication
 from halide.gui import main_window as mw
 from halide.gui.main_window import MainWindow
 from halide.gui.point_list import _Row
-from halide.gui.sampling import display_to_full_res_coords
+from halide.gui.sampling import display_to_full_res_coords, snap_to_representative_pixel
 from tests.unit.test_gui_picker_smoke import _frame_ready, _pump, _write_frame
 
 LEFT = Qt.MouseButton.LeftButton
@@ -69,7 +69,8 @@ def test_clicking_the_image_adds_a_point_where_the_click_landed(window):
     point = window.session.points[0]
     h, w = window.full_image.shape[:2]
     x, y = display_to_full_res_coords(*SHADOW, window.stride, w, h)
-    assert abs(point.x - x) <= 8 and abs(point.y - y) <= 8  # snapping stays within its radius
+    snapped_x, snapped_y, _ = snap_to_representative_pixel(window.full_image, x, y)
+    assert (point.x, point.y) == (snapped_x, snapped_y)  # exactly where the picker snaps that click
 
 
 def test_clicking_a_point_again_selects_it_and_delete_backspace_escape_work(window):
@@ -128,16 +129,23 @@ def test_opening_a_drawer_closes_the_other_and_details_takes_the_spare_height(wi
     assert window._panel_spacer.isVisibleTo(window) and list_stretch() == 1
 
 
-@pytest.mark.parametrize("button", ["clear_frame_button", "clear_all_button"])
-def test_clear_buttons_remove_points_only_when_confirmed(window, monkeypatch, button):
-    _click_image(window, SHADOW)
+@pytest.mark.parametrize(("button", "left"), [("clear_frame_button", 1), ("clear_all_button", 0)])
+def test_clear_buttons_remove_points_only_when_confirmed(window, monkeypatch, app, button, left):
+    # Two points on the second frame, then back to the first for one more: Clear frame must take
+    # only the first frame's point, Clear all every point.
+    QTest.keyClick(window, Qt.Key.Key_Right)
+    _pump(app, lambda: _frame_ready(window, 1))
     _click_image(window, HIGHLIGHT)
+    QTest.keyClick(window, Qt.Key.Key_Left)
+    _pump(app, lambda: _frame_ready(window, 0))
+    _click_image(window, SHADOW)
     monkeypatch.setattr(MainWindow, "_confirm", lambda self, question: False)
     QTest.mouseClick(getattr(window, button), LEFT)
     assert len(window.session.points) == 2
     monkeypatch.setattr(MainWindow, "_confirm", lambda self, question: True)
     QTest.mouseClick(getattr(window, button), LEFT)
-    assert len(window.session.points) == 0
+    assert len(window.session.points) == left
+    assert all(p.frame == window.session.frames[1].path for p in window.session.points)
 
 
 def test_save_and_contact_sheet_need_two_separated_points(window):
