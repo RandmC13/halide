@@ -4,10 +4,11 @@ the exact `halide batch` command that will run (gui/develop.py builds it). Nothi
 from __future__ import annotations
 
 import html
+import math
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFontDatabase, QFontMetrics, QTextOption
+from PySide6.QtGui import QFontMetrics, QFontMetricsF, QTextOption
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -131,10 +132,13 @@ class DevelopPanel(QWidget):
         self.command.setFrameShape(QPlainTextEdit.Shape.NoFrame)
         self.command.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.command.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
-        mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        mono.setPointSize(8)
-        self.command.setFont(mono)
-        self.command.setFixedHeight(QFontMetrics(mono).lineSpacing() * 4 + 10)
+        # Through a style sheet: the theme's sets every widget's font, which beats setFont().
+        self.command.setStyleSheet("font-family: 'DejaVu Sans Mono', monospace; font-size: 8pt;")
+        self.command.ensurePolished()
+        self.command.document().setDocumentMargin(3)
+        # Exactly four whole lines: a half-cut fifth looked unfinished (the full command is the tooltip).
+        line = math.ceil(QFontMetricsF(self.command.font()).height())
+        self.command.setFixedHeight(line * 4 + 3)  # the top margin only: below it, the next line would start
         col.addWidget(self.command)
 
         col.addStretch(1)

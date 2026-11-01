@@ -249,3 +249,20 @@ def test_declining_either_question_on_close_keeps_the_run_going(window, app, slo
     monkeypatch.setattr(window, "_confirm_close", lambda count: False)  # keep the unsaved points
     window.close()
     assert window.isVisible() and window._runner.is_running()
+
+
+_STOPPED_AFTER_ALL = r'''
+import sys
+for i, name in enumerate(["frame_00.tiff", "frame_01.tiff"]):
+    print(f"start\t{i}\t{name}\ndone\t{i}\tok\tgrade 0.9", flush=True)
+print("end\t2\t2\t0", flush=True)
+sys.exit(130)  # Ctrl-C arrived after the last frame: everything developed, but the run was stopped
+'''
+
+
+def test_sharing_skipped_by_a_stop_says_so_not_that_frames_failed(window, app, tmp_path, monkeypatch):
+    script = tmp_path / "stopped.py"
+    script.write_text(_STOPPED_AFTER_ALL)
+    monkeypatch.setattr(mw, "batch_command", lambda settings: [sys.executable, str(script)])
+    _develop(window, app, sharing=1)
+    assert window._dev["sharing"].startswith("not saved — developing was stopped first")

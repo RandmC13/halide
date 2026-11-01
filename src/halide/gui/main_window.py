@@ -1560,7 +1560,8 @@ class MainWindow(QWidget):
                 dev.update(phase="sharing", sharing_done=0, total=self._prints_in(dev["settings"].into))
                 return
             if dev["settings"].sharing != "none" and not cancelled:
-                dev["sharing"] = "not saved — some frames failed; Save more for sharing… makes them"
+                why = "some frames failed" if dev["failed"] else "developing was stopped first"
+                dev["sharing"] = f"not saved — {why}; Save more for sharing… makes them"
             self._end_develop()
             return
         where = f"{dev['settings'].sharing.upper()}, in {dev['settings'].sharing_dir}"

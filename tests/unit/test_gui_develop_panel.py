@@ -1,5 +1,6 @@
 """The right panel's three states and the develop side's fields (no run is started)."""
 
+import math
 import shlex
 from pathlib import Path
 
@@ -352,3 +353,13 @@ def test_the_windows_device_goes_to_the_command(tmp_path, monkeypatch, app):
     win.primary_button.click()
     assert _command(win.develop_panel)[-2:] == ["--device", "cpu"]
     win.close()
+
+
+def test_the_command_is_monospace_and_shows_whole_lines(window):
+    from PySide6.QtGui import QFontInfo, QFontMetricsF
+
+    panel = _develop_side(window)
+    command = panel.command
+    assert QFontInfo(command.font()).fixedPitch()  # the theme's font mustn't win over it
+    line = math.ceil(QFontMetricsF(command.font()).height())  # whole pixels, as text is laid out
+    assert command.height() - command.document().documentMargin() == 4 * line
