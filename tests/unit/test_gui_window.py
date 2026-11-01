@@ -402,6 +402,8 @@ def test_reopening_a_profile_unchanged_then_closing_asks_nothing(monkeypatch, tm
     window = _window_with_points(monkeypatch, tmp_path, app)
     path = _saved_profile(window, tmp_path)
     monkeypatch.setattr(window, "_confirm_new_calibration", lambda: True)
+    (tmp_path / "a.tif").touch()  # the recorded roll folder must hold scans, or nothing is reopened
+    monkeypatch.setattr(window, "load_roll", lambda *a, **k: None)  # (they aren't real ones)
     window.open_profile(path)
     assert window.session.points
     asked = _close_asks(window, monkeypatch, False)
