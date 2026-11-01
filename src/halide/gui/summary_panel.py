@@ -48,7 +48,7 @@ class SummaryPanel(QWidget):
         self.contact_button = QPushButton("Contact sheet")
         self.contact_button.setToolTip("A contact sheet of the developed prints, saved beside them")
         self.contact_button.clicked.connect(self.contactClicked)
-        self.share_button = QPushButton("Save more for sharing…")
+        self.share_button = QPushButton("Export JPEG or PNG…")
         self.share_button.setToolTip("sRGB JPEG or PNG copies of the prints, in the sharing folder")
         self.share_button.clicked.connect(self.shareClicked)
         # One per row: side by side, a wider desktop font cut the second label.

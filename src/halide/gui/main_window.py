@@ -1571,7 +1571,7 @@ class MainWindow(QWidget):
                 return
             if dev["settings"].sharing != "none" and not cancelled:
                 why = "some frames failed" if dev["failed"] else "developing was stopped first"
-                dev["sharing"] = f"not saved — {why}; Save more for sharing… makes them"
+                dev["sharing"] = f"not saved — {why}; Export JPEG or PNG… makes them"
             self._end_develop()
             return
         where = f"{_FORMAT_NAMES[dev['settings'].sharing]}, in {dev['settings'].sharing_dir}"
@@ -1612,7 +1612,7 @@ class MainWindow(QWidget):
         self._turn_to(1)
 
     def _save_more_for_sharing(self) -> None:
-        box = QMessageBox(QMessageBox.Icon.Question, "Save for sharing",
+        box = QMessageBox(QMessageBox.Icon.Question, "Export JPEG or PNG",
                           "sRGB copies of the prints, full size. Which format?", parent=self)
         jpeg = box.addButton("JPEG", QMessageBox.ButtonRole.AcceptRole)
         png = box.addButton("PNG", QMessageBox.ButtonRole.AcceptRole)
