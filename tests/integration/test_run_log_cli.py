@@ -208,3 +208,20 @@ def test_log_never_names_a_scan_an_output_or_a_picture(roll, tmp_path, command, 
 def test_a_preview_refuses_a_scan_as_its_log(roll, tmp_path):
     with pytest.raises(SystemExit):
         main(["batch", str(roll), "--contact-sheet", str(tmp_path / "s.jpg"), *MANUAL, "--log", str(roll / "frame_01.tif")])
+
+
+@pytest.mark.parametrize("command", ["print", "export"])
+@pytest.mark.parametrize("dry", [False, True])
+@pytest.mark.parametrize("second", ["a.tiff", "A.tif"])
+def test_two_scans_with_one_output_are_refused_before_anything_is_written(tmp_path, command, dry, second):
+    src = tmp_path / "in"
+    src.mkdir()
+    _negative(src / "a.tif", 0)
+    _negative(src / second, 1)
+    if len({p.name for p in src.iterdir()}) < 2:
+        pytest.skip("case-insensitive filesystem")
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit) as exc:
+        main([command, str(src), str(out), *(["--dry-run"] if dry else [])])
+    assert "would both be written to" in str(exc.value.code) and "rename one of them" in str(exc.value.code)
+    assert not any(out.glob("*.*")) if out.exists() else True

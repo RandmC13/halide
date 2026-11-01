@@ -92,6 +92,22 @@ def check_not_input(pairs: list[tuple[Path, Path]], *, suggest_suffix: bool = Tr
     raise SystemExit(f"{first} is the scan itself{more} — halide never writes over a scan. {fix}")
 
 
+def check_unique_outputs(pairs: list[tuple[Path, Path]]) -> None:
+    """Refuse two scans that would be written to one output (a.tif and a.tiff both become a.png).
+    Compared case-insensitively, because macOS disks are."""
+    seen: dict[str, tuple[Path, Path]] = {}
+    clashes = []
+    for src, out in pairs:
+        first = seen.setdefault(str(out).casefold(), (src, out))
+        if first[0] is not src:
+            clashes.append((first[0], src, first[1]))
+    if not clashes:
+        return
+    a, b, out = clashes[0]
+    more = f" (and {len(clashes) - 1} more)" if len(clashes) > 1 else ""
+    raise SystemExit(f"{a.name} and {b.name} would both be written to {out}{more} — rename one of them")
+
+
 def resolve_existing(
     pairs: list[tuple[Path, Path]], policy: OutputPolicy, *, interactive: bool
 ) -> list[tuple[Path, Path]]:
@@ -156,6 +172,7 @@ def resolve_bulk_jobs(
     and `extra_pairs` outputs alike)."""
     pairs = [(job.input_path, job.output_path) for job in jobs]
     check_not_input(pairs)
+    check_unique_outputs(pairs)
     _check_log(args, pairs + list(extra_pairs or []))
     all_pairs = pairs + list(extra_pairs or [])
     kept_outputs = {out for _, out in resolve_existing(all_pairs, policy_from_args(args), interactive=interactive)}
@@ -177,6 +194,7 @@ def plan_bulk_jobs(
     how many of the *jobs'* outputs already exist)."""
     pairs = [(job.input_path, job.output_path) for job in jobs]
     check_not_input(pairs)
+    check_unique_outputs(pairs)
     _check_log(args, pairs + list(extra_pairs or []))
     existing = sum(1 for _, out in pairs if out.exists())
     all_pairs = pairs + list(extra_pairs or [])
