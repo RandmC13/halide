@@ -106,3 +106,9 @@ def test_name_on_a_contact_sheet_preview_is_refused(roll, tmp_path):
     with pytest.raises(SystemExit, match="--name names the developed frames"):
         main(["batch", str(roll), "--contact-sheet", str(tmp_path / "s.jpg"), *MANUAL, "--name", "{n}"])
     assert not (tmp_path / "s.jpg").exists()
+
+
+def test_suffix_on_a_contact_sheet_preview_is_refused(roll, tmp_path):
+    with pytest.raises(SystemExit, match="--suffix names the developed frames"):
+        main(["batch", str(roll), "--contact-sheet", str(tmp_path / "s.jpg"), *MANUAL, "--suffix", "_x"])
+    assert not (tmp_path / "s.jpg").exists()

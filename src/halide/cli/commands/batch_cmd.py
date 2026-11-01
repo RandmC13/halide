@@ -356,9 +356,10 @@ def _check_destination_flags(args: argparse.Namespace) -> None:
         if args.recursive:
             raise SystemExit("a contact-sheet preview of several rolls needs --into or an output folder to "
                              "put each sheet in")
-        if args.name:
-            raise SystemExit("--name names the developed frames, and a contact-sheet preview keeps none — "
-                             "give an output directory, or drop --name")
+        if args.name or args.suffix:
+            flag = "--name" if args.name else "--suffix"
+            raise SystemExit(f"{flag} names the developed frames, and a contact-sheet preview keeps none — "
+                             f"give an output directory, or drop {flag}")
     if args.recursive and args.contact_sheet and Path(args.contact_sheet).name != args.contact_sheet:
         raise SystemExit(f"--contact-sheet {args.contact_sheet} — with --recursive give a file name only "
                          f"(it is written into each roll's output folder)")
