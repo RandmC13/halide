@@ -23,7 +23,7 @@ def stop(owner: QObject, key: str) -> None:
 
 def animate(
     owner: QObject, key: str, start: float, end: float, ms: int, on_value: Callable[[float], None],
-    on_done: Callable[[], None] | None = None,
+    on_done: Callable[[], None] | None = None, curve: QEasingCurve.Type = QEasingCurve.Type.OutCubic,
 ) -> None:
     """Ease `start` -> `end` over `ms`, calling `on_value` for each step. The animation is parented
     to `owner` (so it dies with it), named `key`, and started at once; a running animation of
@@ -43,7 +43,7 @@ def animate(
     anim.setStartValue(float(start))
     anim.setEndValue(float(end))
     anim.setDuration(ms)
-    anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+    anim.setEasingCurve(curve)
     anim.valueChanged.connect(lambda value: on_value(float(value)))
     if on_done is not None:
         anim.finished.connect(on_done)

@@ -10,11 +10,13 @@ widget only lays them out, paints the film and reports clicks.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+import numpy as np
+from PySide6.QtCore import QEasingCurve, QElapsedTimer, QEvent, QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QScrollArea, QToolTip, QWidget
 
 from halide.gui import motion, theme
+from halide.gui.develop_animation import EXPOSE_MS, LIGHTS_MS, TRAY_HOLD, TRAY_MS, PrintFrames
 
 FRAME_HEIGHT = 56
 FRAME_WIDTH = round(FRAME_HEIGHT * 3 / 2)  # a 35mm frame's cell; other shapes fitted inside it
@@ -45,6 +47,10 @@ class _Strip(QWidget):
         self._appear: list[float] = []  # per frame 0 -> 1 as its first thumbnail feeds in
         self._generation = 0  # bumped per roll, so a late feed-in of a replaced roll does nothing
         self._since_roll = QElapsedTimer()
+        # Frames being printed while the roll develops: index -> [phase, PrintFrames, the picture now
+        # as a pixmap, and as an array].
+        # A printed frame keeps its print until clear_prints().
+        self._prints: dict[int, list] = {}
         self.setFixedHeight(STRIP_HEIGHT)
         self._resize()
 
@@ -71,6 +77,7 @@ class _Strip(QWidget):
         self._appear = [1.0] * len(numbers)
         self._generation += 1
         self._since_roll.start()
+        self.clear_prints()
         self._resize()
         self.update()
 
@@ -102,6 +109,71 @@ class _Strip(QWidget):
         else:
             self._appear[index] = 0.0
             QTimer.singleShot(delay, self, start)
+
+    # --- developing: each frame printed as its worker goes ------------------------------------
+
+    def print_phase(self, index: int) -> str | None:
+        """expose, tray, lights or printed while the roll develops; None for a queued negative."""
+        entry = self._prints.get(index)
+        return entry[0] if entry else None
+
+    def _show_print(self, index: int, rgb: np.ndarray) -> None:
+        if index in self._prints:
+            self._prints[index][2:] = [_pixmap(rgb), rgb]
+            self.update(self.frame_rect(index).adjusted(-2, -2, 2, 2))
+
+    def print_start(self, index: int, negative: np.ndarray, positive: np.ndarray) -> None:
+        """The frame's worker has started: the lamp comes on through the negative, then the paper
+        goes into the tray and develops until print_done. Both thumbnails are HxWx3 uint8."""
+        if not 0 <= index < len(self._numbers):
+            return
+        self.clear_failure(index)
+        frames = PrintFrames(negative, positive)
+        self._prints[index] = ["expose", frames, _pixmap(negative), negative]
+        key = f"print-{index}"
+
+        def tray() -> None:
+            if self.print_phase(index) == "expose":
+                self._prints[index][0] = "tray"
+                # Linear: the tray's own curve is in PrintFrames.tray; it holds at TRAY_HOLD until done.
+                motion.animate(self, key, 0.0, TRAY_HOLD, round(TRAY_MS * TRAY_HOLD),
+                               lambda t: self._show_print(index, frames.tray(t)), curve=QEasingCurve.Type.Linear)
+
+        motion.animate(self, key, 0.0, 1.0, EXPOSE_MS, lambda t: self._show_print(index, frames.expose(t)),
+                       on_done=tray, curve=QEasingCurve.Type.Linear)
+
+    def print_done(self, index: int, ok: bool, reason: str = "") -> None:
+        """The frame's worker is done: lights on, from wherever the print had got to, to the colour
+        print; or, if it failed, back to the negative with a warning."""
+        entry = self._prints.get(index)
+        if entry is None:
+            if not ok:
+                self.mark_failed(index, reason)
+            return
+        key = f"print-{index}"
+        motion.stop(self, key)
+        if not ok:
+            del self._prints[index]
+            self.mark_failed(index, reason)
+            return
+        entry[0] = "lights"
+        frames, start = entry[1], entry[3].astype(np.float32)
+
+        def lights(t: float) -> None:
+            e = t * t * (3 - 2 * t)
+            self._show_print(index, np.rint(start + (frames.positive - start) * e).astype(np.uint8))
+
+        def printed() -> None:
+            if index in self._prints:
+                self._prints[index][0] = "printed"
+
+        motion.animate(self, key, 0.0, 1.0, LIGHTS_MS, lights, on_done=printed, curve=QEasingCurve.Type.Linear)
+
+    def clear_prints(self) -> None:
+        for index in list(self._prints):
+            motion.stop(self, f"print-{index}")
+        self._prints = {}
+        self.update()
 
     def mark_failed(self, index: int, reason: str) -> None:
         """Put a warning over a frame (keeping any thumbnail it has), with `reason` as its tooltip."""
@@ -171,9 +243,10 @@ class _Strip(QWidget):
         painter.setFont(edge_font)
         for i, number in enumerate(self._numbers):
             rect = self.frame_rect(i)
-            pixmap = self._pixmaps[i]
+            printing = self._prints.get(i)
+            pixmap = printing[2] if printing else self._pixmaps[i]
             if pixmap is not None:
-                appear = self._appear[i]
+                appear = 1.0 if printing else self._appear[i]
                 if appear < 1.0:
                     painter.fillRect(rect, QColor(theme.FILM_LOADING))
                 painter.setOpacity(appear)
@@ -234,6 +307,12 @@ class _Strip(QWidget):
             if self.frame_rect(i).adjusted(-GAP // 2, -REBATE, GAP // 2, REBATE).contains(pos):
                 self.frameClicked.emit(i)
                 return
+
+
+def _pixmap(rgb: np.ndarray) -> QPixmap:
+    rgb = np.ascontiguousarray(rgb)
+    h, w = rgb.shape[:2]
+    return QPixmap.fromImage(QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy())
 
 
 def _paint_flag(painter: QPainter, centre: QPointF) -> None:
