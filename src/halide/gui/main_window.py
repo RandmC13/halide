@@ -1229,7 +1229,8 @@ class MainWindow(QWidget):
         box = QMessageBox(
             QMessageBox.Icon.Question,
             "Close the picker?",
-            f"The {console.plural(count, 'neutral point')} you picked aren't saved in a profile and will be lost.",
+            f"The {console.plural(count, 'neutral point')} you picked "
+            f"{'isn' if count == 1 else 'aren'}'t saved in a profile and will be lost.",
             parent=self,
         )
         close = box.addButton("Close", QMessageBox.ButtonRole.DestructiveRole)

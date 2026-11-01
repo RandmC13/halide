@@ -300,7 +300,11 @@ def run(args: argparse.Namespace) -> int:
     # when resuming — or the resumed frames would get a different profile from the rest of the roll.
     roll_jobs = jobs
     if not jobs:
-        print(f"No TIFF files found in {input_dir}")
+        if left_out.positives:
+            print(f"No scans to develop in {input_dir} — its TIFFs are halide positives. To re-print "
+                  f"them use `halide print`; to develop again, point halide at the original scans")
+        else:
+            print(f"No TIFF files found in {input_dir}")
         return 1
 
     # A preview run's jobs (output_dir is None) keep nothing but a temp thumbnail, so there's
