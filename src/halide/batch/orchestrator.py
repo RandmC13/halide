@@ -794,8 +794,8 @@ def _export_worker(
     try:
         device, warnings = _start_on_device(job, device_kind, device_memory_limit, "exported this file")
         client, shm_prefix = _worker_service(service)
-        warnings(export_delivery_image(job.input_path, job.output_path, quality=quality,
-                                       device=device, on_warning=warnings, service=client, shm_prefix=shm_prefix))
+        export_delivery_image(job.input_path, job.output_path, quality=quality,
+                              device=device, on_warning=warnings, service=client, shm_prefix=shm_prefix)
         return BatchResult(job=job, error=None, warning=warnings.text(), seconds=time.monotonic() - started)
     except Exception as exc:  # noqa: BLE001 — one frame's failure must not take down the batch
         return BatchResult(job=job, error=str(exc), warning=warnings.text() if warnings else None)

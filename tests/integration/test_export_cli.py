@@ -36,14 +36,48 @@ def test_invert_then_export_end_to_end(tmp_path):
         assert delivered.info.get("icc_profile") is not None
 
 
-def test_export_warns_on_mismatched_profile(tmp_path, capsys):
-    # A TIFF whose embedded profile is NOT ACEScg (the LINEAR_TAGS fixture profile) should still
-    # export, but with a clear warning rather than silently mis-coloring the delivery image.
-    path = tmp_path / "not_acescg.tiff"
-    write_tiff(path, np.full((4, 4, 3), 0.18, dtype=np.float32), icc_profile=build_icc(LINEAR_TAGS))
-    output = tmp_path / "out.png"
-    assert main(["export", str(path), str(output)]) == 0
-    assert "does not look like ACEScg" in capsys.readouterr().out
+def _delivery(path):
+    with Image.open(path) as img:
+        return np.asarray(img).astype(int)
+
+
+def test_export_converts_a_foreign_linear_profile_first(tmp_path, capsys):
+    from halide.io.icc import convert_to_working_space, output_profile_bytes, parse_linear_rgb_profile
+
+    rng = np.random.default_rng(3)
+    pixels = rng.uniform(0.02, 0.8, (8, 8, 3)).astype(np.float32)
+    foreign = tmp_path / "foreign.tiff"
+    write_tiff(foreign, pixels, icc_profile=build_icc(LINEAR_TAGS))
+    converted = tmp_path / "converted.tiff"
+    write_tiff(converted, convert_to_working_space(pixels, parse_linear_rgb_profile(build_icc(LINEAR_TAGS))),
+               icc_profile=output_profile_bytes())
+
+    assert main(["export", str(foreign), str(tmp_path / "a.png")]) == 0
+    assert main(["export", str(converted), str(tmp_path / "b.png")]) == 0
+    assert "ACEScg" not in capsys.readouterr().out
+    assert np.abs(_delivery(tmp_path / "a.png") - _delivery(tmp_path / "b.png")).max() <= 1
+
+
+def test_export_refuses_untagged_and_garbage_profiles(tmp_path):
+    untagged = tmp_path / "untagged.tiff"
+    write_tiff(untagged, np.full((4, 4, 3), 0.18, dtype=np.float32))
+    garbage = tmp_path / "garbage.tiff"
+    write_tiff(garbage, np.full((4, 4, 3), 0.18, dtype=np.float32), icc_profile=b"not a profile")
+    for path, text in ((untagged, "no embedded ICC profile"), (garbage, "unusable colour profile")):
+        out = tmp_path / "out.png"
+        with pytest.raises(SystemExit, match=text):
+            main(["export", str(path), str(out)])
+        assert not out.exists()
+
+
+def test_bulk_export_fails_only_the_untagged_frame(tmp_path):
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    write_tiff(in_dir / "a.tiff", np.full((4, 4, 3), 0.18, dtype=np.float32), icc_profile=build_icc(LINEAR_TAGS))
+    write_tiff(in_dir / "b.tiff", np.full((4, 4, 3), 0.18, dtype=np.float32))
+    out_dir = tmp_path / "out"
+    assert main(["export", str(in_dir), str(out_dir), "--quiet"]) != 0
+    assert [p.name for p in out_dir.glob("*.png")] == ["a.png"]
 
 
 def _write_positive(path):
