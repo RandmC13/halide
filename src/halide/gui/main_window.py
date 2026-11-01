@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -304,33 +304,69 @@ class ImageView(QWidget):
 
 
 class Magnifier(QWidget):
-    """A frameless, always-on-top zoomed patch following the cursor over the image. Needs a real
-    parent: Wayland refuses to place a parentless popup-type window."""
+    """A frameless, always-on-top round loupe following the cursor over the image, with the density
+    a click there would read underneath. Needs a real parent: Wayland refuses to place a parentless
+    popup-type window. It is made round with a window mask rather than a translucent background,
+    because that needs a compositor and plain X would show black corners."""
+
+    _LENS = 120
+    _READOUT = QRect(22, 126, 80, 22)
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(
             parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._label = QLabel(self)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(3, 3, 3, 3)
-        layout.addWidget(self._label)
-        self.setStyleSheet(f"background: {theme.BACKGROUND_ALT}; border: 1px solid {theme.BORDER};")
+        self._pixmap: QPixmap | None = None
+        self._density = 0.0
+        self.setFixedSize(self._LENS + 4, 150)
+        self.setMask(QRegion(QRect(2, 2, self._LENS, self._LENS), QRegion.RegionType.Ellipse).united(QRegion(self._READOUT)))
 
-    def show_patch(self, image: QImage, global_pos: QPoint) -> None:
+    def show_patch(self, image: QImage, density: float, global_pos: QPoint) -> None:
         ratio = self.devicePixelRatioF()
         if ratio != 1.0:  # a crisp patch at the screen's real resolution, not a stretched one
             image = image.scaled(
                 round(image.width() * ratio), round(image.height() * ratio),
                 Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation,
             )
-        pixmap = QPixmap.fromImage(image)
-        pixmap.setDevicePixelRatio(ratio)
-        self._label.setPixmap(pixmap)
-        self.adjustSize()
+        self._pixmap = QPixmap.fromImage(image)
+        self._pixmap.setDevicePixelRatio(ratio)
+        self._density = density
         self.move(global_pos + QPoint(18, 18))
         self.show()
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        lens = QRectF(2, 2, self._LENS, self._LENS)
+        if self._pixmap is not None:
+            path = QPainterPath()
+            path.addEllipse(lens)
+            painter.save()
+            painter.setClipPath(path)
+            painter.drawPixmap(lens, self._pixmap, QRectF(self._pixmap.rect()))
+            painter.restore()
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#1a1714"), 3))
+        painter.drawEllipse(lens.adjusted(1.5, 1.5, -1.5, -1.5))
+        centre = lens.center()
+        cross = QColor(255, 255, 255, 128)
+        painter.setPen(QPen(cross, 1))
+        painter.drawLine(QPointF(lens.left() + 6, centre.y()), QPointF(centre.x() - 8, centre.y()))
+        painter.drawLine(QPointF(centre.x() + 8, centre.y()), QPointF(lens.right() - 6, centre.y()))
+        painter.drawLine(QPointF(centre.x(), lens.top() + 6), QPointF(centre.x(), centre.y() - 8))
+        painter.drawLine(QPointF(centre.x(), centre.y() + 8), QPointF(centre.x(), lens.bottom() - 6))
+        painter.drawEllipse(centre, 8, 8)  # the pixel a click would sample
+        painter.setBrush(QColor("#0e0c0a"))
+        painter.setPen(QColor(theme.BORDER))
+        painter.drawRect(self._READOUT.adjusted(0, 0, -1, -1))
+        painter.setFont(theme.edge_font(12))
+        painter.setPen(QColor(theme.AGREE_RED))
+        painter.drawText(self._READOUT, Qt.AlignmentFlag.AlignCenter, self.readout_text())
+
+    def readout_text(self) -> str:
+        return f"D {self._density:.2f}"
 
 
 class SaveProfileDialog(QDialog):
@@ -1254,6 +1290,9 @@ class MainWindow(QWidget):
             return
         h, w = self.full_image.shape[:2]
         full_x, full_y = display_to_full_res_coords(disp_x, disp_y, self.stride, w, h)
+        # Snap as a click would, so the density shown is the one the new point would read.
+        _, _, rgb = snap_to_representative_pixel(self.full_image, full_x, full_y)
+        density = self.session.density_at(self.session.frames[self._current], rgb)
         patch = extract_magnifier_patch(self.full_image, full_x, full_y, radius=_MAGNIFIER_RADIUS)
         if self._positive_profile is not None and self._resolved is not None:
             shown = print_patch(patch, self._positive_profile, self._resolved, self._positive_gain)
@@ -1264,7 +1303,7 @@ class MainWindow(QWidget):
         rect = self.image_view._image_rect()
         scale = self.image_view.display_scale()
         global_pos = anchor + QPoint(int(rect.x() + disp_x * scale), int(rect.y() + disp_y * scale))
-        self._magnifier.show_patch(_qimage(magnified), global_pos)
+        self._magnifier.show_patch(_qimage(magnified), density, global_pos)
 
     # --- save / develop -------------------------------------------------------------------------
 
