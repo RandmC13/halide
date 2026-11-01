@@ -109,9 +109,7 @@ class _Strip(QWidget):
                 painter.drawRoundedRect(QRectF(x, y, _HOLE_W, _HOLE_H), 1.5, 1.5)
             x += pitch
 
-        edge_font = QFont(self.font())
-        edge_font.setPixelSize(9)
-        edge_font.setBold(True)
+        edge_font = theme.edge_font(9)
         painter.setFont(edge_font)
         for i, number in enumerate(self._numbers):
             rect = self.frame_rect(i)

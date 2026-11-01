@@ -26,6 +26,7 @@ AMBER_ACTIVE = "#f59137"
 RED = "#c4342a"
 RED_HOVER = "#e0453a"
 RED_ACTIVE = "#f5584c"
+RED_EDGE = "#7a1f18"  # the primary button's lower lip
 
 # Neutral-point agreement (calibration/anchors.py bands): the markers on the image, the point list
 # and the step wedge's ticks all read these, so a point is the same colour everywhere. AGREE_RED is
@@ -42,6 +43,9 @@ FILM_SPROCKET = "#2c2620"
 EDGE_PRINT = "#e0a060"
 FILM_LOADING = "#1c1916"  # a filmstrip frame still developing
 FILM_FAILED = "#3a1a18"  # ... and one that failed to load
+
+# The condensed bold face film edge print is drawn in.
+EDGE_FAMILY = "DejaVu Sans Condensed"
 
 STYLESHEET = f"""
 QWidget {{
@@ -68,25 +72,25 @@ QLabel[role="warning"] {{
 }}
 
 QPushButton {{
-    background-color: {AMBER};
+    background-color: transparent;
     color: {TEXT};
-    border: none;
+    border: 1px solid {BORDER};
     border-radius: 6px;
-    padding: 6px 14px;
+    padding: 5px 13px;
 }}
 QPushButton:focus {{
     border: 2px solid {TEXT};
-    padding: 4px 12px;  /* the ring's 2 px come out of the padding: the button doesn't change size */
+    padding: 4px 12px;  /* the ring's px come out of the padding: the button doesn't change size */
 }}
 QPushButton:hover {{
-    background-color: {AMBER_HOVER};
+    border-color: {AMBER};
 }}
 QPushButton:pressed {{
-    background-color: {AMBER_ACTIVE};
+    background-color: {BACKGROUND_ALT};
 }}
 QPushButton:disabled {{
-    background-color: {BACKGROUND_ALT};
     color: {TEXT_DIM};
+    border-color: {BACKGROUND_ALT};
 }}
 QPushButton:checked {{
     background-color: {AMBER_ACTIVE};
@@ -96,20 +100,27 @@ QPushButton:checked {{
 QPushButton[role="primary"] {{
     background-color: {RED};
     font-weight: bold;
-    padding: 10px 18px;
+    border: none;
+    border-bottom: 2px solid {RED_EDGE};
+    padding: 10px 18px 8px 18px;
 }}
 QPushButton[role="primary"]:focus {{
     border: 2px solid {TEXT};
-    padding: 8px 16px;
+    border-bottom: 2px solid {RED_EDGE};
+    padding: 8px 16px 8px 16px;
 }}
 QPushButton[role="primary"]:hover {{
     background-color: {RED_HOVER};
 }}
 QPushButton[role="primary"]:pressed {{
     background-color: {RED_ACTIVE};
+    border-bottom: none;
+    border-top: 2px solid {RED_EDGE};  /* the lip moves to the top: the label sits 1 px lower */
+    padding: 9px 18px 9px 18px;
 }}
 QPushButton[role="primary"]:disabled {{
     background-color: {BACKGROUND_ALT};
+    border-bottom-color: {BACKGROUND_ALT};
     color: {TEXT_DIM};
 }}
 
@@ -187,16 +198,16 @@ QSlider::groove:horizontal {{
     border-radius: 2px;
 }}
 QSlider::handle:horizontal {{
-    background: {AMBER};
+    background: {TEXT_DIM};
     width: 14px;
     margin: -6px 0;
     border-radius: 7px;
 }}
 QSlider::handle:horizontal:focus {{
-    background: {AMBER_ACTIVE};
+    background: {AMBER};
 }}
 QSlider::handle:horizontal:hover {{
-    background: {AMBER_HOVER};
+    background: {AMBER};
 }}
 
 QCheckBox::indicator {{
@@ -240,12 +251,12 @@ QScrollBar:vertical {{
     border-radius: 5px;
 }}
 QScrollBar::handle:vertical {{
-    background: {AMBER};
+    background: {BORDER};
     border-radius: 5px;
     min-height: 20px;
 }}
 QScrollBar::handle:vertical:hover {{
-    background: {AMBER_HOVER};
+    background: {TEXT_DIM};
 }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0px;
@@ -256,12 +267,12 @@ QScrollBar:horizontal {{
     border-radius: 4px;
 }}
 QScrollBar::handle:horizontal {{
-    background: {AMBER};
+    background: {BORDER};
     border-radius: 4px;
     min-width: 30px;
 }}
 QScrollBar::handle:horizontal:hover {{
-    background: {AMBER_HOVER};
+    background: {TEXT_DIM};
 }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0px;
@@ -282,7 +293,7 @@ def load_fonts() -> None:
 
     from PySide6.QtGui import QFontDatabase
 
-    for name in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf"):
+    for name in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSansCondensed-Bold.ttf"):
         path = files("halide.assets") / "fonts" / name
         if path.is_file():
             QFontDatabase.addApplicationFont(str(path))
@@ -292,3 +303,13 @@ def apply(app) -> None:
     """Apply the stylesheet to a QApplication. Call once, right after construction."""
     load_fonts()
     app.setStyleSheet(STYLESHEET)
+
+
+def edge_font(pixel_size: int):
+    """The bold condensed face for anything drawn as film edge print."""
+    from PySide6.QtGui import QFont
+
+    font = QFont(EDGE_FAMILY)
+    font.setBold(True)  # the family has only a bold face registered
+    font.setPixelSize(pixel_size)
+    return font
