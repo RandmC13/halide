@@ -124,10 +124,7 @@ def _run_single(args: argparse.Namespace, input_path: Path, tone_params: ToneCur
     start = time.monotonic()
     label = f"{console.VERB['print']} {input_path.name}..."
     try:
-        with console.themed_animation(
-            console.ENLARGER_FRAMES, label, min_width=console.ENLARGER_MIN_SIZE[0],
-            min_height=console.ENLARGER_MIN_SIZE[1], interval=0.45,
-        ):
+        with console.developing(label):
             resolved, warning = print_scan(
                 input_path, output_path, tone_params,
                 device=device, on_warning=lambda msg: print(console.warning(msg)),

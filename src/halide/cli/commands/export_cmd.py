@@ -105,12 +105,9 @@ def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
         print(console.warning(fallback_warning))
 
     start = time.monotonic()
-    label = f"{console.VERB['export']} {input_path.name}... (exposing)"
+    label = f"{console.VERB['export']} {input_path.name}..."
     try:
-        with console.themed_animation(
-            console.ENLARGER_FRAMES, label, min_width=console.ENLARGER_MIN_SIZE[0],
-            min_height=console.ENLARGER_MIN_SIZE[1], interval=0.45,
-        ):
+        with console.developing(label):
             export_delivery_image(
                 input_path, args.output, quality=args.quality,
                 device=device, on_warning=lambda msg: print(console.warning(msg)),

@@ -6,7 +6,7 @@ import contextlib
 import shutil
 import textwrap
 from halide.cli.console.style import ICON_OK, ICON_WARN, Style, framed, full_width_rule, warning
-from halide.cli.console.animation import MINI_SPINNERS, animation
+from halide.cli.console.animation import IRIS, animation
 
 
 class RunSheet:
@@ -108,9 +108,8 @@ class RunSheet:
         if self.quiet:
             return contextlib.nullcontext()
         self._start_streaming()
-        glyphs = MINI_SPINNERS["aperture_iris"]
         # One line only: animation redraws in place by line count.
-        frames = [self._lines(label, text, icon=g, icon_style=Style.CYAN)[0] for g in glyphs]
+        frames = [self._lines(label, text, icon=g, icon_style=Style.CYAN)[0] for g in IRIS]
         return animation(frames, interval=0.12)
 
     def close(self) -> None:
