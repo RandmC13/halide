@@ -96,13 +96,35 @@ def test_only_the_left_button_picks_a_frame(app, button):
 def test_loading_does_not_overwrite_a_more_useful_status(tmp_path, app):
     window = MainWindow()
     _roll(window, tmp_path)
-    window._status("Reopened 'p': 2 points")
+    window._sticky("Reopened 'p': 2 points")
     window._select_frame(0)
     assert window.status_label.full_text() == "Reopened 'p': 2 points"
     preview = np.full((8, 8, 3), 0.1, dtype=np.float32)
     for i in range(3):
         window._on_preview_ready(window._generation, i, preview, None, None)
     assert window.status_label.full_text() == "Reopened 'p': 2 points"  # not "Roll loaded"
+    window.close()
+
+
+def test_a_frame_the_person_chooses_ends_a_sticky_status(tmp_path, app):
+    window = MainWindow()
+    _roll(window, tmp_path)
+    window._sticky("Reopened 'p': 2 points")
+    window._select_frame(0)
+    window._go_to_frame(1)  # a filmstrip click or an arrow key
+    assert window.status_label.full_text() == "Loading f1.tif…"
+    window.close()
+
+
+def test_an_error_is_replaced_once_the_next_frame_loads(tmp_path, app):
+    window = MainWindow()
+    paths = _roll(window, tmp_path)
+    window._select_frame(0)
+    window._on_frame_loaded(window._generation, paths[0], None, "disk on fire")
+    window._frame_load_finished()
+    window._frame_loader = None
+    window._go_to_frame(1)
+    assert window.status_label.full_text() == "Loading f1.tif…"
     window.close()
 
 

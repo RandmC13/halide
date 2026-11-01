@@ -1,4 +1,4 @@
-"""Pure, GUI-framework-independent helpers for the anchor-frame calibration picker: patch
+"""Pure, GUI-framework-independent helpers for the calibration picker: patch
 sampling, outlier-robust snapping, and preview stretching. No Qt import here, so this is
 unit-testable without a display — only the widget modules (gui/main_window.py and friends) touch Qt.
 """

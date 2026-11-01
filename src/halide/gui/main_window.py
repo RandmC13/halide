@@ -424,7 +424,9 @@ class MainWindow(QWidget):
         self._flat_preview = False
         self._nudge: str | None = None
         self._pending_flash: int | None = None
-        self._loading_status = ""  # the last status that loading itself set; only that gets replaced by loading
+        # A status worth keeping ("Reopened …", "Skipped …"): loading doesn't replace it until the
+        # person moves to another frame themselves.
+        self._sticky_status: str | None = None
         self._proof: ProofWindow | None = None
         self._preview_loader: PreviewLoader | None = None
         self._frame_loader: FrameLoader | None = None
@@ -480,7 +482,7 @@ class MainWindow(QWidget):
         root.addLayout(top)
 
         self.filmstrip = Filmstrip()
-        self.filmstrip.frameClicked.connect(self._select_frame)
+        self.filmstrip.frameClicked.connect(self._go_to_frame)
         self.filmstrip.setVisible(not self.is_pick_session)
         root.addWidget(self.filmstrip)
 
@@ -656,7 +658,7 @@ class MainWindow(QWidget):
             self.print_controls.set_override(None)
         self._start_roll(paths, folder)
         if left_out:
-            self._status(f"Skipped {left_out.describe()}")
+            self._sticky(f"Skipped {left_out.describe()}")
 
     def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
         """Individual scans as a roll of their own (`halide calibrate a.tif b.tif`, `invert --pick`)."""
@@ -720,7 +722,7 @@ class MainWindow(QWidget):
         self._profile_name = path.stem
         self.details_form.set_values(self.session.details)
         self.print_controls.set_override(self.session.tone_override)
-        self._status(f"Reopened '{path.stem}': {console.plural(len(self.session.points), 'point')}")
+        self._sticky(f"Reopened '{path.stem}': {console.plural(len(self.session.points), 'point')}")
         recorded = self.session.recorded_roll
         if folder is not None:
             self.load_roll(folder, keep_points=True)
@@ -800,11 +802,18 @@ class MainWindow(QWidget):
         self._refresh_wedge()
 
     def _loading_progress(self, message: str) -> None:
-        """Loading's own status line. It only replaces an empty status or one loading set itself, so
-        a message that matters more ("Reopened …", "Skipped …") stays on screen."""
-        if self.status_label.full_text() in ("", self._loading_status):
+        """Loading's own status line: it replaces anything but a sticky status that's still showing."""
+        if self.status_label.full_text() != self._sticky_status:
             self._status(message)
-            self._loading_status = message
+
+    def _sticky(self, message: str) -> None:
+        self._status(message)
+        self._sticky_status = message
+
+    def _go_to_frame(self, index: int) -> None:
+        """A frame the person chose (filmstrip click, arrow key): their own move ends any sticky status."""
+        self._sticky_status = None
+        self._select_frame(index)
 
     def _select_frame(self, index: int) -> None:
         if not (0 <= index < len(self.session.frames)):
@@ -1007,7 +1016,7 @@ class MainWindow(QWidget):
         target = next((i for i, f in enumerate(self.session.frames) if f.path == point.frame), None)
         self._refresh_points()
         if target is not None and target != self._current:
-            self._select_frame(target)
+            self._go_to_frame(target)
             self._pending_flash = index + 1  # flashed once that frame has loaded and shows markers
         else:
             self.image_view.flash(index + 1)
@@ -1249,7 +1258,7 @@ class MainWindow(QWidget):
         # Here rather than a window-wide shortcut, so a focused slider or text field keeps its arrows.
         step = {Qt.Key.Key_Left: -1, Qt.Key.Key_Right: 1}.get(event.key())
         if step is not None and self._current is not None:
-            self._select_frame(self._current + step)
+            self._go_to_frame(self._current + step)
             return
         super().keyPressEvent(event)
 
