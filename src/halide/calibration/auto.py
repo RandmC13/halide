@@ -1,14 +1,13 @@
-"""Zero-effort, statistical density-balance estimation — the fallback tier for users without a
-ColorChecker or a hand-picked anchor frame.
+"""Zero-effort, statistical density-balance estimation — the fallback for when no neutral
+points have been picked (`halide calibrate`).
 
-The old script's equivalent (`auto_density_balance`/`roll_analysis_density_balance`) took
-percentiles of *every* pixel and assumed the single darkest/brightest pixel was neutral gray. The
+The naive approach takes percentiles of *every* pixel and assumes the single darkest/brightest pixel was neutral gray. The
 darkest pixel in a color negative is far more likely to be a saturated shadow color than a neutral
 one — that mismatch between what the statistic measures and what the math needs is a real
-methodological gap, not just noise, and it is why per-frame results varied. This module instead
+methodological gap, not just noise, and it makes per-frame results vary. This module instead
 restricts candidate "neutral" pixels to the least-saturated fraction of the image *first*, then
 takes percentiles only within that filtered set — a materially different, better-justified
-algorithm, not just a tidied-up version of the old one.
+algorithm than a global-median filter.
 
 Everything up to the final shadow/highlight percentiles runs on whichever array library the image
 belongs to (numpy, or CuPy for a frame already on the GPU — see core/_xp.py): only those two
@@ -50,14 +49,13 @@ MIN_PIXELS_PER_BIN = 200  # below this, a bin's own median is too noisy to trust
 # underexposed "toe," where near-black content of any real hue converges toward nearly the same
 # raw color (there is little image-forming density left to differentiate it). Confirmed via real
 # testing: a genuinely neutral black object and a head of dark (non-neutral) hair
-# had near-identical raw RGB and both passed the old global-median filter, while a genuinely
+# had near-identical raw RGB and both passed a global-median filter, while a genuinely
 # neutral, properly-exposed white object was excluded. _density_local_saturation fixes the "compared
 # against the wrong density level" half of that bug by computing a LOCAL reference per density
 # bin instead of one global one. It does not fix the separate, harder problem that
 # _shadow_and_highlight_from_candidates still extracts from the extreme percentiles of whatever
-# survives — investigated and found not fixable by better statistics on this same data; anchor-frame
-# or ColorChecker calibration remain the reliable options when this
-# matters.
+# survives — investigated and found not fixable by better statistics on this same data; picking neutral
+# points by hand remains the reliable option when this matters.
 MIN_DENSITY_SEPARATION = 0.1  # log10 density units; deliberately conservative, see _check_density_separation
 
 
@@ -71,10 +69,10 @@ def _density_local_saturation(pixels: np.ndarray, target_bins: int = DEFAULT_DEN
     from a handful of pixels each.
 
     Computed bin by bin, so no full-frame reference or normalized array is ever built: on a real
-    full-resolution frame the old two-step form (a per-pixel reference array, then `_saturation`
+    full-resolution frame a two-step form (a per-pixel reference array, then `_saturation`
     over all of it, plus an int64 `np.arange` just to split the sort order) held ~500 MiB of
     scratch. Same bins, same medians, same arithmetic per pixel — the result is bit-identical
-    (tests/unit/test_auto_calibration.py keeps the old form as an oracle). The bin-by-bin structure
+    (tests/unit/test_auto_calibration.py keeps that form as an oracle). The bin-by-bin structure
     matters as much on a GPU, where several workers share the card's memory.
 
     On a GPU the luminance sort orders exact ties differently from numpy's (not a stable order on
@@ -156,8 +154,8 @@ def _check_density_separation(shadow_rgb: np.ndarray, highlight_rgb: np.ndarray)
     """Warn (not raise) when the solved shadow/highlight candidates are suspiciously close in
     density — a cheap, real, but narrow safety net: it only catches a near-degenerate (tiny-span)
     pair. It will NOT catch a wrong-but-well-separated pair, which is the specific failure mode
-    found via real testing on IMG_0151 — that failure needs a fundamentally
-    different, external signal (anchor-frame or ColorChecker calibration), not a cheaper check.
+    seen on a real scan — that failure needs a fundamentally
+    different, external signal (neutral points picked by hand), not a cheaper check.
     """
     shadow_density = np.log10(1.0 / np.maximum(shadow_rgb, MIN_TRANSMITTANCE))
     highlight_density = np.log10(1.0 / np.maximum(highlight_rgb, MIN_TRANSMITTANCE))
@@ -166,7 +164,7 @@ def _check_density_separation(shadow_rgb: np.ndarray, highlight_rgb: np.ndarray)
         warnings.warn(
             "auto-detected shadow/highlight candidates are unusually close in density "
             f"(min span {span.min():.3f}, expected at least {MIN_DENSITY_SEPARATION}) — this "
-            "estimate may be unreliable; consider anchor-frame or ColorChecker calibration instead",
+            "estimate may be unreliable; pick neutral points with `halide calibrate` instead",
             stacklevel=3,
         )
 
@@ -184,7 +182,7 @@ def _neutral_candidate_mask(image: np.ndarray, neutral_fraction: float) -> np.nd
     luminance-sorted density bin it sorts into: that bin's per-channel reference becomes
     `xp.median(...)` of a set that includes it, which is NaN if the pixel is NaN, corrupting every
     *other* pixel's saturation score in that bin too — not just its own (confirmed: this is exactly
-    how one NaN pixel used to turn a whole `--auto-density` profile into NaN). On an all-valid image
+    how one NaN pixel would turn a whole `--auto-density` profile into NaN). On an all-valid image
     this is a no-op — the population `_density_local_saturation` sees is unchanged in value and
     order, and the all-valid case takes the same path as before (no extra frame-sized copy) to stay
     within the memory budget banding exists for (tests/unit/test_banding.py).
@@ -228,7 +226,7 @@ def _shadow_and_highlight_from_candidates(
     if len(candidates) < 2:
         raise ValueError(
             "not enough near-neutral pixels found to estimate density balance automatically "
-            "(try a higher neutral_fraction, or use a manual/ColorChecker calibration instead)"
+            "— pick neutral points with `halide calibrate` instead"
         )
     xp = array_namespace(candidates)
     shadow_rgb = xp.percentile(candidates, shadow_percentile, axis=0)

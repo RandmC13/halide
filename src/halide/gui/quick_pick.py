@@ -30,8 +30,7 @@ def run_quick_pick(path: str) -> tuple[DensityProfile, ToneCurveParams | None, s
     closes the window without doing so (returns None).
 
     Runs a local QEventLoop rather than a full QApplication.exec() so this function can return a
-    value once the user's done, rather than exiting the process - new territory for this codebase's
-    GUI code (every other entry point runs the full event loop and exits the process).
+    value once the user's done, rather than exiting the process - unlike every other entry point, which runs the full event loop and exits the process.
     """
     app = QApplication.instance() or QApplication(sys.argv)
     theme.apply(app)

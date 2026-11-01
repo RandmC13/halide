@@ -156,17 +156,17 @@ A typical roll:
 
 ```bash
 # 1. Check the scans were made consistently (reads file headers only, so it's fast)
-halide check roll16/
+halide check portra-roll-03/
 
 # 2. Pick neutral points across the roll and save them as a profile
-halide calibrate roll16/
+halide calibrate portra-roll-03/
 
 # 3. Develop the whole roll with that profile
-halide batch roll16/ roll16-developed/ --profile "Portra 400"
+halide batch portra-roll-03/ portra-roll-03-developed/ --profile "Portra 400"
 
 # 4. Make sRGB copies for sharing, plus a contact sheet
-halide export roll16-developed/ roll16-jpeg/ --format jpg
-halide contact roll16-developed/ roll16-sheet.jpg
+halide export portra-roll-03-developed/ portra-roll-03-jpeg/ --format jpg
+halide contact portra-roll-03-developed/ portra-roll-03-sheet.jpg
 ```
 
 Run `invert` or `batch` without a calibration flag and halide offers your saved profiles, the
@@ -180,7 +180,7 @@ Want to see what a run would do first? Add `--dry-run` to `batch` (or to `print`
 halide shows the frames, outputs, calibration and worker count it would use, instantly, and develops,
 writes and asks nothing.
 
-Want to try settings before committing disk space? `halide batch roll16/ --contact-sheet
+Want to try settings before committing disk space? `halide batch portra-roll-03/ --contact-sheet
 preview.jpg` develops every frame at full quality but keeps only the contact sheet.
 
 ## Commands

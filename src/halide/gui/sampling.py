@@ -1,4 +1,4 @@
-"""Pure, GUI-framework-independent helpers for the anchor-frame calibration picker: patch
+"""Pure, GUI-framework-independent helpers for the calibration picker: patch
 sampling, outlier-robust snapping, and preview stretching. No Qt import here, so this is
 unit-testable without a display — only the widget modules (gui/main_window.py and friends) touch Qt.
 """
@@ -100,17 +100,10 @@ def display_to_full_res_coords(
     return full_x, full_y
 
 
-def full_res_to_display_coords(full_x: int, full_y: int, stride: int) -> tuple[int, int]:
-    """The inverse of display_to_full_res_coords — where a full-res point (e.g. a picked shadow/
-    highlight point) lands on the downsampled display, for drawing a marker at the right spot."""
-    return full_x // stride, full_y // stride
-
-
 def extract_magnifier_patch(image: np.ndarray, x: int, y: int, radius: int = 12) -> np.ndarray:
     """Crop a fixed-size (2*radius+1, 2*radius+1, 3) patch from `image` centered at (x, y),
-    edge-padding near the image border rather than shrinking — the caller uploads this into a
-    FIXED-SIZE dpg dynamic texture on every hover event, so the output shape must never change or
-    the update degrades into a full texture recreate."""
+    edge-padding near the image border rather than shrinking — the caller shows this in a
+    fixed-size magnifier widget on every hover event, so the output shape must never change."""
     h, w = image.shape[:2]
     y0, y1 = y - radius, y + radius + 1
     x0, x1 = x - radius, x + radius + 1

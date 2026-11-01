@@ -30,7 +30,7 @@ class ProfileError(ValueError):
 
 class ProfileNameError(ProfileError):
     """A profile name that can't be used at all - empty, contains a path separator, starts with
-    '.'/'-', or is too long. Raised before the name ever reaches a Path (2.2-1: an unvalidated
+    '.'/'-', or is too long. Raised before the name ever reaches a Path (an unvalidated
     name let `../evil` delete or overwrite a file outside the profiles directory)."""
 
 
@@ -78,7 +78,7 @@ def default_profiles_dir() -> Path:
 def find_profile(name: str, profiles_dir: Path | None = None) -> Path | None:
     """The saved profile file for `name`: an exact match first, then a case-insensitive
     (`casefold`) match - so 'Portra' and 'portra' resolve to the same file, matching what actually
-    happens on macOS's default case-insensitive-but-preserving filesystem (2.2-12). None if no
+    happens on macOS's default case-insensitive-but-preserving filesystem. None if no
     file matches either way."""
     if name.startswith("."):  # never a profile: hidden files are leftover temps
         return None
@@ -210,8 +210,8 @@ def save_named_profile(
 
     Raises ProfileNameError for an unusable name (validate_profile_name), and ProfileExistsError
     if a profile of that name already exists (compared case-insensitively, via find_profile) and
-    `overwrite` isn't True (2.2-2/2.2-12/2.6-5: a re-run with the same --save-profile-as name, or a
-    name differing only by case, used to overwrite a real calibration with no warning). Overwriting
+    `overwrite` isn't True (so a re-run with the same --save-profile-as name, or a
+    name differing only by case, can't silently overwrite a real calibration). Overwriting
     an existing name-differing-only-by-case match reuses that file's own on-disk name/casing rather
     than creating a second file."""
     name = validate_profile_name(name)
@@ -271,8 +271,8 @@ def load_anchors(path: str | Path) -> tuple[list[dict], str | None]:
 def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityProfile | None, str | None]]:
     """(filename stem, profile, problem) triples for every *.json file in the profiles directory,
     sorted by name. A file that can't be read - permission denied, corrupt/truncated JSON, or
-    missing a required field - is never skipped silently and never crashes the whole listing (2.2-4:
-    the previous version's own docstring promised this but only caught JSON errors, not OSError):
+    missing a required field - is never skipped silently and never crashes the whole listing (OSError as well as
+    JSON errors is caught):
     it's listed with `profile=None` and a plain-English `problem` string, for the caller to show."""
     directory = profiles_dir or default_profiles_dir()
     if not directory.exists():
@@ -293,7 +293,7 @@ def list_profiles(profiles_dir: Path | None = None) -> list[tuple[str, DensityPr
 def suggest_profile_name(name: str, profiles_dir: Path | None = None) -> str | None:
     """A "did you mean" suggestion for a mistyped profile name - the closest saved, readable
     profile name by string similarity, or None if none is close enough. Shared by every profile
-    subcommand (show/rename/edit/delete) and --profile's own not-found error (2.2-7)."""
+    subcommand (show/rename/edit/delete) and --profile's own not-found error."""
     names = [stem for stem, profile, problem in list_profiles(profiles_dir) if problem is None]
     by_folded = {n.casefold(): n for n in names}
     matches = difflib.get_close_matches(name.casefold(), list(by_folded), n=1, cutoff=0.6)
@@ -303,7 +303,7 @@ def suggest_profile_name(name: str, profiles_dir: Path | None = None) -> str | N
 def damaged_profile_message(name: str, exc: Exception) -> str:
     """A plain message for a saved profile file that exists but can't be parsed/read (corrupt or
     hand-edited JSON, a missing required field) - so a raw JSONDecodeError/ValueError never reaches
-    the user directly (2.2-5)."""
+    the person running halide."""
     return (
         f"profile {name!r} is damaged and can't be read ({exc}) — re-save it from "
         f"`halide calibrate --profile {name}`, or delete it with `halide profile delete {name}`"
@@ -319,7 +319,7 @@ def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = Non
         raise FileNotFoundError(f"no saved profile named {old_name!r} in {directory}")
     new_path = directory / f"{new_name}.json"
 
-    # Case-insensitive, like save_named_profile (2.2-12): "a" -> "B" is still a collision if "b"
+    # Case-insensitive, like save_named_profile: "a" -> "B" is still a collision if "b"
     # is already a saved profile - but not when the only match find_profile finds is old_path
     # itself, which is exactly what a case-only rename ("portra400" -> "Portra400") looks like to
     # a case-insensitive lookup.
@@ -328,7 +328,7 @@ def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = Non
         raise FileExistsError(f"a profile named {new_name!r} already exists in {directory}")
 
     # Rewrites the raw JSON rather than round-tripping through DensityProfile, so the optional
-    # "tone"/"scan" sidecars survive a rename (round-tripping used to silently drop "tone").
+    # "tone"/"scan" sidecars survive a rename (round-tripping through DensityProfile would drop "tone").
     data = json.loads(old_path.read_text())
     data["name"] = new_name
     content = json.dumps(data, indent=2) + "\n"
@@ -346,7 +346,7 @@ def rename_profile(old_name: str, new_name: str, profiles_dir: Path | None = Non
         # A case-only change (e.g. "portra400" -> "Portra400"): asking the filesystem to rename a
         # path onto one that differs only in case can be treated as "the same file" and silently
         # no-op the case change, on a case-insensitive-but-preserving filesystem (macOS/Windows) -
-        # not reproducible on this dev sandbox's Linux filesystem, but real on the user's. Moving
+        # not reproducible on a case-sensitive Linux filesystem, but real on macOS. Moving
         # the old file to a name the filesystem can't confuse with either case first, then writing
         # the new path fresh, means no single rename call ever has to disambiguate "same file, new
         # case" - and the original survives under its backup name if the write fails partway.

@@ -89,7 +89,7 @@ def children_ignore_terminal_signals():
     """A context manager for the moment a child process is launched (the forkserver, the GPU
     service): an ignored signal stays ignored across fork and exec, and Python keeps it ignored at
     start-up, so the child ignores Ctrl-C and SIGHUP from its very first instruction — before it
-    could run any code of its own to do so (the forkserver's preload, 2.4-9). Keep it short: a
+    could run any code of its own to do so (the forkserver's preload). Keep it short: a
     Ctrl-C landing inside it is lost."""
     return _handlers(_TERMINAL_SIGNALS, signal.SIG_IGN)
 

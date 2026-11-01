@@ -7,7 +7,7 @@ Thumbnails are reduced in *linear* light (block averaging) before being encoded 
 detail averages the way light does rather than darkening, as averaging gamma-encoded values would.
 The sheet is sRGB with the profile embedded, the same delivery encoding as `halide export`.
 
-The look follows a real printed contact sheet (the user's own reference, a Portra 400 roll): black
+The look follows a real printed contact sheet (modelled on a Portra 400 roll): black
 wherever the film is, frames butted in strips of up to six in job order (the last strip only as
 long as the frames left over), and the film's orange edge printing - frame numbers and the film
 stock above each frame, numbers and edge-code bars below. Under each frame a small dim line gives

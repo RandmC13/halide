@@ -243,9 +243,9 @@ def test_a_folder_of_only_positives_says_so_instead_of_no_tiffs(roll, tmp_path, 
     out = tmp_path / "out"
     assert _batch(roll, out) == 0
     capsys.readouterr()
-    assert _batch(out, tmp_path / "again") == 1
-    screen = capsys.readouterr().out
-    assert "halide positives" in screen and "No TIFF files found" not in screen
+    with pytest.raises(SystemExit, match="halide positives") as caught:
+        _batch(out, tmp_path / "again")
+    assert "No TIFF files found" not in str(caught.value)
 
 
 def test_a_batch_clears_a_dead_runs_partial_file_and_says_so(roll, tmp_path, capsys):

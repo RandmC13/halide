@@ -236,7 +236,7 @@ def apply_density_balance(img: np.ndarray, profile: DensityProfile) -> np.ndarra
     form avoids a log/exp round trip. Green's exponent is always 1.0 (no-op) by construction."""
     # `safe` is a fresh copy of img (xp.maximum never returns its input in place), so writing the
     # power result back into it via `out=` is safe — img itself is never mutated — and avoids a
-    # second full-size allocation for what used to be a separate return value.
+    # second full-size allocation for a separate return value.
     xp = array_namespace(img)
     safe = xp.maximum(img, MIN_TRANSMITTANCE)
     exponent = xp.asarray(profile.density_scale, dtype=safe.dtype)

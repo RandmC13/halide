@@ -73,7 +73,7 @@ def test_batch_dry_run_writes_nothing_and_says_so(roll, tmp_path, capsys):
     assert not (tmp_path / "out").exists()
     assert _snapshot(tmp_path) == before
     assert "(would be created)" in out
-    assert "Dry run — nothing developed. 3 frames would be developed →" in out
+    assert "Dry run — 3 frames would be developed →" in out
     assert "Workers" in out and "Output" in out
 
 
@@ -193,7 +193,7 @@ def test_preview_batch_names_the_sheet(roll, tmp_path, capsys):
 
 def test_quiet_still_prints_the_final_line(roll, tmp_path, capsys):
     code, out = _run(capsys, "batch", str(roll), str(tmp_path / "out"), *MANUAL, "--dry-run", "--quiet")
-    assert code == 0 and "Dry run — nothing developed." in out and "Workers" not in out
+    assert code == 0 and "Dry run — 3 frames would be developed" in out and "Workers" not in out
 
 
 @pytest.mark.parametrize("command, past", [("print", "printed"), ("export", "exported")])
@@ -205,7 +205,7 @@ def test_bulk_print_and_export_dry_run(tmp_path, capsys, command, past):
     before = _snapshot(tmp_path)
     code, out = _run(capsys, command, str(src), str(out_dir), "--dry-run")
     assert code == 0 and not out_dir.exists() and _snapshot(tmp_path) == before
-    assert f"Dry run — nothing {past}. 3 " in out and f"would be {past}" in out
+    assert "Dry run — 3 " in out and f"would be {past}" in out
 
 
 def _develop_flat(src):
@@ -264,8 +264,8 @@ def test_existing_contact_sheet_in_a_preview(roll, tmp_path, capsys):
     code, out = _run(capsys, "batch", str(roll), "--contact-sheet", str(sheet), *MANUAL, "--dry-run")
     assert code == 0 and "already exists — a real run would ask" in out
     code, out = _run(capsys, "batch", str(roll), "--contact-sheet", str(sheet), *MANUAL, "--dry-run", "--skip-existing")
-    assert code == 0 and out.rstrip().endswith("already exists (--skip-existing).")
-    assert "Dry run — nothing developed. Nothing to do" in out
+    assert code == 0 and out.rstrip().endswith("already exists (--skip-existing)")
+    assert "Dry run — nothing to do, " in out and "nothing developed" not in out
 
 
 def test_invert_only_with_save_profile_as_errors_like_a_real_run(roll, tmp_path):
@@ -279,7 +279,7 @@ def test_everything_present_but_the_sheet_would_build_it_from_the_folder(roll, t
     capsys.readouterr()
     code, out = _run(capsys, "batch", str(roll), str(out_dir), *MANUAL, "--dry-run", "--skip-existing",
                      "--contact-sheet", str(tmp_path / "s.jpg"))
-    assert code == 0 and "Dry run — nothing developed. Nothing to develop" in out
+    assert code == 0 and "Dry run — nothing to do, every output in " in out
     assert "would be built from the folder" in out
 
 

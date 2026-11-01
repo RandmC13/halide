@@ -44,10 +44,14 @@ def run(args: argparse.Namespace) -> int:
     from halide.processing import read_roll_scan_metadata
 
     files, skipped = _collect(args.inputs)
+    files = list(dict.fromkeys(f.resolve() for f in files))  # a file named twice counts once
     if not files:
-        print("No TIFF files found")
-        return 1
-    report = assess_roll({f.name: meta for f, meta in zip(files, read_roll_scan_metadata(files).values())})
+        raise SystemExit("No TIFF files found — is this the right folder?")
+    metadata = read_roll_scan_metadata(files)
+    names = [f.name for f in files]
+    # Same-named files from different folders keep separate rows, told apart by their folder.
+    label = {f: (f"{f.parent.name}/{f.name}" if names.count(f.name) > 1 else f.name) for f in files}
+    report = assess_roll({label[f]: metadata[str(f)] for f in files})
 
     print(console.full_width_rule())
     print(f"Checked {console.plural(len(files), 'frame')}")
@@ -56,11 +60,12 @@ def run(args: argparse.Namespace) -> int:
 
     print(f"\n{console.Style.BOLD}Camera exposure when digitizing{console.Style.RESET}")
     for setting, names in sorted(report.exposure_groups.items(), key=lambda kv: -len(kv[1])):
-        print(f"  {setting:>18s}  {len(names):3d} frames  {_names(names)}")
+        print(f"  {setting:>18s}  {console.plural(len(names), 'frame'):>9s}  {_names(names)}")
     if report.missing_exif:
-        print(f"  {'(no EXIF)':>18s}  {len(report.missing_exif):3d} frames  {_names(report.missing_exif)}")
-        n = len(report.missing_exif)
-        print(console.warning(f"not verifiable (no camera EXIF in {n} frame{'' if n == 1 else 's'})"))
+        print(f"  {'(no EXIF)':>18s}  {console.plural(len(report.missing_exif), 'frame'):>9s}  {_names(report.missing_exif)}")
+        print(console.warning(
+            f"not verifiable (no camera EXIF in {console.plural(len(report.missing_exif), 'frame')})"
+        ))
     if report.exposure_inconsistent:
         print(console.warning(
             f"{report.exposure_spread_stops:.1f} stops between the brightest and darkest scan — "
@@ -73,7 +78,7 @@ def run(args: argparse.Namespace) -> int:
     if not report.white_balance_groups:
         print("  (no darktable history found — can't check)")
     for wb, names in sorted(report.white_balance_groups.items(), key=lambda kv: -len(kv[1])):
-        print(f"  R {wb[0]:.3f} G {wb[1]:.3f} B {wb[2]:.3f}  {len(names):3d} frames  {_names(names)}")
+        print(f"  R {wb[0]:.3f} G {wb[1]:.3f} B {wb[2]:.3f}  {console.plural(len(names), 'frame'):>9s}  {_names(names)}")
     if report.white_balance_inconsistent:
         print(console.warning(
             "white balance differs between frames — not correctable after export (it's applied in "

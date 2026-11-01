@@ -1260,7 +1260,7 @@ def test_a_signalled_gpu_batch_cancels_in_order_and_leaves_nothing_behind(tmp_pa
     assert not any(name.startswith(ours) for name in _shm_entries())
     outputs = sorted(p.name for p in (tmp_path / "out").iterdir() if p.name != RUN_LOG_NAME)
     assert not any("partial" in name for name in outputs)  # frames in progress finished, whole
-    counted = int(re.search(r"Cancelled - (\d+) of 6", out + err).group(1))
+    counted = int(re.search(r"Cancelled — (\d+) of 6", out + err).group(1))
     assert len(outputs) == counted  # and every frame written is counted
 
 

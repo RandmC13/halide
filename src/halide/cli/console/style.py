@@ -109,10 +109,12 @@ def finish_message(verb: str, ok: int, total: int, failed: int, elapsed: float, 
 
 
 def cancelled_message(verb: str, ok: int, total: int, noun: str | None = None) -> str:
-    """The one Ctrl-C message: everything finished is on disk whole, nothing else was started."""
+    """The one Ctrl-C message: how far the run got, then (for frames, not a contact sheet) how to
+    carry on. Everything finished is on disk whole, so --skip-existing picks up where it stopped."""
     noun = noun or NOUN.get(verb, "frame")
     past = VERB_PAST.get(verb, "Processed").lower()
-    return f"Cancelled - {ok} of {plural(total, noun)} {past}; nothing half-written"
+    message = f"Cancelled — {ok} of {plural(total, noun)} {past}"
+    return message if verb == "proof" else f"{message}\n  re-run with --skip-existing to carry on"
 
 
 def success(message: str) -> str:
@@ -127,7 +129,7 @@ def warning(message: str) -> str:
     return f"{Style.YELLOW}{ICON_WARN} Warning:{Style.RESET} {message}"
 
 
-def cancelled(message: str = "Cancelled - nothing half-written") -> str:
+def cancelled(message: str = "Cancelled") -> str:
     """The Ctrl-C line, worded the same everywhere (see cancelled_message)."""
     return f"{Style.RED}{ICON_FAIL}{Style.RESET} {message}"
 
@@ -140,7 +142,7 @@ def rule(columns: int = 20) -> str:
     """A dim row of sprocket-hole ticks, used as a section divider that doubles as a light
     filmstrip motif — e.g. framing `profile list` or a batch run's header/footer.
 
-    Sizing convention (the user's, keep to it): framing one or two lines of output, the rule is as
+    Sizing convention: framing one or two lines of output, the rule is as
     wide as the text so it neatly wraps it; framing longer output, it spans the whole terminal line
     — a fixed-width rule over long output looks like it stops abruptly. Use framed() /
     rule_fitting() / full_width_rule() rather than guessing a column count."""
@@ -178,7 +180,7 @@ def framed(lines: list[str]) -> str:
 
 def human_time(seconds: float) -> str:
     seconds = max(0.0, seconds)
-    if seconds < 60:
+    if round(seconds, 1) < 60:
         return f"{seconds:.1f}s"
     minutes, secs = divmod(int(round(seconds)), 60)
     if minutes < 60:

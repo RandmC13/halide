@@ -17,7 +17,7 @@ def _banner(tagline: str) -> str:
 
 
 def welcome_screen() -> str:
-    """Shown when `halide` is run with no subcommand — replaces argparse's bare "the following
+    """Shown when `halide` is run with no subcommand — instead of argparse's bare "the following
     arguments are required: command" error with something that actually orients a non-programmer
     photographer, instead of just failing."""
     starts = [

@@ -26,12 +26,13 @@ from halide.io.roll import Skipped
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "inputs", nargs="+",
+        "frames", nargs="+", metavar="FRAMES...",
         help="A folder of developed frames (TIFFs from invert/batch/print, or PNG/JPEG from export), "
-        "or individual files, followed by the contact sheet to write (.jpg or .png)",
+        "or individual files",
     )
+    parser.add_argument("sheet", metavar="SHEET", help="The contact sheet to write (.jpg or .png)")
     add_contact_layout_arguments(parser)
-    add_output_policy_arguments(parser)
+    add_output_policy_arguments(parser, skip_help="Keep the sheet if it already exists")
     add_workers_argument(parser)
     parser.add_argument("--quiet", action="store_true", help="Suppress the progress display")
     add_device_argument(parser)
@@ -64,24 +65,21 @@ def _collect(inputs: list[str], sheet: Path) -> tuple[list[Path], Skipped]:
 def run(args: argparse.Namespace) -> int:
     from halide.io.contact_sheet import check_sheet_path
 
-    if len(args.inputs) < 2:
-        raise SystemExit("usage: halide contact <folder-or-files...> <sheet.jpg|.png>")
-    sheet_path = Path(args.inputs[-1])
+    sheet_path = Path(args.sheet)
     try:
         check_sheet_path(sheet_path)
     except ValueError as exc:
         raise SystemExit(str(exc))
-    files, skipped = _collect(args.inputs[:-1], sheet_path)
+    files, skipped = _collect(args.frames, sheet_path)
     if skipped and not args.quiet:
         print(console.dim(f"Skipped {skipped.describe()}"))
     if not files:
-        print("No processed frames (TIFF/PNG/JPEG) found")
-        return 1
+        raise SystemExit("No processed frames (TIFF/PNG/JPEG) found — is this the right folder?")
     resolved = resolve_existing(
         [(sheet_path, sheet_path)], policy_from_args(args), interactive=is_interactive()
     )
     if not resolved:
-        print(console.success(f"{sheet_path} already exists — skipped (--skip-existing)."))
+        print(console.success(f"{sheet_path} already exists — skipped (--skip-existing)"))
         return 0
 
     # The thumbnails are made on the CPU (run_thumbnail_batch: the frames are already developed,
@@ -97,6 +95,6 @@ def run(args: argparse.Namespace) -> int:
     if not args.quiet:
         print(f"Compute: {device_row(ComputeDevice(kind='cpu'))}{note}")
 
-    first = Path(args.inputs[0])
+    first = Path(args.frames[0])
     default_title = first.name if first.is_dir() else first.parent.name or "contact sheet"
     return write_sheet_from_folder(files, sheet_path, args, default_title, quiet=args.quiet)

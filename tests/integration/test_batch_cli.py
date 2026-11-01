@@ -130,8 +130,8 @@ def test_batch_cli_empty_directory_errors(tmp_path):
     in_dir = tmp_path / "empty_in"
     in_dir.mkdir()
     out_dir = tmp_path / "out"
-    exit_code = main(["batch", str(in_dir), str(out_dir)])
-    assert exit_code == 1
+    with pytest.raises(SystemExit, match=r"No TIFF files found in .*right folder\? Subfolders are skipped \(use --recursive\)"):
+        main(["batch", str(in_dir), str(out_dir)])
 
 
 def test_auto_density_roll_conflicts_with_other_sources(roll_dir, tmp_path):

@@ -138,9 +138,9 @@ def test_non_ascii_names_stay_aligned_and_utf8(tmp_path):
 
 def test_cancel_before_any_frame_still_closes_the_block(tmp_path):
     path = tmp_path / "halide-log.txt"
-    _run(path, [], end="✗ Cancelled - 0 of 37 frames developed; nothing half-written")
+    _run(path, [], end="✗ Cancelled — 0 of 37 frames developed")
     text = path.read_text(encoding="utf-8")
-    assert "Cancelled - 0 of 37" in text and "━━ finished" in text
+    assert "Cancelled — 0 of 37" in text and "━━ finished" in text
 
 
 def test_an_error_is_recorded_before_the_closing_rule(tmp_path):

@@ -64,7 +64,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                       "about it, and the roll it was picked from.")
     show_parser.add_argument("name", help="The profile's name, or a path to its file")
 
-    rename_parser = add("rename", "Rename a saved profile", 'halide profile rename "Portra 400" "Portra 400 (Roll 16)"',
+    rename_parser = add("rename", "Rename a saved profile", 'halide profile rename "Portra 400" "Portra 400 (daylight)"',
                         description="Give a saved profile a new name; everything recorded with it comes along.")
     rename_parser.add_argument("old_name", help="The profile's current name")
     rename_parser.add_argument("new_name", help="The name to give it")
@@ -97,7 +97,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_list(args: argparse.Namespace) -> int:
     profiles = list_profiles()
     if not profiles:
-        print(f"No saved profiles in {default_profiles_dir()}")
+        print(f"No saved profiles in {default_profiles_dir()} — make one with `halide calibrate ROLL`")
         return 0
 
     lines = [f"Saved profiles in {default_profiles_dir()}:"]
@@ -168,7 +168,7 @@ def _show_roll(path: Path) -> None:
 
 def _reject_path_like(value: str, command: str) -> None:
     """`profile rename`/`delete`/`edit` take a bare saved-profile name, never a file path - unlike
-    `profile show` and `--profile`, which accept both (2.5-12). Caught here with a message that
+    `profile show` and `--profile`, which accept both. Caught here with a message that
     says so, rather than a confusing "no saved profile named '/long/path/to/it.json'" from the
     name-only lookup these three subcommands use."""
     if "/" in value or "\\" in value or value.lower().endswith(".json"):

@@ -254,7 +254,11 @@ def test_plural_and_finish_and_cancel_wording():
     assert console.finish_message("batch", 1, 1, 0, 3.0) == "Developed 1 frame in 3.0s"
     assert console.finish_message("export", 12, 12, 0, 8.0) == "Exported 12 files in 8.0s"
     assert console.finish_message("batch", 36, 37, 1, 42.0) == "Developed 36 of 37 frames (1 failed) in 42.0s"
-    assert console.cancelled_message("batch", 2, 6) == "Cancelled - 2 of 6 frames developed; nothing half-written"
+    assert console.cancelled_message("batch", 2, 6) == (
+        "Cancelled — 2 of 6 frames developed\n  re-run with --skip-existing to carry on"
+    )
+    assert console.cancelled_message("proof", 2, 6) == "Cancelled — 2 of 6 frames proofed"
+    assert console.human_time(59.96) == "1m00s" and console.human_time(59.4) == "59.4s"
 
 
 def test_run_guarded_cancel_uses_the_one_wording(capsys):
@@ -262,7 +266,7 @@ def test_run_guarded_cancel_uses_the_one_wording(capsys):
         raise KeyboardInterrupt
 
     assert console.run_guarded(main, []) == 130
-    assert "✗ Cancelled - nothing half-written" in capsys.readouterr().err
+    assert "✗ Cancelled" in capsys.readouterr().err
 
 
 def test_run_cli_makes_stdout_line_buffered(monkeypatch):
@@ -325,3 +329,31 @@ def test_print_rows_prints_no_rules_and_quiet_keeps_only_warnings(capsys, monkey
     print_rows(rows, quiet=True)
     out = capsys.readouterr().out
     assert "Prints" not in out and "a.tif  grade 0.40" in out
+
+
+def _typed(monkeypatch, replies):
+    monkeypatch.setattr("halide.cli.console.prompts.is_interactive", lambda: True)
+    it = iter(replies)
+
+    def fake(prompt=""):
+        r = next(it)
+        if isinstance(r, BaseException):
+            raise r
+        return r
+
+    monkeypatch.setattr("builtins.input", fake)
+
+
+def test_menu_asks_again_after_a_typo(monkeypatch, capsys):
+    _typed(monkeypatch, ["x", "9", "0", "2"])
+    assert console.menu("pick", [("a", "A"), ("b", "B")]) == "b"
+    assert capsys.readouterr().out.count("Type a number from 1 to 2") == 3
+
+
+def test_menu_blank_eof_and_ctrl_c_still_cancel(monkeypatch):
+    for reply in ("", EOFError(), KeyboardInterrupt()):
+        _typed(monkeypatch, [reply])
+        try:
+            assert console.menu("pick", [("a", "A")]) is None
+        except KeyboardInterrupt:
+            pass

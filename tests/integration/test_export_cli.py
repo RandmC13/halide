@@ -143,7 +143,8 @@ def test_bulk_export_empty_directory_errors(tmp_path):
     in_dir = tmp_path / "empty_in"
     in_dir.mkdir()
     out_dir = tmp_path / "out"
-    assert main(["export", str(in_dir), str(out_dir)]) == 1
+    with pytest.raises(SystemExit, match=r"No TIFF files found in .*right folder\?$"):
+        main(["export", str(in_dir), str(out_dir)])
 
 
 def test_bulk_export_runs_in_parallel_with_explicit_workers(tmp_path):

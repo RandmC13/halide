@@ -1,7 +1,6 @@
 """The contact sheet window ("Build contact sheet…" in the picker): the whole roll printed with the
 session's current calibration, zoomable and pannable - the check that the neutral points picked on
-a few frames hold up across every frame of the roll (the way the A/B contact sheets revealed
-Roll16-Profile1's warmth). Once every frame has developed it can be saved as a file.
+a few frames hold up across every frame of the roll (a profile can look right on the frames it was picked on and still be warm across the roll). Once every frame has developed it can be saved as a file.
 
 Where the full-quality frames live meanwhile: each worker writes its frame's thumbnail PNG into a
 temporary folder (`halide-proof-…` in the system temp directory); each is read into memory as it

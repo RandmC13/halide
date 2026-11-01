@@ -49,9 +49,9 @@ def add_stage_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def manual_calibration_given(args: argparse.Namespace) -> bool:
-    """Whether any of --rm/--bm/--rs/--bs was typed. The one definition: the two scales default to
-    1.0 (not None), so "given" means "moved off the default"."""
-    return args.rm is not None or args.bm is not None or args.rs != 1.0 or args.bs != 1.0
+    """Whether any of --rm/--bm/--rs/--bs was typed (an explicit 1 counts: all four default to None
+    and mean 1.0 where they're used)."""
+    return any(getattr(args, name) is not None for name in ("rm", "bm", "rs", "bs"))
 
 
 def add_calibration_arguments(
@@ -59,9 +59,9 @@ def add_calibration_arguments(
 ):
     """Adds the calibration flags and returns the group of mutually exclusive *sources* (--profile,
     --auto-density, --pick) so a command can add its own (batch's --auto-density-roll). The manual
-    --rm/--bm/--rs/--bs values can't join that group: argparse can't tell "typed" from "left at the
-    default" for the two scales (default 1.0), so their clash with a source is checked by hand in
-    resolve_density_profile (and in batch, for --auto-density-roll)."""
+    --rm/--bm/--rs/--bs values can't join that group: they aren't one source but a set of
+    optional values, so their clash with a source is checked by hand in resolve_density_profile
+    (and in batch, for --auto-density-roll)."""
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument(
         "--profile", help="A saved calibration profile: its name, or a path to its file"
@@ -75,11 +75,11 @@ def add_calibration_arguments(
         help="Blue white-balance multiplier, above 0 (manual calibration; default: 1.0)",
     )
     parser.add_argument(
-        "--rs", type=positive_float, default=1.0, metavar="X",
+        "--rs", type=positive_float, metavar="X",
         help="Red density-balance scale, above 0 (manual calibration; default: 1.0)",
     )
     parser.add_argument(
-        "--bs", type=positive_float, default=1.0, metavar="X",
+        "--bs", type=positive_float, metavar="X",
         help="Blue density-balance scale, above 0 (manual calibration; default: 1.0)",
     )
     if allow_auto:
@@ -101,8 +101,10 @@ def add_calibration_arguments(
         "--save-profile-as",
         metavar="NAME",
         type=_profile_name_type,
-        help="Save the calibration profile used for this run (however it was obtained — manual, "
-        "loaded, automatic, or picked) under NAME for reuse via --profile NAME next time. Refuses "
+        help="Save the calibration profile used for this run (" + (
+            "typed values, a saved profile, an automatic estimate or picked points" if allow_pick
+            else "typed values, a saved profile or --auto-density-roll"
+        ) + ") under NAME for reuse via --profile NAME next time. Refuses "
         "an existing name unless --overwrite is also given (or, in a terminal, confirmed)",
     )
     parser.add_argument(
@@ -255,9 +257,9 @@ def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
         options.append((f"profile:{stem}", f"Profile '{stem}'" + (f"  ({' · '.join(bits)})" if bits else "")))
     if hasattr(args, "pick"):
         options.append(("pick", "Pick neutral points in the calibration picker now"))
-    options.append(("auto", "Use --auto-density (a quick automatic estimate for each frame)"))
+    options.append(("auto", "Quick automatic estimate, per frame (approximate)"))
     if hasattr(args, "auto_density_roll"):
-        options.append(("auto_roll", "Use --auto-density-roll (one automatic estimate for the whole roll)"))
+        options.append(("auto_roll", "One automatic estimate for the whole roll (approximate)"))
     options.append(("cancel", "Cancel"))
 
     prompt = f"No calibration given for {what}. Which would you like to use?"
@@ -323,7 +325,7 @@ def resolve_density_profile(
         return (
             DensityProfile(
                 white_balance=(args.rm if args.rm is not None else 1.0, 1.0, args.bm if args.bm is not None else 1.0),
-                density_scale=(args.rs, 1.0, args.bs),
+                density_scale=(args.rs if args.rs is not None else 1.0, 1.0, args.bs if args.bs is not None else 1.0),
                 source="manual",
             ),
             None,
@@ -366,8 +368,7 @@ def maybe_save_profile(
     """Save the resolved profile under --save-profile-as, if given, returning where it went (None
     if nothing was asked to be saved); `announce=False` leaves reporting it to the caller. `profile=None` means no
     single profile was computed here (per-frame --auto-density produces a different profile per
-    image; --invert-only skips density balance entirely) — that is an error if the user asked to
-    save one. `tone` (e.g. from a --pick session's Print controls) is saved alongside it."""
+    image; --invert-only skips density balance entirely) — that is an error if saving one was requested. `tone` (e.g. from a --pick session's Print controls) is saved alongside it."""
     save_as = getattr(args, "save_profile_as", None)
     if not save_as:
         return None

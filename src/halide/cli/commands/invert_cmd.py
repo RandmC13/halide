@@ -50,7 +50,9 @@ from halide.core.types import Stage
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("input", help="Linear TIFF scan of one negative")
     parser.add_argument("output", help="Where to write the positive TIFF")
-    add_output_policy_arguments(parser, saves_profile=True)
+    add_output_policy_arguments(
+        parser, saves_profile=True, skip_help="Develop only if the output doesn't exist yet"
+    )
     add_stage_arguments(parser)
     add_calibration_arguments(parser, allow_pick=True)
     add_tone_arguments(parser)
@@ -58,11 +60,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_device_argument(parser)
 
 
-def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool) -> tuple[float, object]:
+def _resolve_scan_gain(args: argparse.Namespace, calibrated_here: bool, invert_only: bool = False) -> tuple[float, object]:
     """(gain for this frame, scan settings to record if the calibration is saved). A calibration
     solved from this very frame (--pick, --auto-density) is at this frame's scan exposure by
     definition, so there's nothing to match."""
     frame_settings, _ = read_scan_metadata(args.input)
+    if invert_only:
+        if args.match_scan_exposure:
+            print(console.warning("--match-scan-exposure has no effect here: --invert-only uses no calibration"))
+        return 1.0, frame_settings
     if calibrated_here:
         if args.match_scan_exposure:
             print(console.warning("--match-scan-exposure has no effect here: the calibration comes from this frame itself"))
@@ -144,7 +150,7 @@ def run(args: argparse.Namespace) -> int:
         [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
     )
     if not resolved:
-        print(console.success(f"{output_path} already exists — skipped (--skip-existing)."))
+        print(console.success(f"{output_path} already exists — skipped (--skip-existing)"))
         return 0
 
     stage = resolve_stage(args)
@@ -160,8 +166,8 @@ def run(args: argparse.Namespace) -> int:
     if fallback_warning:
         print(console.warning(fallback_warning))
     _maybe_print_gpu_hint(device)
-    calibrated_here = stage is not Stage.INVERT_ONLY and not args.profile and not manual_calibration_given(args)
-    gain, scan_reference = _resolve_scan_gain(args, calibrated_here)
+    calibrated_here = not args.profile and not manual_calibration_given(args)
+    gain, scan_reference = _resolve_scan_gain(args, calibrated_here, stage is Stage.INVERT_ONLY)
     maybe_save_profile(args, density_profile, tone=saved_tone, scan=scan_reference)
     tone_params = resolve_tone_params(args, saved_tone=saved_tone)
 
