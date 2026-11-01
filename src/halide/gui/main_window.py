@@ -41,7 +41,7 @@ from halide.io.roll import list_scans
 from halide.calibration.anchors import NeutralPoint, point_rolls
 from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask
 from halide.calibration.scan_consistency import assess_roll, frame_flags
-from halide.calibration.profile_store import default_profiles_dir
+from halide.calibration.profile_store import default_profiles_dir, find_profile
 from halide.cli import console
 from halide.core.tone_render import ResolvedTone
 from halide.core.types import DensityProfile, ToneCurveParams
@@ -427,6 +427,7 @@ class MainWindow(QWidget):
             self._sticky(f"Skipped {left_out.describe()}{scan_check}")
 
     def _new_calibration(self) -> None:
+        self._sticky_status = None  # the last roll's message is about the last roll
         """Forget the calibration in hand: points, profile name, extra information, print pin, and
         the top bar's profile chip or save stamp, which would otherwise name a profile this isn't."""
         self.session.reset()
@@ -482,7 +483,6 @@ class MainWindow(QWidget):
         for _, roll_paths in rolls:
             flags.update(frame_flags(assess_roll({str(p): metadata[str(p)] for p in roll_paths})))
         self.filmstrip.strip.set_flags({i: flags[str(f.path)] for i, f in enumerate(self.session.frames) if str(f.path) in flags})
-        self._sticky_status = None
         self._current = None
         self.full_image = None
         self.display = None
@@ -494,8 +494,9 @@ class MainWindow(QWidget):
         self._select_frame(0)
         self._refresh_points()
         if flags:
+            earlier = f"{self._sticky_status} · " if self._sticky_status else ""  # e.g. "Reopened …"
             self._sticky(
-                f"⚠ {console.plural(len(flags), 'frame')} {'was' if len(flags) == 1 else 'were'} scanned "
+                f"{earlier}⚠ {console.plural(len(flags), 'frame')} {'was' if len(flags) == 1 else 'were'} scanned "
                 "differently — see the ⚠ on the strip"
             )
 
@@ -504,6 +505,8 @@ class MainWindow(QWidget):
             self._profiles = ProfilesWindow(self)
             self._profiles.editRequested.connect(self.open_profile)
             self._profiles.useRequested.connect(self.use_profile)
+            self._profiles.renamed.connect(self._on_profile_renamed)
+            self._profiles.deleted.connect(self._on_profile_deleted)
             self._profiles.fileOpened.connect(self.open_profile)
         self._profiles.set_roll_open(self.session.roll_folder is not None)
         self._profiles.refresh()
@@ -511,6 +514,35 @@ class MainWindow(QWidget):
         self._profiles.raise_()
         self._profiles.activateWindow()
         return self._profiles
+
+    def _is_current_profile(self, name: str) -> bool:
+        in_use = self.session.profile_in_use
+        current = in_use.stem if in_use is not None else self._profile_name
+        return bool(current) and current.casefold() == name.casefold()
+
+    def _on_profile_renamed(self, old: str, new: str) -> None:
+        """The profile on screen was renamed in the Profiles window: follow it, so Save updates it."""
+        if not self._is_current_profile(old):
+            return
+        self._profile_name = new
+        if self.session.profile_in_use is not None:
+            self.session.profile_in_use = self.session.profile_in_use.with_name(f"{new}.json")
+            self._refresh_using_chip()
+        else:
+            self._show_profile_name(new)
+
+    def _on_profile_deleted(self, name: str) -> None:
+        """The profile on screen was deleted: its points stay, as an unsaved calibration, so a save
+        can't quietly bring the deleted file back."""
+        if not self._is_current_profile(name):
+            return
+        self.session.forget_profile()
+        self._profile_name = ""
+        self._saved_points = []
+        self.save_stamp.hide()
+        self.profile_chip.setText("New calibration")
+        self.profile_chip.show()
+        self._refresh_points()
 
     def use_profile(self, path: Path) -> None:
         """Put a saved profile on the open roll ("Use for this roll"): its fit drives the positive at
@@ -565,18 +597,18 @@ class MainWindow(QWidget):
         self.print_controls.set_override(self.session.tone_override)
         self._refresh_drawer_summaries()
         self._sticky(f"Reopened '{path.stem}': {console.plural(len(self.session.points), 'point')}")
-        loaded = []
+        loaded: list[tuple[Path, list[Path]]] = []
         for folder in point_rolls(self.session.points):
             scans = list_scans(folder)[0] if folder.is_dir() else []
             if not scans:
                 folder = self._roll_not_found(path.stem, folder)
                 scans = list_scans(folder)[0] if folder is not None else []
-            if scans:
+                if folder is not None and not scans:
+                    self._status(f"No TIFF scans in {folder} - that roll's points still count in the fit")
+            if scans and folder not in [f for f, _ in loaded]:  # Find roll… may name a roll already open
                 loaded.append((folder, scans))
         if loaded:
             self._start_rolls(loaded)
-        elif on_disk := sorted({p.frame for p in self.session.points if p.frame.is_file()}):
-            self.load_files(on_disk, keep_points=True)  # made from single scans, not a roll folder
         else:
             self._refresh_points()
         self._warn_missing_frames()
@@ -981,7 +1013,7 @@ class MainWindow(QWidget):
     def _profile_card(self) -> list[str] | None:
         """A profile in use with nothing added yet shows as a card instead of its points' rows."""
         session = self.session
-        if session.profile_in_use is None or session.new_points():
+        if session.profile_in_use is None or session.changed_from_profile():
             return None
         stock = session.details.get("film_stock", "").strip()
         rolls = session.profile_rolls()
@@ -997,7 +1029,7 @@ class MainWindow(QWidget):
         if self.session.profile_in_use is None:
             return
         added = len(self.session.new_points())
-        extra = f" + {console.plural(added, 'new point')}" if added else ""
+        extra = f" + {console.plural(added, 'new point')}" if added else " (edited)" if self.session.changed_from_profile() else ""
         self._show_profile_name(self.session.profile_in_use.stem, "Using", extra, keep_stamp=True)
 
     def _refresh_wedge(self, views: list[PointView] | None = None) -> None:
@@ -1176,7 +1208,7 @@ class MainWindow(QWidget):
         dialog = SaveProfileDialog(
             self, self.session.profile_to_save(), self.session.sidecars(),
             "" if in_use is not None else self._profile_name,
-            update_name=in_use.stem if in_use is not None and self.session.new_points() else None,
+            update_name=in_use.stem if self.session.changed_from_profile() else None,
         )
         dialog.saved.connect(self._on_saved)
         dialog.exec()
@@ -1194,7 +1226,7 @@ class MainWindow(QWidget):
 
     def _on_saved(self, name: str, message: str) -> None:
         self._profile_name = name
-        self.session.adopt_points(default_profiles_dir() / f"{name}.json")
+        self.session.adopt_points(find_profile(name) or default_profiles_dir() / f"{name}.json")  # its real file, case and all
         self.last_saved = (name, self.session.roll_folder)
         if self._profiles is not None:
             self._profiles.refresh(select=name)

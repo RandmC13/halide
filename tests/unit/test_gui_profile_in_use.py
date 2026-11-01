@@ -137,3 +137,49 @@ def test_clear_all_keeps_the_profiles_points(setup, monkeypatch):
     window.clear_all_button.click()
     assert asked == ["Remove the 1 new point? The profile's own points stay."]
     assert window.session.points == old_points
+
+
+def test_a_print_preview_does_not_outlive_using_a_profile(setup):
+    window, path, _ = setup
+    window.positive_button.setChecked(True)
+    controls = window.print_controls
+    controls.exposure.setValue(controls.exposure.value() - 30)
+    assert window._preview_tone is not None
+    window.use_profile(path)
+    assert window._preview_tone is None and not controls.previewing
+
+
+def test_removing_one_of_the_profiles_points_can_be_saved_back(setup, monkeypatch):
+    window, path, old_points = setup
+    window.use_profile(path)
+    _click_image(window, SHADOW)
+    window._on_saved("Portra 400", "saved")  # the profile now has three points
+    window._remove_point(0)  # one of them, leaving two that still fit
+    offered = []
+    monkeypatch.setattr(SaveProfileDialog, "exec", lambda dialog: offered.append(dialog.update_button.text()))
+    window._on_primary_clicked()
+    assert offered == ["Update 'Portra 400'"]
+    assert "(edited)" in window.profile_chip.text()
+    assert window._profile_card() is None  # the rows show, not the card
+
+
+def test_renaming_the_profile_in_use_is_followed_and_deleting_it_forgets_it(setup, monkeypatch):
+    window, path, old_points = setup
+    window.use_profile(path)
+    _click_image(window, SHADOW)
+    window._on_profile_renamed("portra 400", "Portra 400 · home")
+    assert window.session.profile_in_use.stem == "Portra 400 · home" and "Portra 400 · home" in window.profile_chip.toolTip()
+    window._on_profile_deleted("Portra 400 · home")
+    assert window.session.profile_in_use is None and window._profile_name == ""
+    seen = []
+    monkeypatch.setattr(SaveProfileDialog, "exec", lambda dialog: seen.append(dialog.update_button))
+    window._on_primary_clicked()
+    assert seen == [None]  # no "Update" that would bring the deleted file back
+
+
+def test_saving_over_a_name_in_another_case_uses_the_file_on_disk(setup, monkeypatch):
+    window, path, _ = setup
+    window.use_profile(path)
+    _click_image(window, SHADOW)
+    window._on_saved("portra 400", "saved")  # save_named_profile wrote over Portra 400.json
+    assert window.session.profile_in_use == path and window.session.profile_in_use.exists()

@@ -287,10 +287,13 @@ class PrintControls(QWidget):
 
     def set_override(self, tone: ToneCurveParams | None) -> None:
         """Show `tone` as the pin (a reopened profile's, or None for a new calibration); any preview goes."""
+        had_preview = self._preview is not None
         self._pin, self._preview = tone, None
         if tone is not None:
             self._set_quietly(tone.exposure, tone.contrast)
         self._update_state()
+        if had_preview:
+            self._emit()  # the window is still printing with it
 
     def drop_preview(self) -> None:
         """Another frame is on screen: its preview goes, and the sliders show the pin or the new fit."""

@@ -119,3 +119,18 @@ def test_saving_from_a_multi_roll_session_records_no_roll(app, two_rolls):
     data = json.loads(saved.read_text())
     assert "roll" not in data and len(data["anchors"]) == 3
     _close(window)
+
+
+def test_reopened_stays_on_the_status_line_once_the_rolls_have_loaded(app, two_rolls):
+    window = _open(app, two_rolls[3])
+    assert window.status_label.full_text().startswith("Reopened 'both': 3 points")
+    _close(window)
+
+
+def test_find_roll_naming_a_roll_already_open_loads_it_once(app, two_rolls, monkeypatch):
+    tmp_path, one, two, path = two_rolls
+    one.rename(tmp_path / "Roll16-moved")
+    monkeypatch.setattr(MainWindow, "_roll_not_found", lambda self, name, folder: two)  # the wrong folder
+    window = _open(app, path)
+    assert window.session.rolls == [two] and len(window.session.frames) == 2
+    _close(window)

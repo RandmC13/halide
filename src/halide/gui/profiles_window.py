@@ -71,6 +71,8 @@ class ProfilesWindow(QWidget):
     useRequested = Signal(object)  # Path: put this profile on the open roll
     editRequested = Signal(object)  # Path: reopen its points (and their rolls)
     fileOpened = Signal(object)  # Path: a calibration file from anywhere, opened like Edit points
+    renamed = Signal(str, str)  # (old name, new name)
+    deleted = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, Qt.WindowType.Window)
@@ -251,6 +253,8 @@ class ProfilesWindow(QWidget):
             delete_profile(name)
         except (ProfileError, OSError) as exc:
             QMessageBox.warning(self, "Couldn't delete profile", str(exc))
+        else:
+            self.deleted.emit(name)
         self.refresh()
 
     def _start_rename(self) -> None:
@@ -295,4 +299,5 @@ class ProfilesWindow(QWidget):
             self.name_error.setText(str(exc))
             return
         self._end_rename()
+        self.renamed.emit(self._renaming, new)
         self.refresh(select=new)

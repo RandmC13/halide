@@ -131,6 +131,15 @@ class CalibrationSession:
         """The points clicked on this roll on top of a profile in use (all of them without one)."""
         return [p for p in self.points if p not in self._profile_points]
 
+    def changed_from_profile(self) -> bool:
+        """The points differ from the profile in use: some added, or some of its own removed."""
+        return self.profile_in_use is not None and self.points != self._profile_points
+
+    def forget_profile(self) -> None:
+        """The profile in use has gone (deleted): its points stay, as an unsaved calibration."""
+        self.profile_in_use = None
+        self._profile_points = []
+
     def profile_rolls(self) -> list[str]:
         """The names of the rolls the profile in use was picked on, in order of first appearance."""
         return list(dict.fromkeys(p.frame.parent.name for p in self._profile_points))
