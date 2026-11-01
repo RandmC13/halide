@@ -174,12 +174,24 @@ def discover_jobs(input_dir: str | Path, output_dir: str | Path, suffix: str = "
     return jobs_for_files(files, output_dir, suffix)
 
 
-def jobs_for_files(files: list[Path], output_dir: str | Path, suffix: str = "") -> list[BatchJob]:
+def jobs_for_files(
+    files: list[Path],
+    output_dir: str | Path,
+    suffix: str = "",
+    *,
+    name: Callable[[Path, int], str] | None = None,
+    extension: str | None = None,
+) -> list[BatchJob]:
+    """`name(scan, position)` gives each output's stem (position counts from 1 over `files`, so
+    number it before any resume filtering); `extension` replaces the scan's own, e.g. ".png"."""
     output_dir = Path(output_dir)
     jobs = []
-    for f in files:
-        name = f"{f.stem}{suffix}{f.suffix}" if suffix else f.name
-        jobs.append(BatchJob(input_path=f, output_path=output_dir / name))
+    for position, f in enumerate(files, 1):
+        if name is not None:
+            out = f"{name(f, position)}{extension or f.suffix}"
+        else:
+            out = f"{f.stem}{suffix}{extension or f.suffix}" if suffix or extension else f.name
+        jobs.append(BatchJob(input_path=f, output_path=output_dir / out))
     return jobs
 
 

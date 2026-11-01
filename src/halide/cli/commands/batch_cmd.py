@@ -25,6 +25,7 @@ from halide.batch.progress import cancel_notice, make_renderer
 from halide.cli import console
 from halide.calibration.scan_consistency import assess_roll, most_common_settings, scan_gain
 from halide.cli._device_args import add_device_argument, resolve_device_arg
+from halide.cli._naming import CLASH_FIX, add_name_argument, naming_for
 from halide.cli._help import add_workers_argument
 from halide.cli._output_policy import (
     add_dry_run_argument,
@@ -59,6 +60,7 @@ from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
     dry_run_line,
+    print_rename_list,
     frame_count,
     outputs_row,
     roll_row,
@@ -90,7 +92,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "thumbnails are kept (in a temporary folder, deleted afterwards)",
     )
     add_contact_layout_arguments(parser)
-    parser.add_argument("--suffix", default="", help="Text to add to each output file name, before .tif")
+    add_name_argument(parser, "Text to add to each output file name, before .tif")
     add_output_policy_arguments(parser, saves_profile=True)
     add_dry_run_argument(parser)
     add_log_arguments(parser)
@@ -268,6 +270,19 @@ def _output_text(stage: Stage, tone_params) -> str:
     return f"print{_SEP}grade {grade}{_SEP}exposure {exposure}"
 
 
+def _profile_stock(args: argparse.Namespace) -> str | None:
+    """`{stock}` for --name: the --profile's film stock, when the template uses it. A profile that
+    can't be loaded is reported where it is used, not here."""
+    if "{stock}" not in args.name or not args.profile:
+        return None
+    from halide.calibration.profile_store import load_profile, resolve_profile_path
+
+    try:
+        return load_profile(resolve_profile_path(args.profile)).film_stock
+    except (OSError, ValueError):
+        return None
+
+
 def run(args: argparse.Namespace) -> int:
     check_no_ignored_flags(args)
     stage = resolve_stage(args)
@@ -285,6 +300,7 @@ def run(args: argparse.Namespace) -> int:
         except ValueError as exc:
             raise SystemExit(str(exc))
 
+    name = naming_for(args, input_dir.resolve().name, _profile_stock(args)) if args.name else None
     if args.output_dir is not None:
         output_dir = Path(args.output_dir)
         if args.dry_run:
@@ -292,7 +308,7 @@ def run(args: argparse.Namespace) -> int:
         else:
             prepare_output_folder(output_dir)
         files, left_out = list_scans(input_dir, skip_positives=True)
-        jobs = jobs_for_files(files, output_dir, suffix=args.suffix)
+        jobs = jobs_for_files(files, output_dir, suffix=args.suffix, name=name)
     else:
         output_dir = None
         files, left_out = list_scans(input_dir, skip_positives=True)
@@ -316,12 +332,13 @@ def run(args: argparse.Namespace) -> int:
     sheet_exists = bool(args.dry_run and sheet_path is not None and sheet_path.exists())
     if output_dir is not None:
         extra = [(sheet_path, sheet_path)] if sheet_path is not None else None
+        fix = CLASH_FIX if args.name else "rename one of them"
         all_jobs = jobs
         if args.dry_run:  # never asks, never refuses for want of a terminal
-            jobs, skipped_frames, kept_outputs, existing = plan_bulk_jobs(jobs, args, extra_pairs=extra)
+            jobs, skipped_frames, kept_outputs, existing = plan_bulk_jobs(jobs, args, extra_pairs=extra, fix=fix)
         else:
             jobs, skipped_frames, kept_outputs = resolve_bulk_jobs(
-                jobs, args, interactive=is_interactive(), extra_pairs=extra
+                jobs, args, interactive=is_interactive(), extra_pairs=extra, fix=fix
             )
         developing = {j.output_path for j in jobs}
         kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
@@ -534,6 +551,8 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
                 sheet=str(args.contact_sheet) if sheet_exists else None,
                 preview_sheet=str(args.contact_sheet) if output_dir is None else None,
             ))
+            if args.name:
+                print_rename_list(jobs)
             return 0
 
         record = RunRecord(args, "develop", output_dir)

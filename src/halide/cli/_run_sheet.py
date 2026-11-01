@@ -200,3 +200,9 @@ def dry_run_line(verb: str, n_frames: int, destination: str, *, kept: int, exist
             f"{_exist_phrase(existing, sheet, policy)} (a real run would ask whether to replace {plural_them})"
         )
     return console.success(f"Dry run — nothing {past}. {'; '.join(parts)}.")
+
+
+def print_rename_list(jobs) -> None:
+    """A dry run's `--name` check: each frame's output, in the order `{n}` numbers them."""
+    for job in jobs:
+        print(f"{job.input_path.name} → {job.output_path.name}")

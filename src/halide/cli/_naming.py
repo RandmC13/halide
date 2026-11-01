@@ -71,3 +71,42 @@ def parse_template(text: str) -> Template:
     template.render(stem="x", roll="x", n=1, stock=None)  # profiles without a film stock render it empty
     return template
 
+
+
+CLASH_FIX = "add {n} or {stem} to --name"
+
+
+def add_name_argument(parser, suffix_help: str) -> None:
+    """`--name` and `--suffix` as alternatives: --suffix is shorthand for `{stem}SUFFIX`."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--suffix", default="", help=suffix_help)
+    group.add_argument(
+        "--name", metavar="TEMPLATE",
+        help=f'Name each output from a template, e.g. "{{roll}}_{{n:02}}" ({HELP}); halide adds the extension',
+    )
+
+
+def naming_for(args, roll_name: str, stock: str | None = None):
+    """The `(scan path, 1-based position) -> output stem` function for `--name`, or for `--suffix`
+    when no template is given. A bad template ends the run before anything is written."""
+    if not getattr(args, "name", None):
+        suffix = getattr(args, "suffix", "")
+        return lambda path, n: f"{path.stem}{suffix}"
+    try:
+        template = parse_template(args.name)
+    except TemplateError as exc:
+        raise SystemExit(str(exc)) from exc
+    return lambda path, n: template.render(stem=path.stem, roll=roll_name, n=n, stock=stock)
+
+
+def stock_for_print_or_export(args, files) -> str | None:
+    """`{stock}` for a command with no profile: the film stock in the first scan's provenance."""
+    if not getattr(args, "name", None) or "{stock}" not in args.name or not files:
+        return None
+    from halide.io.tiff import read_tiff_description
+    from halide.processing import read_provenance
+
+    try:
+        return (read_provenance(read_tiff_description(files[0])) or {}).get("film_stock")
+    except Exception:  # an unreadable header is reported when the frame is developed
+        return None
