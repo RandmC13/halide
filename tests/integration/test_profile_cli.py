@@ -275,7 +275,7 @@ def test_batch_without_a_source_offers_saved_profiles(negative_tiff, tmp_path, i
 
 
 def test_without_a_terminal_a_missing_source_is_still_an_actionable_error(negative_tiff, tmp_path, isolated_profiles_dir):
-    with pytest.raises(SystemExit, match="halide calibrate ROLL_DIR"):
+    with pytest.raises(SystemExit, match="halide open ROLL_DIR"):
         main(["invert", str(negative_tiff), str(tmp_path / "out.tiff")])
 
 
@@ -317,7 +317,7 @@ def test_show_doesnt_invent_a_full_path_for_an_older_relative_roll(tmp_path, cap
     out = capsys.readouterr().out
     assert "Roll:           pre-processed\n" in out
     assert str(tmp_path / "pre-processed") not in out
-    assert "recorded relative to the folder halide calibrate ran in" in out
+    assert "recorded relative to the folder halide open ran in" in out
 
 
 # --- Profile store safety ----------------------------------------------------
@@ -464,7 +464,7 @@ def test_damaged_profile_json_gives_plain_message(isolated_profiles_dir):
         main(["profile", "show", "corruptme"])
     message = str(excinfo.value)
     assert "is damaged" in message
-    assert "halide calibrate --profile corruptme" in message
+    assert "halide open --profile corruptme" in message
     assert "halide profile delete corruptme" in message
 
 

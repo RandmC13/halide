@@ -138,6 +138,7 @@ class MainWindow(QWidget):
         self, *, show_load_controls: bool = True, is_pick_session: bool = False, device: ComputeDevice | None = None
     ) -> None:
         super().__init__()
+        self.setWindowTitle("halide")
         self.device = device  # what the contact sheet window develops frames on (None = CPU)
         self.show_load_controls = show_load_controls and not is_pick_session
         self.is_pick_session = is_pick_session
@@ -145,6 +146,7 @@ class MainWindow(QWidget):
         self.session = CalibrationSession()
         self._saved_points: list = []  # the points as last saved or reopened; close asks if they differ
         self._profile_name = ""  # a reopened profile's name, offered again on save
+        self.last_saved: tuple[str, Path | None] | None = None  # (profile name, its roll): the last save here
 
         self._current: int | None = None  # index into session.frames
         self.full_image: np.ndarray | None = None  # the current frame, working space, full resolution
@@ -415,7 +417,7 @@ class MainWindow(QWidget):
         self.profile_chip.show()
 
     def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
-        """Individual scans as a roll of their own (`halide calibrate a.tif b.tif`, `invert --pick`)."""
+        """Individual scans as a roll of their own (`halide open a.tif b.tif`, `invert --pick`)."""
         if not keep_points:
             self._new_calibration()
         self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None)
@@ -436,6 +438,8 @@ class MainWindow(QWidget):
         name = (folder.name if folder is not None else paths[0].stem).upper()
         self.roll_label.setText(QFontMetrics(self.roll_label.font()).elidedText(name, Qt.TextElideMode.ElideMiddle, _ROLL_NAME_MAX_W))
         self.roll_label.setToolTip(name)
+        if not self.is_pick_session:
+            self.setWindowTitle(f"halide · {folder.name if folder is not None else paths[0].stem}")
         self.filmstrip.strip.set_frames([f.number for f in self.session.frames])
         self._current = None
         self.full_image = None
@@ -499,10 +503,10 @@ class MainWindow(QWidget):
         box.setWindowTitle("Roll not found")
         if recorded.is_absolute():
             box.setText(f"'{profile_name}' was made from\n{recorded}\nwhich has been moved or deleted.")
-        else:  # an older profile: it recorded the roll relative to wherever `halide calibrate` ran
+        else:  # an older profile: it recorded the roll relative to wherever `halide open` ran
             box.setText(
                 f"'{profile_name}' recorded its roll only as '{recorded}', relative to the folder "
-                "halide calibrate was started in - and it isn't in this folder."
+                "halide open was started in - and it isn't in this folder."
             )
         box.setInformativeText(
             f"Its {len(self.session.points)} point(s) still count in the fit. Point to the roll's new "
@@ -1035,6 +1039,7 @@ class MainWindow(QWidget):
 
     def _on_saved(self, name: str, message: str) -> None:
         self._profile_name = name
+        self.last_saved = (name, self.session.roll_folder)
         self._show_profile_name(name)
         self._saved_points = list(self.session.points)
         self.profile_chip.hide()

@@ -82,7 +82,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_tone_arguments(parser, allow_output_mode=False)
     parser.add_argument(
         "--profile",
-        help="Use a saved profile's exposure/contrast override (from `halide calibrate`'s Print "
+        help="Use a saved profile's exposure/contrast override (from `halide open`'s Print "
         "controls), if it has one. Its density calibration is ignored: a flat positive already has "
         "it applied",
     )

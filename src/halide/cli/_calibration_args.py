@@ -229,7 +229,7 @@ _MENU_PROFILES = 9  # most recent saved profiles offered by the menu; --profile 
 
 def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
     """When no calibration source was given and we're in a terminal, ask for one - a saved profile
-    (newest first, so the one just made in `halide calibrate` is at the top), picking points now
+    (newest first, so the one just made in `halide open` is at the top), picking points now
     (invert only), or an automatic estimate - and record the answer on `args` exactly as if its
     flag had been passed. It must run before anything reads args.profile: the scan-exposure
     reference comes from the profile (resolve_scan_reference), and invert decides whether the
@@ -334,7 +334,7 @@ def resolve_density_profile(
         return None, None
     if pick_given:
         # Deferred import: the rest of the CLI must not require Qt/a display (see
-        # cli/commands/calibrate_cmd.py's own deferred import for the same reason). --pick is
+        # cli/commands/open_cmd.py's own deferred import for the same reason). --pick is
         # currently invert-only (add_calibration_arguments(allow_pick=...) gates this), so
         # args.input is always present whenever pick_given is True.
         from halide.gui.quick_pick import run_quick_pick
@@ -351,7 +351,7 @@ def resolve_density_profile(
     pick_hint = " --pick to choose interactively," if hasattr(args, "pick") else ""
     raise SystemExit(
         "density balance requires a calibration source: --profile <name-or-path> (make one by "
-        "picking neutral points in `halide calibrate ROLL_DIR` and saving it), manual overrides "
+        "picking neutral points in `halide open ROLL_DIR` and saving it), manual overrides "
         f"(--rm/--bm/--rs/--bs), --auto-density for a quick approximate guess,{pick_hint} or "
         "--invert-only to skip density balance entirely"
     )

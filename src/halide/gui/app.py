@@ -1,4 +1,4 @@
-"""Entry point for the halide GUI: the calibration picker, one small purpose-built window — not a
+"""Entry point for the halide GUI: the halide window, one small purpose-built window — not a
 full image editor, deliberately (crop/dust/creative editing stays in darktable/GIMP/whatever you
 already use)."""
 
@@ -24,16 +24,18 @@ def quiet_qt_noise() -> None:
     QLoggingCategory.setFilterRules("qt.qpa.wayland.textinput.warning=false")
 
 
-def main(inputs: list[str] | None = None, profile: str | None = None, device: ComputeDevice | None = None) -> None:
+def main(
+    inputs: list[str] | None = None, profile: str | None = None, device: ComputeDevice | None = None
+) -> tuple[str, Path | None] | None:
     """`inputs`: a roll folder, or one or more scans. `profile`: a saved profile (path or name) to
     reopen - its points and extra information, and its roll if the folder is still there. `device`:
-    the resolved --device, which the contact sheet window develops its frames on (None = CPU)."""
+    the resolved --device, which the contact sheet window develops its frames on (None = CPU).
+    Returns the last profile saved in the window and the roll it was made on, or None."""
     quiet_qt_noise()
     app = QApplication.instance() or QApplication(sys.argv)
     theme.apply(app)
 
     window = MainWindow(show_load_controls=True, device=device)
-    window.setWindowTitle("halide · calibration picker")
     window.show()
     if profile:
         from halide.calibration.profile_store import resolve_profile_path
@@ -47,6 +49,7 @@ def main(inputs: list[str] | None = None, profile: str | None = None, device: Co
             window.load_files(paths)
 
     app.exec()
+    return window.last_saved
 
 
 if __name__ == "__main__":

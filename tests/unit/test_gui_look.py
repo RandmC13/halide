@@ -35,17 +35,19 @@ def test_top_bar_counter_chip_and_contact_sheet_button(tmp_path, monkeypatch, ap
         _write_frame(roll / f"frame_{i:02d}.tiff", seed=i)
     window = MainWindow()
     window.show()
-    assert window.frame_counter.text() == ""
+    assert window.frame_counter.text() == "" and window.windowTitle() == "halide"
     window.load_roll(roll)
     _pump(app, lambda: _frame_ready(window, 0))
-    assert _plain(window.frame_counter) == "FRAME 01 / 03"
+    assert _plain(window.frame_counter) == "FRAME 01 / 03" and window.windowTitle() == "halide · roll"
     QTest.keyClick(window, Qt.Key.Key_Right)
     _pump(app, lambda: _frame_ready(window, 1))
     assert _plain(window.frame_counter) == "FRAME 02 / 03"
     assert not window.proof_button.isEnabled()
     before = window.profile_chip.text()
+    assert window.last_saved is None
     window._on_saved("X", "msg")
     assert window.profile_chip.text() != before and "X" in _plain(window.profile_chip)
+    assert window.last_saved == ("X", roll)  # what `halide open` names in its next step
     window._closing = True
     window.close()
 

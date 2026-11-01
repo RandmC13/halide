@@ -1,10 +1,13 @@
-"""`halide calibrate` — launch the calibration picker GUI: pick neutral points on any frames of a roll."""
+"""`halide open` — open the halide window: load a roll, pick neutral points on any frames or use a saved
+profile, and save profiles."""
 
 from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
+from pathlib import Path
 
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
@@ -14,7 +17,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "inputs",
         nargs="*",
-        help="A roll folder, or one or more TIFF scans, to open in the picker (optional)",
+        help="A roll folder, or one or more TIFF scans, to open in the window (optional)",
     )
     parser.add_argument(
         "--profile",
@@ -49,7 +52,7 @@ def run(args: argparse.Namespace) -> int:
         os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
     ):
         raise SystemExit(
-            "couldn't launch the calibration picker: no display available (DISPLAY/WAYLAND_DISPLAY "
+            "couldn't open the halide window: no display available (DISPLAY/WAYLAND_DISPLAY "
             "isn't set) — this needs a real display; if you're on a remote/SSH session, try a local "
             "one or forward X11"
         )
@@ -62,13 +65,26 @@ def run(args: argparse.Namespace) -> int:
     try:
         from halide.gui.app import main as run_gui  # deferred: don't require Qt/a display for the rest of the CLI
     except ImportError as exc:
-        raise SystemExit(f"couldn't launch the calibration picker window ({exc})") from exc
+        raise SystemExit(f"couldn't open the halide window ({exc})") from exc
 
-    print(console.framed([f"{console.Style.BOLD}halide{console.Style.RESET} · calibration picker"]))
+    print(console.framed([f"{console.Style.BOLD}halide{console.Style.RESET} · window"]))
     print(f"Compute: {device_row(device)}")
     fallback_warning = device_fallback_warning(device)
     if fallback_warning:
         print(console.warning(fallback_warning))
-    # Any error from here on is the picker's own and keeps its real message (--debug shows the traceback).
-    run_gui(inputs=args.inputs, profile=args.profile, device=device)
+    # Any error from here on is the window's own and keeps its real message (--debug shows the traceback).
+    saved = run_gui(inputs=args.inputs, profile=args.profile, device=device)
+    if saved is not None:
+        print(next_step(*saved))
     return 0
+
+
+def next_step(name: str, roll: Path | None) -> str:
+    """What to run after saving profile `name` in the window, on the roll it was made from (or a
+    placeholder when the points were picked on loose scans)."""
+    source = shlex.quote(str(roll)) if roll is not None else "ROLL_DIR"
+    out = shlex.quote(f"{roll}-developed") if roll is not None else "OUT_DIR"
+    return "\n".join([
+        console.success(f"Saved profile '{name}'"),
+        f"next: halide batch {source} {out} --profile {shlex.quote(name)}",
+    ])

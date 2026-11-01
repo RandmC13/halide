@@ -76,7 +76,7 @@ def test_empty_folder_is_an_error_with_a_hint(tmp_path, argv, match):
 def test_profile_list_with_none_says_how_to_make_one(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     assert main(["profile", "list"]) == 0
-    assert "make one with `halide calibrate ROLL`" in capsys.readouterr().out
+    assert "make one with `halide open ROLL`" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("command, extra", [("print", []), ("export", [])])
@@ -139,13 +139,55 @@ def test_explicit_unit_scales_conflict_with_a_source(tmp_path):
         main(["invert", str(src), str(tmp_path / "o.tiff"), "--rs", "1", "--auto-density"])
 
 
-def test_calibrate_unknown_profile_fails_before_any_window(tmp_path, monkeypatch):
+def test_open_unknown_profile_fails_before_any_window(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     with pytest.raises(SystemExit) as caught:
-        main(["calibrate", "--profile", "nope"])
+        main(["open", "--profile", "nope"])
     assert "no saved profile named 'nope'" in str(caught.value) and "couldn't launch" not in str(caught.value)
 
 
-def test_calibrate_profile_with_a_roll_path_is_refused(tmp_path):
+def test_open_profile_with_a_roll_path_is_refused(tmp_path):
     with pytest.raises(SystemExit, match="--profile reopens"):
-        main(["calibrate", str(tmp_path), "--profile", "x"])
+        main(["open", str(tmp_path), "--profile", "x"])
+
+
+def test_calibrate_is_an_unknown_command(capsys):
+    # Replaced by `halide open` outright: argparse's own error, with no "renamed" message.
+    with pytest.raises(SystemExit) as caught:
+        main(["calibrate"])
+    assert caught.value.code == 2
+    err = capsys.readouterr().err
+    assert "invalid choice: 'calibrate'" in err and "open" in err
+
+
+def _fake_window(monkeypatch, saved):
+    import sys
+    import types
+
+    fake_app = types.ModuleType("halide.gui.app")
+    fake_app.main = lambda **kwargs: saved
+    monkeypatch.setitem(sys.modules, "halide.gui.app", fake_app)
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setenv("HALIDE_DEVICE", "cpu")
+
+
+def test_open_prints_the_next_step_after_a_save(monkeypatch, capsys, tmp_path):
+    roll = tmp_path / "portra roll 03"
+    _fake_window(monkeypatch, ("Portra 400", roll))
+    assert main(["open", str(roll)]) == 0
+    out = _ANSI.sub("", capsys.readouterr().out)
+    assert "Saved profile 'Portra 400'" in out
+    assert f"next: halide batch '{roll}' '{roll}-developed' --profile 'Portra 400'" in out
+
+
+def test_open_after_a_save_on_loose_scans_names_placeholders(monkeypatch, capsys):
+    _fake_window(monkeypatch, ("Portra 400", None))
+    assert main(["open"]) == 0
+    assert "next: halide batch ROLL_DIR OUT_DIR --profile 'Portra 400'" in capsys.readouterr().out
+
+
+def test_open_prints_no_next_step_without_a_save(monkeypatch, capsys):
+    _fake_window(monkeypatch, None)
+    assert main(["open"]) == 0
+    out = capsys.readouterr().out
+    assert "Saved profile" not in out and "next:" not in out

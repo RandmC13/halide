@@ -97,7 +97,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_list(args: argparse.Namespace) -> int:
     profiles = list_profiles()
     if not profiles:
-        print(f"No saved profiles in {default_profiles_dir()} — make one with `halide calibrate ROLL`")
+        print(f"No saved profiles in {default_profiles_dir()} — make one with `halide open ROLL`")
         return 0
 
     lines = [f"Saved profiles in {default_profiles_dir()}:"]
@@ -143,7 +143,7 @@ def _run_show(args: argparse.Namespace) -> int:
 
 
 def _show_roll(path: Path) -> None:
-    """Where the picker's points came from (profiles saved by `halide calibrate`), flagging a roll
+    """Where the picker's points came from (profiles saved by `halide open`), flagging a roll
     or frames that have been moved or deleted since. Older profiles recorded paths relative to the
     folder the picker was started in; those are read against the current folder, as the picker does."""
     records, roll = load_anchors(path)
@@ -157,8 +157,8 @@ def _show_roll(path: Path) -> None:
                 print(warn.format("not found - moved or deleted?"))
         else:  # an older profile's relative path; which folder it was relative to isn't recorded
             print(f"Roll:           {roll}")
-            print(warn.format("recorded relative to the folder halide calibrate ran in, and not in this one"))
-            print("                  reopen it in halide calibrate --profile and use Find roll… to record its full path")
+            print(warn.format("recorded relative to the folder halide open ran in, and not in this one"))
+            print("                  reopen it in halide open --profile and use Find roll… to record its full path")
     if records:
         frames = {Path(r["frame"]) for r in records}
         missing = sum(not f.is_file() for f in frames)

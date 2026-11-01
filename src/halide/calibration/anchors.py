@@ -274,7 +274,7 @@ def wedge_range(green_densities: Iterable[np.ndarray]) -> tuple[float, float] | 
 def absolute(path: str | Path) -> Path:
     """`path` made absolute against the current folder, as typed otherwise (symlinks kept, unlike
     Path.resolve). Profiles record frames and the roll this way so they reopen from any folder - a
-    relative path only meant something in the folder `halide calibrate` was started from."""
+    relative path only meant something in the folder `halide open` was started from."""
     return Path(os.path.abspath(path))
 
 

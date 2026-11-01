@@ -306,7 +306,7 @@ def damaged_profile_message(name: str, exc: Exception) -> str:
     the person running halide."""
     return (
         f"profile {name!r} is damaged and can't be read ({exc}) — re-save it from "
-        f"`halide calibrate --profile {name}`, or delete it with `halide profile delete {name}`"
+        f"`halide open --profile {name}`, or delete it with `halide profile delete {name}`"
     )
 
 

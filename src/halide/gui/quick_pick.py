@@ -1,5 +1,5 @@
 """Standalone, blocking calibration picker for `halide invert --pick`: a one-shot alternative to
-the persistent `halide calibrate` app, for a user who just wants to manually pick shadow/highlight
+the persistent `halide open` app, for a user who just wants to manually pick shadow/highlight
 points for a single image without building a reusable named profile.
 
 Reuses `main_window.MainWindow` as-is (magnifier, markers, live preview, the auto-detection overlay/

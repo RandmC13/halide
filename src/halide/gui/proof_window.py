@@ -118,7 +118,7 @@ class ProofRenderer(QThread):
                 # back as a fallback reason too, and "each worker uses the GPU itself" would be wrong.
                 if self.isInterruptionRequested():
                     return
-                if compute.fallback_reason:  # to the terminal, like calibrate's Compute line
+                if compute.fallback_reason:  # to the terminal, like halide open's Compute line
                     print(console.warning(f"GPU service not used ({compute.fallback_reason}) — each worker "
                                           f"uses the GPU itself instead"))
                 if compute.service is not None:
@@ -147,7 +147,7 @@ class ProofRenderer(QThread):
                     try:
                         result = future.result()
                         error = result.error
-                        if result.warning:  # e.g. redone on the CPU: to the terminal, like calibrate's Compute line
+                        if result.warning:  # e.g. redone on the CPU: to the terminal, like halide open's Compute line
                             print(console.warning(f"{jobs[index].input_path.name}: {result.warning}"))
                     except Exception as exc:  # noqa: BLE001 - a crashed worker is one bad frame
                         error = str(exc)

@@ -136,7 +136,7 @@ def test_damaged_profile_message_names_recovery_steps():
     message = damaged_profile_message("myroll", ValueError("boom"))
     assert "myroll" in message
     assert "damaged" in message
-    assert "halide calibrate --profile myroll" in message
+    assert "halide open --profile myroll" in message
     assert "halide profile delete myroll" in message
 
 

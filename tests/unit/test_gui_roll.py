@@ -173,7 +173,7 @@ def test_reset_starts_over(tmp_path):
 
 
 def test_a_roll_loaded_by_relative_path_is_saved_as_absolute(tmp_path, monkeypatch):
-    # `halide calibrate Roll16` from the folder above the roll: the profile must reopen from anywhere.
+    # `halide open Roll16` from the folder above the roll: the profile must reopen from anywhere.
     monkeypatch.chdir(tmp_path)
     session = CalibrationSession()
     relative = [Path("roll") / n for n in ("a.tif", "b.tif", "c.tif")]
@@ -247,7 +247,7 @@ def test_an_older_relative_profile_opened_from_another_folder_isnt_given_a_guess
     for i, g in enumerate((0.8, 1.2, 1.6)):
         session.add_point(_pt(paths[i], g))
     sidecars = session.sidecars()
-    sidecars["roll"] = "pre-processed"  # as older profiles recorded `halide calibrate pre-processed`
+    sidecars["roll"] = "pre-processed"  # as older profiles recorded `halide open pre-processed`
     for a in sidecars["anchors"]:
         a["frame"] = str(Path(a["frame"]).relative_to(tmp_path / "films"))
     path = save_named_profile(session.profile_to_save(), "old", profiles_dir=tmp_path / "profiles", **sidecars)

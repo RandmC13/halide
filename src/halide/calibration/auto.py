@@ -1,5 +1,5 @@
 """Zero-effort, statistical density-balance estimation — the fallback for when no neutral
-points have been picked (`halide calibrate`).
+points have been picked (`halide open`).
 
 The naive approach takes percentiles of *every* pixel and assumes the single darkest/brightest pixel was neutral gray. The
 darkest pixel in a color negative is far more likely to be a saturated shadow color than a neutral
@@ -164,7 +164,7 @@ def _check_density_separation(shadow_rgb: np.ndarray, highlight_rgb: np.ndarray)
         warnings.warn(
             "auto-detected shadow/highlight candidates are unusually close in density "
             f"(min span {span.min():.3f}, expected at least {MIN_DENSITY_SEPARATION}) — this "
-            "estimate may be unreliable; pick neutral points with `halide calibrate` instead",
+            "estimate may be unreliable; pick neutral points with `halide open` instead",
             stacklevel=3,
         )
 
@@ -226,7 +226,7 @@ def _shadow_and_highlight_from_candidates(
     if len(candidates) < 2:
         raise ValueError(
             "not enough near-neutral pixels found to estimate density balance automatically "
-            "— pick neutral points with `halide calibrate` instead"
+            "— pick neutral points with `halide open` instead"
         )
     xp = array_namespace(candidates)
     shadow_rgb = xp.percentile(candidates, shadow_percentile, axis=0)

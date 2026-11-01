@@ -90,7 +90,7 @@ The `halide` command then works whenever that virtual environment is active.
 works; it just doesn't copy EXIF.
 
 <details>
-<summary>Linux: the calibration window won't open?</summary>
+<summary>Linux: the halide window won’t open?</summary>
 
 Minimal Linux installs can be missing libraries Qt needs. On Debian/Ubuntu:
 
@@ -159,7 +159,7 @@ A typical roll:
 halide check portra-roll-03/
 
 # 2. Pick neutral points across the roll and save them as a profile
-halide calibrate portra-roll-03/
+halide open portra-roll-03/
 
 # 3. Develop the whole roll with that profile
 halide batch portra-roll-03/ portra-roll-03-developed/ --profile "Portra 400"
@@ -187,7 +187,7 @@ preview.jpg` develops every frame at full quality but keeps only the contact she
 
 | Command | What it does |
 |---|---|
-| `halide calibrate [roll]` | GUI: pick neutral points on any frames, see a live positive, save a profile |
+| `halide open [roll]` | The halide window: load a roll, pick neutral points on any frames or use a saved profile, see a live positive, save a profile |
 | `halide invert IN OUT` | Develop one negative (`--profile`, `--pick`, `--auto-density`, `--output flat`, …) |
 | `halide batch IN_DIR [OUT_DIR]` | Develop a folder in parallel; `--contact-sheet` for a preview or proof |
 | `halide print IN OUT` | Print a flat positive, for example after editing it in darktable |
@@ -270,7 +270,7 @@ finish. Use `--log FILE` to put the notebook somewhere else, or `--no-log` to sk
 - **Developed images have no camera metadata (EXIF).** Install exiftool (see Install). Without it
   halide works but doesn't copy EXIF. If exiftool is installed but fails on one file, that frame
   is still developed and you get a warning.
-- **The calibration window won't open (Qt errors).** See the Linux libraries note under Install.
+- **The halide window won’t open (Qt errors).** See the Linux libraries note under Install.
 - **The GPU wasn't used.** Run `halide gpu` to see what halide finds. If a frame doesn't fit on
   the card, or the GPU fails part-way, halide develops that frame on the CPU and prints a warning;
   the result is the same picture. `--device cpu` (or `HALIDE_DEVICE=cpu`) skips the GPU entirely.
