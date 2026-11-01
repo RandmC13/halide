@@ -436,7 +436,7 @@ def test_grade_slider_never_reaches_zero(app):
     controls = PrintControls()
     assert controls.grade.minimum() == 1
     emitted = []
-    controls.changed.connect(lambda tone, _flat: emitted.append(tone))
+    controls.changed.connect(lambda preview, _pin, _flat: emitted.append(preview))
     controls.set_override(ToneCurveParams(mode="paper", exposure=0.0, contrast=0.0))  # an old saved zero
     controls.exposure.setValue(10)
     assert emitted[-1].contrast == pytest.approx(0.01)

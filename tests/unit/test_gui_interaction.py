@@ -163,6 +163,8 @@ def test_drawer_summaries_follow_the_film_stock_and_the_print_sliders(window):
     window.details_form.fields["film_stock"].setText("Portra 400")
     assert extra.header.summary == "Portra 400"
     window.print_controls.exposure.setValue(window.print_controls.exposure.value() + 10)
+    assert print_.header.summary == "previewing on this frame"
+    window.print_controls.pin_button.click()
     assert print_.header.summary == "pinned for every frame"
     window.print_controls.reset_button.click()
     assert print_.header.summary == "fitted per frame"
@@ -210,3 +212,59 @@ def test_show_likely_neutrals_sits_by_the_switch_and_marks_the_image(window, app
     QTest.mouseClick(window.auto_overlay, LEFT)
     assert window.auto_overlay.isChecked()
     assert window.image_view._pixmap.toImage() != before
+
+
+# --- Print sliders: a preview on this frame, or pinned for the whole roll ----------------------------
+
+
+def _positive_with_a_fit(window):
+    _click_image(window, SHADOW)
+    _click_image(window, HIGHLIGHT)
+    QTest.mouseClick(window.positive_button, LEFT)
+
+
+def _shown(window):
+    return window.image_view._pixmap.toImage()
+
+
+def test_moving_a_print_slider_previews_this_frame_only(window, monkeypatch):
+    _positive_with_a_fit(window)
+    stale = []
+    monkeypatch.setattr(window, "_proof_is_stale", lambda: stale.append(1))
+    before, thumb_before = _shown(window), window._thumbnail(window.session.frames[1]).copy()
+    controls = window.print_controls
+    controls.exposure.setValue(controls.exposure.value() + 40)
+    assert _shown(window) != before
+    assert window.session.tone_override is None and window.session.sidecars()["tone"] is None
+    assert (window._thumbnail(window.session.frames[1]) == thumb_before).all()  # the other frame
+    assert controls.status.text() == "Previewing on this frame" and stale == []
+
+
+def test_use_for_the_whole_roll_pins_and_saves_the_print(window, monkeypatch):
+    _positive_with_a_fit(window)
+    stale = []
+    monkeypatch.setattr(window, "_proof_is_stale", lambda: stale.append(1))
+    controls = window.print_controls
+    controls.exposure.setValue(controls.exposure.value() + 40)
+    controls.pin_button.click()
+    pinned = window.session.tone_override
+    assert pinned is not None and pinned.exposure == pytest.approx(controls.exposure.value() / 100)
+    assert window.session.sidecars()["tone"] == pinned and stale == [1]
+    assert controls.status.text() == "Pinned for every frame (saved with the profile)"
+    assert not controls.pin_button.isEnabled()  # nothing new to pin
+
+
+def test_changing_frame_drops_a_preview_but_keeps_a_pin(window, app):
+    _positive_with_a_fit(window)
+    controls = window.print_controls
+    controls.exposure.setValue(controls.exposure.value() + 40)
+    controls.pin_button.click()
+    pinned = window.session.tone_override
+    controls.grade.setValue(controls.grade.value() - 20)  # a preview on top of the pin
+    assert window._preview_tone is not None
+    QTest.keyClick(window, Qt.Key.Key_Right)
+    _pump(app, lambda: _frame_ready(window, 1))
+    assert window._preview_tone is None and window.session.tone_override == pinned
+    assert controls.grade.value() == round(pinned.contrast * 100)  # the sliders show the pin again
+    controls.reset_button.click()
+    assert window.session.tone_override is None and controls.status.text() == "Fitted per frame"

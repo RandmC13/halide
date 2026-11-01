@@ -205,17 +205,20 @@ class RollDetailsForm(QWidget):
 
 class PrintControls(QWidget):
     """Enlarger exposure and paper grade for the Positive view. Left alone they're fitted per frame
-    (the project default, see core/tone_render.py::fit_print) and the sliders just follow the current
-    frame's fit; moving either pins both, and that pinned pair is saved with the profile as its print
-    override. Flat output is a preview-only look at the linear positive, never saved."""
+    (the project default, see core/tone_render.py::fit_print) and the sliders follow the current
+    frame's fit. Moving one is a test strip: a preview on the frame on screen only, dropped when the
+    frame changes. "Use for the whole roll" pins the pair for every frame and saves it with the
+    profile as its print override. Flat output is a preview-only look at the linear positive."""
 
-    changed = Signal(object, bool)  # (ToneCurveParams override or None, flat preview)
+    changed = Signal(object, object, bool)  # (preview ToneCurveParams or None, pinned or None, flat)
+
+    _FITTED, _PREVIEW, _PINNED = "Fitted per frame", "Previewing on this frame", "Pinned for every frame (saved with the profile)"
 
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
-        self.status = QLabel("Fitted per frame")
+        self.status = QLabel(self._FITTED)
         self.status.setProperty("role", "dim")
         layout.addWidget(self.status)
 
@@ -225,10 +228,17 @@ class PrintControls(QWidget):
         self.flat = QCheckBox("Flat output (preview only)")
         self.flat.toggled.connect(lambda _checked: self._emit())
         layout.addWidget(self.flat)
+        buttons = QHBoxLayout()  # one row, so the drawer grows by no more than the old single button
+        self.pin_button = QPushButton("Use for the whole roll")
+        self.pin_button.clicked.connect(self._on_pin)
         self.reset_button = QPushButton("Back to fitted")
         self.reset_button.clicked.connect(self._on_reset)
-        layout.addWidget(self.reset_button)
-        self._pinned = False
+        buttons.addWidget(self.pin_button)
+        buttons.addWidget(self.reset_button)
+        layout.addLayout(buttons)
+        self._pin: ToneCurveParams | None = None
+        self._preview: ToneCurveParams | None = None
+        self._update_state()
 
     def _slider_row(self, layout: QVBoxLayout, label: str, value_range: tuple[int, int]) -> tuple[QSlider, QLabel]:
         row = QHBoxLayout()
@@ -254,37 +264,60 @@ class PrintControls(QWidget):
         self.exposure_value.setText(f"{exposure:+.2f}")
         self.grade_value.setText(f"{self.grade.value() / 100:.2f}")
 
+    def _slider_tone(self) -> ToneCurveParams:
+        return ToneCurveParams(mode="paper", exposure=self.exposure.value() / 100, contrast=self.grade.value() / 100)
+
+    def _update_state(self) -> None:
+        self.status.setText(self._PREVIEW if self._preview else self._PINNED if self._pin else self._FITTED)
+        self.pin_button.setEnabled(self._pin is None or self._preview is not None)
+        self.reset_button.setEnabled(self._pin is not None or self._preview is not None)
+
     @property
     def pinned(self) -> bool:
-        return self._pinned
+        return self._pin is not None
+
+    @property
+    def previewing(self) -> bool:
+        return self._preview is not None
 
     def show_fitted(self, exposure: float, grade: float) -> None:
-        """The current frame's own fit - shown on the sliders unless the user has pinned values."""
-        if not self._pinned:
+        """The current frame's own fit - shown on the sliders unless they hold a preview or a pin."""
+        if self._pin is None and self._preview is None:
             self._set_quietly(exposure, grade)
 
     def set_override(self, tone: ToneCurveParams | None) -> None:
-        self._pinned = tone is not None
+        """Show `tone` as the pin (a reopened profile's, or None for a new calibration); any preview goes."""
+        self._pin, self._preview = tone, None
         if tone is not None:
             self._set_quietly(tone.exposure, tone.contrast)
-        self.status.setText("Pinned for every frame (saved with the profile)" if self._pinned else "Fitted per frame")
+        self._update_state()
+
+    def drop_preview(self) -> None:
+        """Another frame is on screen: its preview goes, and the sliders show the pin or the new fit."""
+        if self._preview is None:
+            return
+        self._preview = None
+        if self._pin is not None:
+            self._set_quietly(self._pin.exposure, self._pin.contrast)
+        self._update_state()
+        self._emit()
 
     def _on_slider(self, _value: int) -> None:
-        self._pinned = True
         self.exposure_value.setText(f"{self.exposure.value() / 100:+.2f}")
         self.grade_value.setText(f"{self.grade.value() / 100:.2f}")
-        self.status.setText("Pinned for every frame (saved with the profile)")
+        self._preview = self._slider_tone()
+        self._update_state()
+        self._emit()
+
+    def _on_pin(self) -> None:
+        self._pin, self._preview = self._slider_tone(), None
+        self._update_state()
         self._emit()
 
     def _on_reset(self) -> None:
-        self._pinned = False
-        self.status.setText("Fitted per frame")
+        self._pin = self._preview = None
+        self._update_state()
         self._emit()
 
     def _emit(self) -> None:
-        tone = (
-            ToneCurveParams(mode="paper", exposure=self.exposure.value() / 100, contrast=self.grade.value() / 100)
-            if self._pinned
-            else None
-        )
-        self.changed.emit(tone, self.flat.isChecked())
+        self.changed.emit(self._preview, self._pin, self.flat.isChecked())

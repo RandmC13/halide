@@ -160,6 +160,7 @@ class MainWindow(QWidget):
         self._positive_profile: DensityProfile | None = None
         self._positive_gain = 1.0
         self._flat_preview = False
+        self._preview_tone: ToneCurveParams | None = None  # the Print sliders' test strip, this frame only
         self._nudge: str | None = None
         self._shown_positive = False  # the view the image last rendered in
         self._pending_flash: int | None = None
@@ -592,7 +593,11 @@ class MainWindow(QWidget):
         if index == self._current and not retry:
             return
         frame.error = None
-        self._current = index
+        previous, self._current = self._current, index
+        if previous is not None and previous != index and self.print_controls.previewing:
+            self.print_controls.drop_preview()  # a test strip belongs to the frame it was made on
+            if self._positive_mode():
+                self._refresh_thumbnail(previous)
         self._pending_flash = None
         self.filmstrip.show_frame(index)
         digits = 3 if len(self.session.frames) > 99 else 2
@@ -696,8 +701,12 @@ class MainWindow(QWidget):
     def _positive_mode(self) -> bool:
         return self.positive_button.isChecked()
 
-    def _tone(self) -> ToneCurveParams:
-        return ToneCurveParams(mode="linear") if self._flat_preview else self.session.print_tone()
+    def _tone(self, current: bool = True) -> ToneCurveParams:
+        """The print for the frame on screen, or (`current=False`) for any other frame, which never
+        shows the sliders' preview."""
+        if self._flat_preview:
+            return ToneCurveParams(mode="linear")
+        return (self._preview_tone if current else None) or self.session.print_tone()
 
     def _thumbnail(self, frame: Frame) -> np.ndarray:
         """A frame's filmstrip thumbnail in the current view (negative, or positive by the same rule
@@ -707,8 +716,14 @@ class MainWindow(QWidget):
         if self._positive_mode():
             profile, _is_fit, gain = self.session.positive_source(frame)
             if profile is not None:
-                return positive_display(frame.preview, profile, self._tone(), gain)[0]
+                current = self._current is not None and frame is self.session.frames[self._current]
+                return positive_display(frame.preview, profile, self._tone(current), gain)[0]
         return negative_display(frame.preview, compute_stretch_bounds(frame.preview))
+
+    def _refresh_thumbnail(self, index: int) -> None:
+        frame = self.session.frames[index]
+        if frame.preview is not None:
+            self.filmstrip.strip.set_pixmap(index, QPixmap.fromImage(_qimage(self._thumbnail(frame))))
 
     def _refresh_filmstrip_thumbnails(self) -> None:
         for i, frame in enumerate(self.session.frames):
@@ -977,18 +992,26 @@ class MainWindow(QWidget):
     def _refresh_drawer_summaries(self) -> None:
         stock = self.session.details.get("film_stock", "").strip()
         self.extra_drawer.set_summary(stock or "film stock, process, scanner")
-        self.print_drawer.set_summary("pinned for every frame" if self.print_controls.pinned else "fitted per frame")
+        controls = self.print_controls
+        self.print_drawer.set_summary(
+            "previewing on this frame" if controls.previewing else "pinned for every frame" if controls.pinned else "fitted per frame"
+        )
 
-    def _on_print_changed(self, tone: ToneCurveParams | None, flat: bool) -> None:
-        stale = tone != self.session.tone_override
-        self.session.tone_override = tone
+    def _on_print_changed(self, preview: ToneCurveParams | None, pin: ToneCurveParams | None, flat: bool) -> None:
+        pin_changed = pin != self.session.tone_override
+        everywhere = pin_changed or flat != self._flat_preview  # changes every thumbnail, not just this frame's
+        self.session.tone_override = pin
+        self._preview_tone = preview
         self._flat_preview = flat
         self._refresh_drawer_summaries()
-        if stale:
+        if pin_changed:
             self._proof_is_stale()
         if self._positive_mode():
             self._refresh_image()
-            self._thumbs_timer.start(_THUMBS_DELAY_MS)
+            if everywhere:
+                self._thumbs_timer.start(_THUMBS_DELAY_MS)
+            elif self._current is not None:
+                self._refresh_thumbnail(self._current)
 
     # --- magnifier ------------------------------------------------------------------------------
 
