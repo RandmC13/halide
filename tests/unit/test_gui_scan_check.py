@@ -76,3 +76,24 @@ def test_flags_show_for_a_roll_opened_by_a_relative_path(tmp_path, monkeypatch, 
     assert list(window.filmstrip.strip._flags) == [1]
     window._closing = True
     window.close()
+
+
+def test_the_list_opens_again_after_going_to_a_frame_from_it(tmp_path, monkeypatch, app):
+    # It once opened only the first time: clearing the old rows failed, until the roll was reloaded.
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QPushButton
+
+    window = _open(tmp_path, monkeypatch, app, [S30, S60, S30, S60])
+    bar = window.notice_bar
+    QTest.mouseClick(bar._chips["scan"], Qt.MouseButton.LeftButton)
+    rows = [b for b in bar._panel.findChildren(QPushButton) if b.toolTip() == "Go to this frame"]
+    QTest.mouseClick(rows[1], Qt.MouseButton.LeftButton)
+    _pump(app, lambda: _frame_ready(window, 3))
+    assert window._current == 3 and not bar._panel.isVisible()
+    QTest.mouseClick(bar._chips["scan"], Qt.MouseButton.LeftButton)
+    assert bar.list_open() == "scan" and bar._panel.isVisible()
+    rows = [b for b in bar._panel.findChildren(QPushButton) if b.toolTip() == "Go to this frame" and b.isVisible()]
+    assert len(rows) == 2
+    window._closing = True
+    window.close()

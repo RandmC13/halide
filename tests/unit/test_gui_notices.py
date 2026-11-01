@@ -35,9 +35,11 @@ def test_a_chip_opens_its_list_and_a_row_goes_to_its_frame(app):
     rows = [b for b in bar._panel.findChildren(QPushButton) if b.toolTip() == "Go to this frame"]
     rows[1].click()
     assert went == [8] and bar.list_open() is None  # going there closes the list
-    chip.click()
-    chip.click()  # a second click closes it again
-    assert bar.list_open() is None
+    chip.click()  # opens again after going to a frame
+    assert bar.list_open() == "scan" and bar._panel.isVisibleTo(host)
+    assert "FRAME 09" in [label.text() for label in bar._panel.findChildren(QLabel)]
+    chip.click()  # and a second click closes it
+    assert bar.list_open() is None and not bar._panel.isVisibleTo(host)
 
 
 def test_a_long_list_shows_eight_rows_then_how_many_more(app):

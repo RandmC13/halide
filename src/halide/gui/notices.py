@@ -58,15 +58,13 @@ class _Panel(QFrame):
     def show_notice(self, notice: Notice) -> None:
         while self._layout.count():
             item = self._layout.takeAt(0)
-            if item.widget() is not None:
-                item.widget().setParent(None)
-                item.widget().deleteLater()
-            elif item.layout() is not None:
+            widgets = [item.widget()] if item.widget() is not None else []
+            if item.layout() is not None:  # the heading row
                 while item.layout().count():
-                    child = item.layout().takeAt(0).widget()
-                    if child is not None:
-                        child.setParent(None)
-                        child.deleteLater()
+                    widgets.append(item.layout().takeAt(0).widget())
+            for widget in filter(None, widgets):  # held first: a widget let go of can't be asked for again
+                widget.setParent(None)
+                widget.deleteLater()
         head = QHBoxLayout()
         title = QLabel(notice.title)
         title.setWordWrap(True)
