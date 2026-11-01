@@ -2,13 +2,14 @@
 scene - on any frames of a roll, and fit the film's density balance through all of them.
 
 Layout (landscape, fixed size, never scrolls - see _compute_window_size):
-  top bar         roll name · Open profile… · Load roll…
+  top bar         roll name in edge print · FRAME n / N · profile in use · Contact sheet · Open profile… ·
+                  Load roll…
   filmstrip       the whole roll, current frame outlined, point counts under frames (gui/filmstrip.py)
   left column     Negative | Positive switch + what the positive is · the image with numbered point
                   markers · the "what to click" caption (states which way brightness is reversed on
                   the negative; never soften it) · status line
   right panel     step wedge (gui/step_wedge.py) · neutral points list (gui/point_list.py) · notice
-                  line · Build contact sheet… · Extra information / Print / Details drawers (gui/drawers.py,
+                  line · Extra information / Print / Details drawers (gui/drawers.py,
                   accordion) · the one red primary button: Save calibration profile (Develop in the
                   one-shot `invert --pick` flow)
 
@@ -19,6 +20,7 @@ widgets and keeps them in step with it. Picks always sample the raw full-resolut
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 import numpy as np
@@ -83,7 +85,9 @@ _WINDOW_MIN = QSize(900, 700)
 _WINDOW_MAX = QSize(1400, 900)
 _PANEL_WIDTH = 340
 _LAYOUT_MARGIN = 14
-_IMAGE_PADDING = 10  # uniform gap between the image and its drawn border, on all four sides
+# The frame sits in a strip of film: more rebate above and below (where the edge print runs) than at the sides.
+_CARRIER_MARGIN_X = 16
+_CARRIER_MARGIN_Y = 22
 _DISPLAY_BUDGET = (1600, 1100)  # downsampled display resolution; painted scaled to fit the image area
 
 # Re-printing all the filmstrip thumbnails takes ~0.4 s on a 37-frame roll, so a slider drag or a run of
@@ -159,8 +163,8 @@ class ElidedLabel(QLabel):
 
 
 class ImageView(QWidget):
-    """Paints the current frame scaled to fit its area, inside a border with uniform padding, plus
-    numbered point markers; reports clicks and hovers in the *displayed image's* pixel coordinates
+    """Paints the current frame scaled to fit its area, surrounded by film rebate carrying the edge
+    print, plus numbered point markers; reports clicks and hovers in the *displayed image's* pixel coordinates
     (MainWindow maps those to full resolution via gui/sampling.py)."""
 
     clicked = Signal(int, int)
@@ -172,6 +176,7 @@ class ImageView(QWidget):
         self.setMouseTracking(True)
         self._pixmap: QPixmap | None = None
         self._placeholder = "Load a roll to begin"
+        self._edge_print = ""
         self.markers: list[tuple[int, int, int, str, bool]] = []  # (x, y, number, colour, selected)
         self._flash: int | None = None  # number of a marker currently flashing
         self._flash_on = False
@@ -183,6 +188,10 @@ class ImageView(QWidget):
         self._pixmap = pixmap
         if placeholder:
             self._placeholder = placeholder
+        self.update()
+
+    def set_edge_print(self, text: str) -> None:
+        self._edge_print = text
         self.update()
 
     def flash(self, number: int) -> None:
@@ -198,11 +207,11 @@ class ImageView(QWidget):
         self.update()
 
     def _image_rect(self) -> QRectF | None:
-        """Where the image is drawn: scaled to fit inside the padding, centred."""
+        """Where the image is drawn: scaled to fit inside the rebate, centred."""
         if self._pixmap is None:
             return None
-        avail_w = self.width() - 2 * _IMAGE_PADDING - 2
-        avail_h = self.height() - 2 * _IMAGE_PADDING - 2
+        avail_w = self.width() - 2 * _CARRIER_MARGIN_X
+        avail_h = self.height() - 2 * _CARRIER_MARGIN_Y
         scale = min(avail_w / self._pixmap.width(), avail_h / self._pixmap.height())
         w, h = self._pixmap.width() * scale, self._pixmap.height() * scale
         return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
@@ -217,17 +226,12 @@ class ImageView(QWidget):
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         rect = self._image_rect()
         if rect is None:
-            painter.fillRect(self.rect(), QColor(theme.BACKGROUND_ALT))
-            painter.setPen(QColor(theme.BORDER))
-            painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+            painter.fillRect(self.rect(), QColor(theme.FILM_REBATE))
             painter.setPen(QColor(theme.TEXT_DIM))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._placeholder)
             return
-        # The border shrink-wraps the image with uniform padding, whatever its shape.
-        box = rect.adjusted(-_IMAGE_PADDING, -_IMAGE_PADDING, _IMAGE_PADDING, _IMAGE_PADDING)
-        painter.setBrush(QColor(theme.BACKGROUND_ALT))
-        painter.setPen(QColor(theme.BORDER))
-        painter.drawRoundedRect(box, 6, 6)
+        painter.fillRect(self.rect(), QColor(theme.FILM_REBATE))
+        self._paint_edge_print(painter)
         painter.drawPixmap(rect, self._pixmap, QRectF(self._pixmap.rect()))
 
         scale = self._scale()
@@ -249,6 +253,26 @@ class ImageView(QWidget):
             painter.drawText(label.translated(1, 1), Qt.AlignmentFlag.AlignLeft, str(number))
             painter.setPen(QColor(colour))
             painter.drawText(label, Qt.AlignmentFlag.AlignLeft, str(number))
+
+    def _paint_edge_print(self, painter: QPainter) -> None:
+        if not self._edge_print:
+            return
+        painter.setFont(theme.edge_font(10))
+        colour = QColor(theme.EDGE_PRINT)
+        painter.setPen(colour)
+        strip = self.height() - _CARRIER_MARGIN_Y
+        painter.drawText(
+            QRectF(_CARRIER_MARGIN_X, strip, self.width(), _CARRIER_MARGIN_Y),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            self._edge_print,
+        )
+        colour.setAlphaF(0.8)
+        painter.setPen(colour)
+        painter.drawText(
+            QRectF(0, 0, self.width() - _CARRIER_MARGIN_X, _CARRIER_MARGIN_Y),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            "HALIDE",
+        )
 
     def _to_image(self, event) -> tuple[int, int] | None:
         rect = self._image_rect()
@@ -467,9 +491,25 @@ class MainWindow(QWidget):
         root.setSpacing(8)
 
         top = QHBoxLayout()
-        self.roll_label = QLabel("No roll loaded")
-        self.roll_label.setProperty("role", "dim")
-        top.addWidget(self.roll_label, stretch=1)
+        top.setSpacing(10)
+        self.roll_label = QLabel("NO ROLL LOADED")
+        self.roll_label.setFont(theme.edge_font(15))
+        self.roll_label.setStyleSheet(f"color: {theme.EDGE_PRINT};")
+        top.addWidget(self.roll_label)
+        self.frame_counter = QLabel("")
+        self.frame_counter.setFont(theme.edge_font(13))
+        self.frame_counter.setProperty("role", "dim")
+        top.addWidget(self.frame_counter)
+        self.profile_chip = QLabel("New calibration")
+        self.profile_chip.setProperty("role", "dim")
+        top.addWidget(self.profile_chip)
+        top.addStretch(1)
+        self.proof_button = QPushButton("Contact sheet")
+        self.proof_button.setToolTip("A zoomable contact sheet of the whole roll printed with this calibration")
+        self.proof_button.setEnabled(False)
+        self.proof_button.setVisible(not self.is_pick_session)
+        self.proof_button.clicked.connect(self._on_proof)
+        top.addWidget(self.proof_button)
         if self.show_load_controls:
             open_button = QPushButton("Open profile…")
             open_button.setToolTip("Reopen a saved profile's neutral points and extra information to add to or change them")
@@ -586,13 +626,6 @@ class MainWindow(QWidget):
         self._panel_spacer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         panel.addWidget(self._panel_spacer)  # stretch 0: only what the point list (stretch 1) leaves
 
-        self.proof_button = QPushButton("Build contact sheet…")
-        self.proof_button.setToolTip("A zoomable contact sheet of the whole roll printed with this calibration")
-        self.proof_button.setEnabled(False)
-        self.proof_button.setVisible(not self.is_pick_session)
-        self.proof_button.clicked.connect(self._on_proof)
-        panel.addWidget(self.proof_button)
-
         self.details_form = RollDetailsForm()
         self.details_form.changed.connect(self._on_details_changed)
         self.print_controls = PrintControls()
@@ -678,11 +711,8 @@ class MainWindow(QWidget):
         scans = [metadata[str(p)][0] for p in paths]
         self.session.set_roll(paths, scans, folder)
         self.roll_label.setText(
-            f"{folder.name} · {len(paths)} frames" if folder is not None else paths[0].name
+            (f"{folder.name} · {len(paths)} frames" if folder is not None else paths[0].name).upper()
         )
-        self.roll_label.setProperty("role", None)
-        self.roll_label.style().unpolish(self.roll_label)
-        self.roll_label.style().polish(self.roll_label)
         self.filmstrip.strip.set_frames([f.number for f in self.session.frames])
         self._current = None
         self.full_image = None
@@ -720,6 +750,7 @@ class MainWindow(QWidget):
             self._status(f"Couldn't open {path.name}: {exc}")
             return
         self._profile_name = path.stem
+        self._show_profile_name(path.stem)
         self.details_form.set_values(self.session.details)
         self.print_controls.set_override(self.session.tone_override)
         self._sticky(f"Reopened '{path.stem}': {console.plural(len(self.session.points), 'point')}")
@@ -826,6 +857,12 @@ class MainWindow(QWidget):
         self._current = index
         self._pending_flash = None
         self.filmstrip.show_frame(index)
+        digits = 3 if len(self.session.frames) > 99 else 2
+        self.frame_counter.setText(
+            f"FRAME <span style='color:{theme.TEXT}'>{frame.number:0{digits}d}</span> / {len(self.session.frames):0{digits}d}"
+        )
+        number = 1 if self.is_pick_session else frame.number
+        self.image_view.set_edge_print(f"{number}  ▸{number}A")
         self.full_image = None
         self.display = None
         self._display_estimate = None
@@ -1240,8 +1277,12 @@ class MainWindow(QWidget):
         dialog.exec()
         self._repaint_all()
 
+    def _show_profile_name(self, name: str) -> None:
+        self.profile_chip.setText(f"Profile <b>{html.escape(name)}</b>")
+
     def _on_saved(self, name: str, message: str) -> None:
         self._profile_name = name
+        self._show_profile_name(name)
         self._saved_points = list(self.session.points)
         self._status(message)
 
