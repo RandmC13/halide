@@ -405,7 +405,7 @@ class MachineProgressRenderer(PlainProgressRenderer):
     one tab-separated line per event that the window reads —
 
         start <index> <scan name> / done <index> ok|failed <detail or error> /
-        summary <label> <value> / end <developed> <total> <cancelled 0|1>
+        summary row|warn <label> <value> / end <developed> <total> <cancelled 0|1>
 
     `end` waits for summary(), so the end-of-run rows come before it."""
 
@@ -432,8 +432,8 @@ class MachineProgressRenderer(PlainProgressRenderer):
         self._cancelled = cancelled
 
     def summary(self, rows) -> None:
-        for _kind, label, text in rows:
-            self._emit("summary", label, text)
+        for kind, label, text in rows:
+            self._emit("summary", "warn" if kind == "warn" else "row", label, text)
         self._emit("end", self.succeeded, self.total, int(self._cancelled))
 
 

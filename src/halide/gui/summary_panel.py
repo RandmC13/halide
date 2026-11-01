@@ -8,9 +8,6 @@ from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QVB
 
 from halide.gui import theme
 
-# The labels summary_rows always gives as warnings; any row reading "not written" is one too.
-_WARN_LABELS = ("Check", "Warnings")
-
 
 class SummaryPanel(QWidget):
     backClicked = Signal()
@@ -64,16 +61,18 @@ class SummaryPanel(QWidget):
         last.addWidget(self.carry_on_button)
         col.addLayout(last)
 
-    def show_result(self, end_line: str, rows: list[tuple[str, str]], cancelled: bool) -> None:
-        """`rows` are (label, value) as the run printed them. A cancelled run leads with its
-        cancelled line and offers Carry on as the one red button."""
+    def show_result(self, end_line: str, rows: list[tuple[str, str, str]], cancelled: bool) -> None:
+        """`rows` are ("row" or "warn", label, value) as the run printed them. A cancelled run leads
+        with its cancelled line and offers Carry on as the one red button."""
         self.title.setText("Cancelled" if cancelled else "Developed")
         self.end_line.setText(end_line)
         while self._rows.count():
             self._rows.takeAt(0).widget().deleteLater()
-        for r, (label, value) in enumerate(rows):
-            warn = label in _WARN_LABELS or value.startswith("not written")
-            name = QLabel(label)
+        last = None
+        for r, (kind, label, value) in enumerate(rows):
+            warn = kind == "warn"
+            name = QLabel("" if label == last else label)  # a label once per run of equal labels, as the sheet
+            last = label
             name.setProperty("role", "dim")
             text = QLabel(value)
             text.setWordWrap(True)

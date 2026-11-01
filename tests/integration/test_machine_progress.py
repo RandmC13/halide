@@ -39,11 +39,17 @@ def test_a_real_batch_child_writes_every_line_kind_in_order(tmp_path):
     assert starts == {0: "frame_00.tif", 1: "frame_01.tif"}
     dones = [line for line in lines if line[0] == "done"]
     assert sorted(int(d[1]) for d in dones) == [0, 1] and all(d[2] == "ok" and len(d) == 4 for d in dones)
-    summaries = {line[1]: line[2] for line in lines if line[0] == "summary"}
-    assert "Prints" in summaries and summaries["Log"].endswith("halide-log.txt")
+    summaries = [line[1:] for line in lines if line[0] == "summary"]
+    labels = [label for _kind, label, _value in summaries]
+    assert all(kind in ("row", "warn") for kind, _label, _value in summaries)
+    assert labels[0] == "Prints" and labels[-1] == "Log" and summaries[-1][2].endswith("halide-log.txt")
+    # The run sheet's Compute row(s), for the window, which shows no run sheet: just before Log.
+    compute = [s for s in summaries if s[1] == "Compute"]
+    assert compute and compute[0][0] == "row" and compute[0][2].startswith("CPU")
+    assert labels.index("Compute") == len(labels) - 1 - len(compute)
     assert kinds.index("summary") > max(i for i, k in enumerate(kinds) if k == "done")
     assert lines[-1] == ["end", "2", "2", "0"]
-    assert all(len(line) == {"start": 3, "done": 4, "summary": 3, "end": 4}[line[0]] for line in lines)
+    assert all(len(line) == {"start": 3, "done": 4, "summary": 4, "end": 4}[line[0]] for line in lines)
 
 
 def _fake_batch(monkeypatch, results_for):

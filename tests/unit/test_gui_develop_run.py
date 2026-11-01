@@ -75,7 +75,7 @@ def test_use_once_develops_exactly_what_batch_does(window, app, tmp_path):
     assert summary.end_line.text().startswith("Developed 2 frames")
     labels = [summary._rows.itemAtPosition(r, 0).widget().text() for r in range(summary._rows.rowCount())
               if summary._rows.itemAtPosition(r, 0)]
-    assert "Prints" in labels and "Log" in labels
+    assert "Prints" in labels and "Log" in labels and "Compute" in labels
     assert all(window.filmstrip.strip.print_phase(i) == "printed" for i in range(2))
     assert not panel.cancel_button.isVisible() and window.load_button.isEnabled()
 
@@ -126,7 +126,7 @@ for _ in range(400):
         break
     time.sleep(0.05)
 print("done\t1\tok\tgrade 0.9", flush=True)
-print("summary\tPrints\tgrade 0.9", flush=True)
+print("summary\trow\tPrints\tgrade 0.9", flush=True)
 print("end\t%d\t2\t%d" % (2 - len(stop), len(stop)), flush=True)
 sys.exit(130 if stop else 0)
 '''
@@ -281,3 +281,18 @@ def test_no_summary_button_is_cut(window, app, size):
         assert button.width() >= button.sizeHint().width(), button.text()
     # One per row: offscreen fonts are narrower than a desktop's, where two side by side were cut.
     assert len({button.y() for button in buttons}) == len(buttons)
+
+
+def test_the_summary_colours_warnings_by_kind_and_names_a_label_once(app):
+    from halide.gui import theme
+    from halide.gui.summary_panel import SummaryPanel
+
+    panel = SummaryPanel()
+    panel.show_result("Developed 2 frames in 3s", [
+        ("row", "Prints", "grade 0.9"),
+        ("row", "Compute", "GPU · NVIDIA GeForce RTX 3070 · 4 workers"),
+        ("warn", "Compute", "GPU service not used: no room in /dev/shm"),
+    ], False)
+    cell = lambda r, c: panel._rows.itemAtPosition(r, c).widget()
+    assert [cell(r, 0).text() for r in range(3)] == ["Prints", "Compute", ""]
+    assert theme.TEXT_WARNING in cell(2, 1).styleSheet() and not cell(1, 1).styleSheet()
