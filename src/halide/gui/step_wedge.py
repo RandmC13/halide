@@ -11,17 +11,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from halide.gui import theme
 
 _STEPS = 11
 _BAR_TOP = 14
-_BAR_HEIGHT = 14
+_BAR_HEIGHT = 18  # tall enough for the density labels inside the bands
 _TICK_ROW = _BAR_TOP + _BAR_HEIGHT + 3
 _LABEL_H = 13
 _RELIABLE_H = 8  # the reliable-range bracket's row, between the tick labels and the caption
+
+
+def band_labels(density_range: tuple[float, float], steps: int) -> list[str]:
+    """The density at the centre of each band, to 2 decimals."""
+    low, high = density_range
+    return [f"{low + (i + 0.5) / steps * (high - low):.2f}" for i in range(steps)]
 
 
 @dataclass(frozen=True)
@@ -67,6 +73,20 @@ class StepWedge(QWidget):
         t = 0.0 if high <= low else (density - low) / (high - low)
         return left + max(0.0, min(1.0, t)) * width
 
+    def _paint_band_labels(self, painter: QPainter, left: float, step_w: float) -> None:
+        painter.save()
+        font = theme.edge_font(9)
+        painter.setFont(font)
+        labels = band_labels(self._range, _STEPS)
+        text_w = QFontMetrics(font).horizontalAdvance(labels[0])
+        # Too narrow for every band: label every other one; too narrow even for that: none.
+        stride = 1 if step_w >= text_w + 4 else 2 if 2 * step_w >= text_w + 4 else 0
+        for i in range(0, _STEPS if stride else 0, stride or 1):
+            dark = round(255 * (i / (_STEPS - 1)) ** (1 / 2.2)) < 128
+            painter.setPen(QColor(theme.TEXT if dark else theme.BACKGROUND))
+            painter.drawText(QRectF(left + i * step_w, _BAR_TOP, step_w, _BAR_HEIGHT), Qt.AlignmentFlag.AlignCenter, labels[i])
+        painter.restore()
+
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -93,6 +113,8 @@ class StepWedge(QWidget):
                 "measuring the roll…" if self._measuring else "no roll loaded - no density range to show",
             )
             return
+
+        self._paint_band_labels(painter, left, step_w)
 
         if self._ticks:
             xs = [self._x(t.density, left, width) for t in self._ticks]

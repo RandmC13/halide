@@ -65,3 +65,10 @@ def test_image_view_paints_rebate_around_the_image(app):
     image = view.grab().toImage()
     assert image.pixelColor(3, 3) == QColor(theme.FILM_REBATE)
     assert image.pixelColor(200, 150) == QColor("#336699")
+
+
+def test_band_labels_are_the_density_at_each_band_centre():
+    from halide.gui.step_wedge import band_labels
+
+    labels = band_labels((0.71, 1.50), 11)
+    assert len(labels) == 11 and labels[0] == "0.75" and labels[-1] == "1.46"
