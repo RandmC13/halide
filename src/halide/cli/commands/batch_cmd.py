@@ -475,11 +475,10 @@ def run(args: argparse.Namespace) -> int:
     if not plans:
         positives = rolls_skipped.halide_outputs if rolls_skipped else 0
         if positives or (not args.recursive and list_scans(input_dir, skip_positives=True)[1].positives):
-            print(f"No scans to develop in {input_dir} — its TIFFs are halide positives. To re-print "
-                  f"them use `halide print`; to develop again, point halide at the original scans")
-        else:
-            print(f"No TIFF files found in {input_dir}")
-        return 1
+            raise SystemExit(f"No scans to develop in {input_dir} — its TIFFs are halide positives. To re-print "
+                             f"them use `halide print`; to develop again, point halide at the original scans")
+        raise SystemExit(f"No TIFF files found in {input_dir} — is this the right folder? "
+                         f"Subfolders are skipped (use --recursive)")
     _decide_existing(args, plans)
 
     def has_work(plan: RollPlan) -> bool:
@@ -529,11 +528,11 @@ def _overall_line(args: argparse.Namespace, plans: list[RollPlan], outcomes: lis
     if any(o.code == 130 for o in outcomes):
         states = [f"{p.label} {'cancelled' if o.code == 130 else 'done'}" for p, o in zip(plans, outcomes)]
         states += [f"{p.label} not started" for p in plans[len(outcomes):]]
-        print(console.cancelled(f"Cancelled - {', '.join(states)}"))
+        print(console.cancelled(f"Cancelled — {', '.join(states)}"))
         return 130
     planned = sum(len(p.todo) for p in plans)
     if args.dry_run:
-        print(console.success(f"Dry run — nothing developed. {rolls}{_SEP}{frame_count(planned)} would be developed."))
+        print(console.success(f"Dry run — {rolls}{_SEP}{frame_count(planned)} would be developed"))
         return 0
     developed = sum(o.developed for o in outcomes)
     failed_rolls = [p.label for p, o in zip(plans, outcomes) if o.code != 0]
@@ -555,18 +554,18 @@ def _run_roll(args: argparse.Namespace, stage: Stage, plan: RollPlan) -> RollOut
     title = plan.name or input_dir.name
     if args.dry_run and output_dir is None and not plan.build_sheet:
         print(console.success(
-            f"Dry run — nothing developed. Nothing to do — {sheet_path} already exists (--skip-existing)."
+            f"Dry run — nothing to do, {sheet_path} already exists (--skip-existing)"
         ))
         return RollOutcome(0)
     if args.dry_run and not jobs:
-        text = f"Nothing to develop — every output in {output_dir} already exists (--skip-existing)"
+        text = f"nothing to do, every output in {output_dir} already exists (--skip-existing)"
         if sheet_path is not None and plan.build_sheet:
             text += f"; the contact sheet {sheet_path} would be built from the folder"
-        print(console.success(f"Dry run — nothing developed. {text}."))
+        print(console.success(f"Dry run — {text}"))
         return RollOutcome(0)
     if output_dir is not None and not jobs:
         if sheet_path is None or not plan.build_sheet:
-            print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
+            print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)"))
             return RollOutcome(0)
         # Nothing left to develop, but the sheet still needs building — from the whole,
         # already-complete folder, the same way `halide contact <output_dir> <sheet>` would.
@@ -575,7 +574,7 @@ def _run_roll(args: argparse.Namespace, stage: Stage, plan: RollPlan) -> RollOut
         files, _ = discover_processed_files(output_dir, sheet_path)
         return RollOutcome(write_sheet_from_folder(files, sheet_path, args, title, quiet=args.quiet))
     if output_dir is None and not plan.build_sheet:
-        print(console.success(f"Nothing to do — {sheet_path} already exists (--skip-existing)."))
+        print(console.success(f"Nothing to do — {sheet_path} already exists (--skip-existing)"))
         return RollOutcome(0)
 
     thumbnails = Path(tempfile.mkdtemp(prefix="halide-contact-")) if plan.build_sheet and not args.dry_run else None

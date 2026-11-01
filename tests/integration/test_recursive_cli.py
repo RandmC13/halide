@@ -96,9 +96,9 @@ def test_dry_run_writes_nothing_and_lists_every_roll(holiday, capsys):
     assert _batch(holiday, "--recursive", "--into", "../inversion", "--dry-run") == 0
     assert not list(holiday.rglob("inversion"))
     screen = _screen(capsys)
-    assert screen.count("Dry run — nothing developed.") == 3  # one per roll, then the whole run
+    assert screen.count("Dry run — ") == 3  # one per roll, then the whole run
     assert "Roll1 · 2 frames" in screen and "Roll2 · 2 frames" in screen
-    assert "Dry run — nothing developed. 2 rolls · 4 frames would be developed." in screen
+    assert "Dry run — 2 rolls · 4 frames would be developed" in screen
 
 
 def test_a_positional_output_folder_gets_a_subfolder_per_roll(holiday, tmp_path):
@@ -179,7 +179,7 @@ def test_cancelling_roll_one_starts_no_other_roll(holiday, capsys, monkeypatch):
     assert _batch(holiday, "--recursive", "--into", "../inversion") == 130
     assert len(calls) == 1
     assert not list((holiday / "Roll2").glob("inversion/*"))
-    assert "Cancelled - Roll1 cancelled, Roll2 not started" in _screen(capsys)
+    assert "Cancelled — Roll1 cancelled, Roll2 not started" in _screen(capsys)
 
 
 def test_the_calibration_question_is_asked_once(holiday, monkeypatch):

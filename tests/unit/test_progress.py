@@ -242,7 +242,7 @@ def test_cancelled_says_how_many_developed_and_that_nothing_is_half_written(caps
     r.report(0, _ok(0))
     r.report(1, _ok(1))
     text = _finish_text(r, capsys, cancelled=True)
-    assert text == "✗ Cancelled - 2 of 6 frames developed; nothing half-written"
+    assert text == "✗ Cancelled — 2 of 6 frames developed\nre-run with --skip-existing to carry on"
 
 
 class _Screen:
@@ -370,4 +370,4 @@ def test_end_text_is_the_end_line_without_colour(monkeypatch, capsys):
     c = PlainProgressRenderer(3, "invert")
     c.start()
     c.finish(cancelled=True)
-    assert c.end_text == "✗ Cancelled - 0 of 3 frames developed; nothing half-written"
+    assert c.end_text == "✗ Cancelled — 0 of 3 frames developed\nre-run with --skip-existing to carry on"

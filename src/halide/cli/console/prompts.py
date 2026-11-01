@@ -43,19 +43,19 @@ def prompt_line(prompt: str) -> str | None:
 
 def menu(prompt: str, options: Sequence[tuple[str, str]]) -> str | None:
     """TTY-aware numbered menu. `options` is a list of (key, label) pairs; returns the chosen key,
-    or None if not interactive, or the user gave no valid choice (blank input, EOF, out of range)."""
+    or None if not interactive or the reply is blank or cut off (EOF). A typo asks again."""
     if not is_interactive():
         return None
     print(prompt)
     for i, (_, label) in enumerate(options, start=1):
         print(f"  {i}. {label}")
-    try:
-        reply = input("> ").strip()
-    except EOFError:
-        return None
-    if not reply.isdigit():
-        return None
-    index = int(reply) - 1
-    if 0 <= index < len(options):
-        return options[index][0]
-    return None
+    while True:
+        try:
+            reply = input("> ").strip()
+        except EOFError:
+            return None
+        if not reply:
+            return None
+        if reply.isdigit() and 1 <= int(reply) <= len(options):
+            return options[int(reply) - 1][0]
+        print(f"Type a number from 1 to {len(options)}")

@@ -173,8 +173,8 @@ def outputs_row(sheet: RunSheet, policy, existing: int, contact_sheet: str | Non
 
 def dry_run_line(verb: str, n_frames: int, destination: str, *, kept: int, existing: int, policy,
                  sheet: str | None = None, preview_sheet: str | None = None) -> str:
-    """The one line a dry run ends with: "Dry run — nothing developed. 25 frames would be developed
-    → out; 12 kept." `verb` is the command's key in console.VERB_PAST/NOUN ("batch", "print",
+    """The one line a dry run ends with: "Dry run — 25 frames would be developed → out; 12 kept".
+    `verb` is the command's key in console.VERB_PAST/NOUN ("batch", "print",
     "export"); `n_frames` is every frame in the plan, `existing` how many of those already have an
     output (the default policy asks about them, so they aren't "new"), `sheet` an existing contact
     sheet, `preview_sheet` a batch preview's contact sheet, which has no output folder."""
@@ -199,7 +199,7 @@ def dry_run_line(verb: str, n_frames: int, destination: str, *, kept: int, exist
         parts.append(
             f"{_exist_phrase(existing, sheet, policy)} (a real run would ask whether to replace {plural_them})"
         )
-    return console.success(f"Dry run — nothing {past}. {'; '.join(parts)}.")
+    return console.success(f"Dry run — {'; '.join(parts)}")
 
 
 def print_rename_list(jobs) -> None:
