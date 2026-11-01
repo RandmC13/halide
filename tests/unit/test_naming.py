@@ -1,8 +1,6 @@
-from pathlib import Path
-
 import pytest
 
-from halide.cli._naming import TemplateError, find_clashes, parse_template, safe_field
+from halide.cli._naming import TemplateError, parse_template, safe_field
 
 
 def _r(t, **kw):
@@ -24,7 +22,7 @@ def test_missing_stock_renders_empty():
 
 def test_unsafe_characters_become_dashes():
     assert safe_field('a/b\\c:d*e?f"g<h>i|j\x01k') == "a-b-c-d-e-f-g-h-i-j-k"
-    assert _r("{stock}", stock="Kodak/Portra:400") == "Kodak-Portra-400"
+    assert _r("{stock}_{n}", stock="Kodak/Portra:400") == "Kodak-Portra-400_7"
 
 
 @pytest.mark.parametrize("bad", ["{date}", "{n:x}", "{n:2}", "{roll:>5}", "a/{n}", "a\\{n}", "", "{stock}", "{n", "n}"])
@@ -38,7 +36,20 @@ def test_literal_braces_are_not_supported_but_text_is_kept():
     assert _r("Holiday1_{n:02}") == "Holiday1_07"
 
 
-def test_find_clashes_is_case_insensitive():
-    pairs = [(Path("a.tif"), Path("o/Roll1.tif")), (Path("b.tif"), Path("o/roll1.TIF")),
-             (Path("c.tif"), Path("o/x.tif"))]
-    assert find_clashes(pairs) == [(Path("a.tif"), Path("b.tif"), Path("o/roll1.TIF"))]
+@pytest.mark.parametrize("only_stock", ["{stock}", "  {stock} ", "{stock}{stock}"])
+def test_a_stock_only_template_is_refused_before_rendering(only_stock):
+    # a profile without a film stock would give every frame an empty name
+    with pytest.raises(TemplateError, match="empty name"):
+        parse_template(only_stock)
+
+
+@pytest.mark.parametrize("hidden", [".{n}", " .{roll}_{n}"])
+def test_a_name_starting_with_a_dot_is_refused(hidden):
+    # later folder runs skip dotfiles, so these outputs would vanish from the roll
+    with pytest.raises(TemplateError, match="hidden"):
+        parse_template(hidden)
+
+
+def test_a_field_value_that_starts_the_name_with_a_dot_is_refused():
+    with pytest.raises(TemplateError, match="hidden"):
+        _r("{stock}_{n}", stock=".Portra")
