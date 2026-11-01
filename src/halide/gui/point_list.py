@@ -83,10 +83,11 @@ class _Row(QFrame):
         number.setStyleSheet(f"color: {colour}; font-weight: bold;")
         layout.addWidget(number)
 
-        # The frame number in the edge-print face, as on the filmstrip, then the file's stem, dim.
+        # The frame number as the filmstrip prints it (edge-print face and colour), so it doesn't read
+        # as a second point number, then the file's stem, dim.
         number_label = QLabel(str(view.frame_number) if view.frame_number else "—")
         number_label.setFont(theme.edge_font(12))
-        number_label.setStyleSheet(f"color: {theme.TEXT};")
+        number_label.setStyleSheet(f"color: {theme.EDGE_PRINT};")
         layout.addWidget(number_label)
 
         stem = view.point.frame.stem

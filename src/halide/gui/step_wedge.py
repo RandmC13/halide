@@ -79,8 +79,8 @@ class StepWedge(QWidget):
         painter.setFont(font)
         labels = band_labels(self._range, _STEPS)
         text_w = QFontMetrics(font).horizontalAdvance(labels[0])
-        # Too narrow for every band: label every other one; too narrow even for that: none.
-        stride = 1 if step_w >= text_w + 4 else 2 if 2 * step_w >= text_w + 4 else 0
+        # Every other band: a label in all of them crowds the bar and runs under the point ticks.
+        stride = 2 if 2 * step_w >= text_w + 4 else 0
         for i in range(0, _STEPS if stride else 0, stride or 1):
             dark = round(255 * (i / (_STEPS - 1)) ** (1 / 2.2)) < 128
             painter.setPen(QColor(theme.TEXT if dark else theme.BACKGROUND))
