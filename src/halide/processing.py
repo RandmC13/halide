@@ -310,7 +310,8 @@ def _report_nonfinite(name: str, count: int, total_pixels: int, on_warning: Call
 
 def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes: int | None = None,
                       *, name: str | None = None, on_warning: Callable[[str], None] | None = None):
-    """Convert `image` (host or device array) in place, band by band; a no-op for None.
+    """Convert `image` (host or device array) in place, band by band. With no `source_profile`
+    (already in the working space, e.g. halide's own output) only the non-finite clean-up runs.
 
     Also where non-finite (NaN/inf) pixels are handled: a raw converter's export can contain
     a few, e.g. from a highlight-recovery artifact. Counted and zeroed per band — only on a band
@@ -318,12 +319,13 @@ def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes
     can poison invert()'s reciprocal, the print fit's percentiles, or the JSON provenance with NaN.
     `name`/`on_warning` are None for callers with no live warning channel (thumbnails, previews,
     the roll density pre-pass): cleaning still happens, just without a message naming the file."""
-    if source_profile is None:
-        return image
     xp = array_namespace(image)
     counts: list[int] = []
 
     def convert(band):
+        if source_profile is None:
+            counts.append(_clean_nonfinite_band(band, xp))
+            return band
         # A NaN/inf input propagates through the profile matmul (e.g. inf * -coef + inf = NaN) and
         # numpy warns about it ("invalid value encountered in matmul") every time — noise once this
         # is an intentionally handled case, not a bug, so it's suppressed here rather than left to
