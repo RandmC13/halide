@@ -1,9 +1,9 @@
 """The reciprocal inversion step.
 
-This is deliberately just the bare, unbounded reciprocal — no exposure constant, no clipping. The
-old script's `final_array = 0.01 / img_safe; np.clip(final_array, 0, 1)` conflated two different
+This is deliberately just the bare, unbounded reciprocal — no exposure constant, no clipping. Dividing
+a fixed constant by the image and clipping to [0, 1] (`0.01 / img; clip(0, 1)`) would conflate two different
 concerns: the mathematical inversion (unbounded) and an ad hoc exposure/display-range guess (a
-fixed 0.01 that cannot fit every negative's density range). That conflation is what caused
+fixed 0.01 that cannot fit every negative's density range). That conflation causes
 inconsistent clipping — a magic constant tuned for one frame's density range will clip a denser or
 thinner frame differently. Bringing the result into a displayable range is tone_render's job.
 """

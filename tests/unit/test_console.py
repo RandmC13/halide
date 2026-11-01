@@ -255,7 +255,7 @@ def test_plural_and_finish_and_cancel_wording():
     assert console.finish_message("export", 12, 12, 0, 8.0) == "Exported 12 files in 8.0s"
     assert console.finish_message("batch", 36, 37, 1, 42.0) == "Developed 36 of 37 frames (1 failed) in 42.0s"
     assert console.cancelled_message("batch", 2, 6) == (
-        "Cancelled — 2 of 6 frames developed\nre-run with --skip-existing to carry on"
+        "Cancelled — 2 of 6 frames developed\n  re-run with --skip-existing to carry on"
     )
     assert console.cancelled_message("proof", 2, 6) == "Cancelled — 2 of 6 frames proofed"
     assert console.human_time(59.96) == "1m00s" and console.human_time(59.4) == "59.4s"

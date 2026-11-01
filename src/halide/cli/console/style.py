@@ -114,7 +114,7 @@ def cancelled_message(verb: str, ok: int, total: int, noun: str | None = None) -
     noun = noun or NOUN.get(verb, "frame")
     past = VERB_PAST.get(verb, "Processed").lower()
     message = f"Cancelled — {ok} of {plural(total, noun)} {past}"
-    return message if verb == "proof" else f"{message}\nre-run with --skip-existing to carry on"
+    return message if verb == "proof" else f"{message}\n  re-run with --skip-existing to carry on"
 
 
 def success(message: str) -> str:

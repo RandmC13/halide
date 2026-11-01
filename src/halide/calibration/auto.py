@@ -1,11 +1,10 @@
-"""Zero-effort, statistical density-balance estimation — the fallback tier for users without a
-ColorChecker or a hand-picked anchor frame.
+"""Zero-effort, statistical density-balance estimation — the fallback for when no neutral
+points have been picked (`halide calibrate`).
 
-The old script's equivalent (`auto_density_balance`/`roll_analysis_density_balance`) took
-percentiles of *every* pixel and assumed the single darkest/brightest pixel was neutral gray. The
+The naive approach takes percentiles of *every* pixel and assumes the single darkest/brightest pixel was neutral gray. The
 darkest pixel in a color negative is far more likely to be a saturated shadow color than a neutral
 one — that mismatch between what the statistic measures and what the math needs is a real
-methodological gap, not just noise, and it is why per-frame results varied. This module instead
+methodological gap, not just noise, and it makes per-frame results vary. This module instead
 restricts candidate "neutral" pixels to the least-saturated fraction of the image *first*, then
 takes percentiles only within that filtered set — a materially different, better-justified
 algorithm than a global-median filter.
@@ -55,9 +54,8 @@ MIN_PIXELS_PER_BIN = 200  # below this, a bin's own median is too noisy to trust
 # against the wrong density level" half of that bug by computing a LOCAL reference per density
 # bin instead of one global one. It does not fix the separate, harder problem that
 # _shadow_and_highlight_from_candidates still extracts from the extreme percentiles of whatever
-# survives — investigated and found not fixable by better statistics on this same data; anchor-frame
-# or ColorChecker calibration remain the reliable options when this
-# matters.
+# survives — investigated and found not fixable by better statistics on this same data; picking neutral
+# points by hand remains the reliable option when this matters.
 MIN_DENSITY_SEPARATION = 0.1  # log10 density units; deliberately conservative, see _check_density_separation
 
 
@@ -157,7 +155,7 @@ def _check_density_separation(shadow_rgb: np.ndarray, highlight_rgb: np.ndarray)
     density — a cheap, real, but narrow safety net: it only catches a near-degenerate (tiny-span)
     pair. It will NOT catch a wrong-but-well-separated pair, which is the specific failure mode
     seen on a real scan — that failure needs a fundamentally
-    different, external signal (anchor-frame or ColorChecker calibration), not a cheaper check.
+    different, external signal (neutral points picked by hand), not a cheaper check.
     """
     shadow_density = np.log10(1.0 / np.maximum(shadow_rgb, MIN_TRANSMITTANCE))
     highlight_density = np.log10(1.0 / np.maximum(highlight_rgb, MIN_TRANSMITTANCE))
@@ -166,7 +164,7 @@ def _check_density_separation(shadow_rgb: np.ndarray, highlight_rgb: np.ndarray)
         warnings.warn(
             "auto-detected shadow/highlight candidates are unusually close in density "
             f"(min span {span.min():.3f}, expected at least {MIN_DENSITY_SEPARATION}) — this "
-            "estimate may be unreliable; consider anchor-frame or ColorChecker calibration instead",
+            "estimate may be unreliable; pick neutral points with `halide calibrate` instead",
             stacklevel=3,
         )
 
@@ -228,7 +226,7 @@ def _shadow_and_highlight_from_candidates(
     if len(candidates) < 2:
         raise ValueError(
             "not enough near-neutral pixels found to estimate density balance automatically "
-            "(try a higher neutral_fraction, or use a manual/ColorChecker calibration instead)"
+            "— pick neutral points with `halide calibrate` instead"
         )
     xp = array_namespace(candidates)
     shadow_rgb = xp.percentile(candidates, shadow_percentile, axis=0)
