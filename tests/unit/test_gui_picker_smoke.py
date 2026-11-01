@@ -16,7 +16,8 @@ from PySide6.QtWidgets import QApplication
 
 from halide.calibration.profile_store import default_profiles_dir
 from halide.gui import proof_window
-from halide.gui.main_window import MainWindow, SaveProfileDialog
+from halide.gui.main_window import MainWindow
+from halide.gui.save_dialog import SaveProfileDialog
 from halide.io.tiff import write_tiff
 from tests.unit._gui_helpers import ParkedLoader, record_started_threads
 from tests.unit.test_icc import LINEAR_TAGS, build_icc

@@ -14,7 +14,8 @@ from PySide6.QtWidgets import QApplication, QDialog, QSlider
 from halide.calibration.anchors import NeutralPoint
 from halide.gui import main_window as mw
 from halide.gui.filmstrip import _Strip
-from halide.gui.main_window import ImageView, MainWindow
+from halide.gui.image_view import ImageView
+from halide.gui.main_window import MainWindow
 from halide.gui.point_list import PointList, _Row
 from halide.gui.roll import PointView
 from halide.io.scan_metadata import ScanSettings

@@ -14,7 +14,8 @@ from halide.calibration import anchors
 from halide.calibration.anchors import NeutralPoint
 from halide.gui import main_window as mw
 from halide.gui.filmstrip import _Strip
-from halide.gui.main_window import ElidedLabel, MainWindow, window_size_for
+from halide.gui.main_window import MainWindow, window_size_for
+from halide.gui.widgets import ElidedLabel
 from halide.io.scan_metadata import ScanSettings
 from tests.unit._gui_helpers import ParkedLoader, record_started_threads
 

@@ -13,7 +13,8 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from halide.gui import theme
-from halide.gui.main_window import ImageView, MainWindow
+from halide.gui.image_view import ImageView
+from halide.gui.main_window import MainWindow
 from tests.unit.test_gui_picker_smoke import _frame_ready, _pump, _write_frame
 
 

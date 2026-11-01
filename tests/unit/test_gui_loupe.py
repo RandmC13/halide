@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, QRectF
 
-from halide.gui.main_window import loupe_rect, loupe_text
+from halide.gui.image_view import loupe_rect, loupe_text
 from tests.unit.test_gui_interaction import HIGHLIGHT, SHADOW, _click_image, app, window  # noqa: F401
 
 
