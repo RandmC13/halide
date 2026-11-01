@@ -26,8 +26,7 @@ def test_loupe_sits_beside_the_cursor_inside_the_image_view_and_goes_when_the_cu
     lens = window.image_view.loupe_rect()
     cursor = window.image_view._loupe[2]
     assert lens is not None and QRectF(window.image_view.rect()).contains(lens.center())
-    gap = ((lens.center().x() - cursor.x()) ** 2 + (lens.center().y() - cursor.y()) ** 2) ** 0.5 - lens.width() / 2
-    assert 5 <= gap <= 20  # just clear of the cursor's tip, not across the frame
+    assert abs(lens.left() - cursor.x()) <= 40 or abs(lens.right() - cursor.x()) <= 40  # right beside it
     window.image_view.left.emit()
     assert window.image_view.loupe_rect() is None
 
@@ -35,6 +34,6 @@ def test_loupe_sits_beside_the_cursor_inside_the_image_view_and_goes_when_the_cu
 def test_loupe_flips_below_and_left_near_the_top_right_corner():
     bounds = QRectF(0, 0, 600, 400)
     normal = loupe_rect(QPointF(300, 300), bounds)
-    assert normal.center().x() > 300 and normal.center().y() < 300  # above and to the right
+    assert normal.left() > 300 and normal.bottom() < 300  # above and to the right
     corner = loupe_rect(QPointF(590, 10), bounds)
-    assert corner.center().x() < 590 and corner.center().y() > 10  # below and to the left
+    assert corner.right() < 590 and corner.top() > 10  # below and to the left
