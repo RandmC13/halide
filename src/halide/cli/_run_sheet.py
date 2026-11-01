@@ -38,6 +38,17 @@ def skipped_row(sheet: RunSheet, skipped) -> None:
         sheet.row("Skipped", skipped.describe())
 
 
+def cleanup_row(sheet: RunSheet, folder: Path | None, dry: bool) -> None:
+    """Clear the unfinished files an interrupted run left in the output folder (never in a dry run),
+    and say so on the sheet only when there were any."""
+    if dry or folder is None:
+        return
+    from halide.io.atomic import sweep_partials
+
+    if n := sweep_partials(folder):
+        sheet.row("Cleaned up", f"{console.plural(n, 'unfinished file')} from an interrupted run")
+
+
 def start_compute(stack: contextlib.ExitStack, sheet: RunSheet, jobs: list[BatchJob], device: ComputeDevice,
                   workload: str = "develop") -> BatchCompute:
     """How the batch reaches the device (batch/orchestrator.py::batch_compute) — on a GPU, the

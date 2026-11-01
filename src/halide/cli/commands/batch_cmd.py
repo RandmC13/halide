@@ -61,6 +61,7 @@ from halide.cli._run_sheet import (
     frame_count,
     outputs_row,
     roll_row,
+    cleanup_row,
     skipped_row,
     start_compute,
 )
@@ -391,6 +392,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     would_create = dry and args.output_dir is not None and not Path(args.output_dir).exists()
     roll_row(sheet, input_dir, len(jobs), _destination(args, would_create))
     skipped_row(sheet, left_out)
+    cleanup_row(sheet, Path(args.output_dir) if args.output_dir else None, dry)
     if skipped_frames:
         sheet.row("Skipping", f"{frame_count(skipped_frames)} already developed")
     if dry:

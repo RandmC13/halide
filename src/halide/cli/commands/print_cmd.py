@@ -51,6 +51,7 @@ from halide.cli._run_sheet import (
     frame_count,
     outputs_row,
     roll_row,
+    cleanup_row,
     skipped_row,
     start_compute,
 )
@@ -180,6 +181,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, tone_params: ToneCurveP
             destination = f"{output_dir} (would be created)" if dry and not output_dir.exists() else str(output_dir)
             roll_row(sheet, input_dir, len(jobs), destination)
             skipped_row(sheet, left_out)
+            cleanup_row(sheet, output_dir, dry)
             if skipped:
                 sheet.row("Skipping", f"{frame_count(skipped)} already developed")
             if dry:

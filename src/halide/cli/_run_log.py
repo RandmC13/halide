@@ -55,6 +55,7 @@ class RunRecord:
 
         path = log_path(args, output_dir)
         self.kind = kind
+        self.output_dir = output_dir
         self.quiet = args.quiet
         self.command = getattr(args, "command_line", "halide")
         self.log = RunLog(path, kind) if path is not None else None
@@ -77,6 +78,7 @@ class RunRecord:
         from halide.batch.summary import RollSummary, summary_rows
         from halide.processing import service_stopped
 
+        self._sweep()
         rows = summary_rows(RollSummary.from_results(self.results, self.kind, stopped=service_stopped))
         self._closed = True
         if self.log is not None:
@@ -87,7 +89,15 @@ class RunRecord:
                 rows.append(("row", "Log", str(self.log.path)))
         console.print_rows(rows, quiet=self.quiet)
 
+    def _sweep(self) -> None:
+        """The pool is done, so any partial file left in the output folder belongs to a dead worker."""
+        if self.output_dir is not None:
+            from halide.io.atomic import sweep_partials
+
+            sweep_partials(self.output_dir)
+
     def abort(self, exc: BaseException) -> None:
+        self._sweep()
         if self.log is not None and not self._closed:
             self._closed = True
             if isinstance(exc, KeyboardInterrupt):  # also what SIGTERM/SIGHUP become

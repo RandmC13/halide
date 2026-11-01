@@ -237,3 +237,21 @@ def test_a_second_batch_into_the_same_folder_skips_the_positives(roll, capsys):
     screen = _ANSI.sub("", capsys.readouterr().out)
     assert "3 halide positives" in screen and "already a halide positive" not in screen
     assert len(list(roll.glob("*.tif"))) == 8
+
+
+def test_a_batch_clears_a_dead_runs_partial_file_and_says_so(roll, tmp_path, capsys):
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    out = tmp_path / "out"
+    out.mkdir()
+    stale = out / f".frame_00.halide-partial-{child.pid}.tif"
+    stale.write_bytes(b"x")
+    assert _batch(roll, out) == 0
+    assert not stale.exists()
+    assert "1 unfinished file from an interrupted run" in _ANSI.sub("", capsys.readouterr().out)
+    stale.write_bytes(b"x")
+    assert _batch(roll, out, "--dry-run") == 0
+    assert stale.exists()
