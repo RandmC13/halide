@@ -86,6 +86,10 @@ _LAYOUT_MARGIN = 14
 _IMAGE_PADDING = 10  # uniform gap between the image and its drawn border, on all four sides
 _DISPLAY_BUDGET = (1600, 1100)  # downsampled display resolution; painted scaled to fit the image area
 
+# Re-printing all the filmstrip thumbnails takes ~0.4 s on a 37-frame roll, so a slider drag or a run of
+# clicks waits for a pause and prints once at the end.
+_THUMBS_DELAY_MS = 150
+
 _MAGNIFIER_RADIUS = 10
 _MAGNIFIER_ZOOM = 6
 _MARKER_RADIUS = 7
@@ -257,7 +261,7 @@ class ImageView(QWidget):
         return int((pos.x() - rect.x()) / scale), int((pos.y() - rect.y()) / scale)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        point = self._to_image(event)
+        point = self._to_image(event) if event.button() == Qt.MouseButton.LeftButton else None
         if point is not None:
             self.clicked.emit(*point)
 
@@ -420,6 +424,9 @@ class MainWindow(QWidget):
         self._flat_preview = False
         self._nudge: str | None = None
         self._pending_flash: int | None = None
+        # A status worth keeping ("Reopened …", "Skipped …"): loading doesn't replace it until the
+        # person moves to another frame themselves.
+        self._sticky_status: str | None = None
         self._proof: ProofWindow | None = None
         self._preview_loader: PreviewLoader | None = None
         self._frame_loader: FrameLoader | None = None
@@ -475,7 +482,7 @@ class MainWindow(QWidget):
         root.addLayout(top)
 
         self.filmstrip = Filmstrip()
-        self.filmstrip.frameClicked.connect(self._select_frame)
+        self.filmstrip.frameClicked.connect(self._go_to_frame)
         self.filmstrip.setVisible(not self.is_pick_session)
         root.addWidget(self.filmstrip)
 
@@ -651,7 +658,7 @@ class MainWindow(QWidget):
             self.print_controls.set_override(None)
         self._start_roll(paths, folder)
         if left_out:
-            self._status(f"Skipped {left_out.describe()}")
+            self._sticky(f"Skipped {left_out.describe()}")
 
     def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
         """Individual scans as a roll of their own (`halide calibrate a.tif b.tif`, `invert --pick`)."""
@@ -663,6 +670,10 @@ class MainWindow(QWidget):
         self._stop_loaders()
         self._generation += 1
         generation = self._generation
+        self._pending_flash = None
+        if self._proof is not None:  # its frames belong to the roll being replaced
+            old, self._proof = self._proof, None
+            old.close()
         metadata = read_roll_scan_metadata(paths)
         scans = [metadata[str(p)][0] for p in paths]
         self.session.set_roll(paths, scans, folder)
@@ -693,9 +704,12 @@ class MainWindow(QWidget):
 
     def open_profile(self, path: Path) -> None:
         try:
-            CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
+            recorded_folder = CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
         except (ValueError, KeyError, OSError) as exc:
             self._status(f"Couldn't open {path.name}: {exc}")
+            return
+        if recorded_folder is not None and not list_scans(recorded_folder)[0]:
+            self._status(f"Couldn't open {path.name}: no TIFF scans in {recorded_folder}")
             return
         if not self._confirm_new_calibration():
             return
@@ -708,7 +722,7 @@ class MainWindow(QWidget):
         self._profile_name = path.stem
         self.details_form.set_values(self.session.details)
         self.print_controls.set_override(self.session.tone_override)
-        self._status(f"Reopened '{path.stem}': {len(self.session.points)} point(s)")
+        self._sticky(f"Reopened '{path.stem}': {console.plural(len(self.session.points), 'point')}")
         recorded = self.session.recorded_roll
         if folder is not None:
             self.load_roll(folder, keep_points=True)
@@ -784,23 +798,45 @@ class MainWindow(QWidget):
         if index == self._current and self.display is None and preview is not None:
             self._show_placeholder_preview(frame)
         if all(f.loaded for f in self.session.frames):
-            self._status(f"Roll loaded: {len(self.session.frames)} frames")
+            self._loading_progress(f"Roll loaded: {len(self.session.frames)} frames")
         self._refresh_wedge()
 
+    def _loading_progress(self, message: str) -> None:
+        """Loading's own status line: it replaces anything but a sticky status that's still showing."""
+        if self.status_label.full_text() != self._sticky_status:
+            self._status(message)
+
+    def _sticky(self, message: str) -> None:
+        self._status(message)
+        self._sticky_status = message
+
+    def _go_to_frame(self, index: int) -> None:
+        """A frame the person chose (filmstrip click, arrow key): their own move ends any sticky status."""
+        self._sticky_status = None
+        self._select_frame(index)
+
     def _select_frame(self, index: int) -> None:
-        if not (0 <= index < len(self.session.frames)) or index == self._current:
+        if not (0 <= index < len(self.session.frames)):
             return
-        self._current = index
-        self.filmstrip.show_frame(index)
         frame = self.session.frames[index]
+        retry = index == self._current and frame.error is not None and self.full_image is None
+        if index == self._current and not retry:
+            return
+        frame.error = None
+        self._current = index
+        self._pending_flash = None
+        self.filmstrip.show_frame(index)
         self.full_image = None
         self.display = None
+        self._display_estimate = None
+        self._auto_mask = None
+        self._stretch = (0.0, 1.0)
         self._magnifier.hide()
         if frame.preview is not None:
             self._show_placeholder_preview(frame)
         else:
             self.image_view.set_image(None, f"Loading {frame.path.name}…")
-        self._status(f"Loading {frame.path.name}…")
+        self._loading_progress(f"Loading {frame.path.name}…")
         self._load_current_frame()
 
     def _load_current_frame(self) -> None:
@@ -836,12 +872,14 @@ class MainWindow(QWidget):
         if self._current is None or self.session.frames[self._current].path != path:
             return  # the user has moved on to another frame
         if error:
+            self.session.frames[self._current].error = str(error)
             self.image_view.set_image(None, f"Couldn't load {path.name}")
             self.filmstrip.strip.mark_failed(self._current, str(error))
             self._status(f"Error: {error}")
             return
         self.full_image = image
         frame = self.session.frames[self._current]
+        self.filmstrip.strip.clear_failure(self._current)  # a retry that worked
         if frame.preview is None:
             # No background preview for this frame (the one-shot --pick flow loads none): derive it
             # from the full frame, so the step wedge and filmstrip have it too.
@@ -978,8 +1016,8 @@ class MainWindow(QWidget):
         target = next((i for i, f in enumerate(self.session.frames) if f.path == point.frame), None)
         self._refresh_points()
         if target is not None and target != self._current:
+            self._go_to_frame(target)
             self._pending_flash = index + 1  # flashed once that frame has loaded and shows markers
-            self._select_frame(target)
         else:
             self.image_view.flash(index + 1)
 
@@ -1002,7 +1040,7 @@ class MainWindow(QWidget):
         self._proof_is_stale()
         if self._positive_mode():
             self._refresh_image()
-            self._thumbs_timer.start(0)
+            self._thumbs_timer.start(_THUMBS_DELAY_MS)
 
     # --- proof sheet ----------------------------------------------------------------------------
 
@@ -1160,7 +1198,7 @@ class MainWindow(QWidget):
             self._proof_is_stale()
         if self._positive_mode():
             self._refresh_image()
-            self._thumbs_timer.start(0)
+            self._thumbs_timer.start(_THUMBS_DELAY_MS)
 
     # --- magnifier ------------------------------------------------------------------------------
 
@@ -1215,6 +1253,14 @@ class MainWindow(QWidget):
         for widget in self.findChildren(QWidget):
             if widget.isVisible():
                 widget.update()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        # Here rather than a window-wide shortcut, so a focused slider or text field keeps its arrows.
+        step = {Qt.Key.Key_Left: -1, Qt.Key.Key_Right: 1}.get(event.key())
+        if step is not None and self._current is not None:
+            self._go_to_frame(self._current + step)
+            return
+        super().keyPressEvent(event)
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().changeEvent(event)

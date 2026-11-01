@@ -1,4 +1,4 @@
-"""Pure, GUI-framework-independent helpers for the anchor-frame calibration picker: patch
+"""Pure, GUI-framework-independent helpers for the calibration picker: patch
 sampling, outlier-robust snapping, and preview stretching. No Qt import here, so this is
 unit-testable without a display — only the widget modules (gui/main_window.py and friends) touch Qt.
 """
@@ -98,12 +98,6 @@ def display_to_full_res_coords(
     full_x = max(0, min(image_width - 1, display_x * stride))
     full_y = max(0, min(image_height - 1, display_y * stride))
     return full_x, full_y
-
-
-def full_res_to_display_coords(full_x: int, full_y: int, stride: int) -> tuple[int, int]:
-    """The inverse of display_to_full_res_coords — where a full-res point (e.g. a picked shadow/
-    highlight point) lands on the downsampled display, for drawing a marker at the right spot."""
-    return full_x // stride, full_y // stride
 
 
 def extract_magnifier_patch(image: np.ndarray, x: int, y: int, radius: int = 12) -> np.ndarray:
