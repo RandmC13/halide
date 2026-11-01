@@ -7,6 +7,7 @@ place that policy lives, so this stays purely "how to draw a grid," not a second
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import time
@@ -127,6 +128,9 @@ class _Renderer:
 
     def finish(self, cancelled: bool = False, noun: str | None = None) -> None:
         self._finish_lines(cancelled, noun)
+
+    def summary(self, rows) -> None:
+        """The end-of-run rows, once they're built (after finish). Only the machine renderer uses them."""
 
 
 class GridProgressRenderer(_Renderer):
@@ -392,10 +396,55 @@ class QuietProgressRenderer(_Renderer):
         self._finish_lines(cancelled, noun)
 
 
-def make_renderer(total: int, verb: str, quiet: bool = False) -> _Renderer:
+def _field(value) -> str:
+    return " ".join(str(value).replace("\t", " ").splitlines())
+
+
+class MachineProgressRenderer(PlainProgressRenderer):
+    """HALIDE_PROGRESS=machine, for the window that runs halide as a child: the plain lines, plus
+    one tab-separated line per event that the window reads —
+
+        start <index> <scan name> / done <index> ok|failed <detail or error> /
+        summary <label> <value> / end <developed> <total> <cancelled 0|1>
+
+    `end` waits for summary(), so the end-of-run rows come before it."""
+
+    def __init__(self, total: int, verb: str = "invert", names: list[str] | None = None):
+        super().__init__(total, verb)
+        self._names = names or []
+        self._cancelled = False
+
+    def _emit(self, *fields) -> None:
+        print("\t".join(_field(f) for f in fields), flush=True)
+
+    def mark_processing(self, index: int) -> None:
+        self._emit("start", index, self._names[index] if index < len(self._names) else "")
+
+    def report(self, index: int, result: BatchResult) -> None:
+        super().report(index, result)
+        if result.error:
+            self._emit("done", index, "failed", result.error)
+        else:
+            self._emit("done", index, "ok", result.detail or "")
+
+    def finish(self, cancelled: bool = False, noun: str | None = None) -> None:
+        super().finish(cancelled, noun)
+        self._cancelled = cancelled
+
+    def summary(self, rows) -> None:
+        for _kind, label, text in rows:
+            self._emit("summary", label, text)
+        self._emit("end", self.succeeded, self.total, int(self._cancelled))
+
+
+def make_renderer(total: int, verb: str, quiet: bool = False, names: list[str] | None = None) -> _Renderer:
     """The progress display for a run: the contact-sheet grid in a terminal, plain lines when
     stdout is a file or pipe (or TERM=dumb), only the end line under --quiet. Every kind has the
-    same interface, so a command never asks which one it got."""
+    same interface, so a command never asks which one it got. `names` are the jobs' scan names, for
+    the machine renderer's start lines; HALIDE_PROGRESS=machine is internal, for the window, and
+    only for runs that end with a RunRecord (which calls summary)."""
+    if os.environ.get("HALIDE_PROGRESS") == "machine" and verb != "proof":
+        return MachineProgressRenderer(total, verb, names)
     if quiet:
         return QuietProgressRenderer(total, verb)
     if interactive_output():

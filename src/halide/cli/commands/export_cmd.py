@@ -193,7 +193,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
         record = RunRecord(args, "export", output_dir)
         record.start(sheet, jobs, list(kept))
         try:
-            renderer = make_renderer(len(jobs), "export", quiet=args.quiet)
+            renderer = make_renderer(len(jobs), "export", quiet=args.quiet, names=[j.input_path.name for j in jobs])
             job_index = {job: i for i, job in enumerate(jobs)}
 
             def on_start(job):

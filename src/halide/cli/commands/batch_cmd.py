@@ -747,7 +747,7 @@ def _run(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list[Bat
         record = RunRecord(args, "develop", output_dir)
         record.start(sheet, jobs, list(kept))
         try:
-            renderer = make_renderer(len(jobs), "invert", quiet=args.quiet)
+            renderer = make_renderer(len(jobs), "invert", quiet=args.quiet, names=[j.input_path.name for j in jobs])
             job_index = {job: i for i, job in enumerate(jobs)}
 
             def on_start(job):

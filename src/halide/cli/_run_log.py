@@ -88,6 +88,7 @@ class RunRecord:
             else:
                 rows.append(("row", "Log", str(self.log.path)))
         console.print_rows(rows, quiet=self.quiet)
+        renderer.summary(rows)
 
     def _sweep(self) -> None:
         """The pool is done, so any partial file left in the output folder belongs to a dead worker."""
