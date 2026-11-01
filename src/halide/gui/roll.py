@@ -11,6 +11,7 @@ separately, since picks sample full-resolution pixels.
 
 from __future__ import annotations
 
+import copy
 import warnings
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -81,6 +82,7 @@ class PointView:
     green_density: float  # at the reference scan exposure
     agreement: Agreement | None
     note: str | None = None  # e.g. the frame had no scan EXIF, so its point wasn't normalised
+    roll_name: str | None = None  # the roll a point not on the open frames was picked on, if its frame still exists
 
 
 @dataclass
@@ -94,6 +96,8 @@ class CalibrationSession:
     _reference_override: ScanSettings | None = None  # a reopened profile's recorded reference
     recorded_roll: Path | None = None  # the roll folder a reopened profile recorded, found or not
     _undo: tuple[list[NeutralPoint], int | None] | None = None  # (points, selected) before the last change
+    profile_in_use: Path | None = None  # a saved profile used on this roll ("Use for this roll")
+    _profile_points: list[NeutralPoint] = field(default_factory=list)  # ... and the points it came with
 
     # --- the roll -----------------------------------------------------------------------------
 
@@ -107,6 +111,37 @@ class CalibrationSession:
         self._reference_override = None
         self.recorded_roll = None
         self._undo = None
+        self.profile_in_use = None
+        self._profile_points = []
+
+    def use_profile(self, profile_path: Path) -> None:
+        """Put a saved profile on the roll that's open, keeping its frames: the profile's points,
+        extra information, print pin and scan reference come in, and points clicked from now on
+        refine it. Raises as restore() does, leaving the session as it was."""
+        before = copy.copy(self)
+        self.reset()
+        try:
+            self.restore(profile_path)
+        except Exception:
+            self.__dict__.update(before.__dict__)
+            raise
+        self.recorded_roll = None
+        self.profile_in_use = profile_path
+        self._profile_points = list(self.points)
+
+    def new_points(self) -> list[NeutralPoint]:
+        """The points clicked on this roll on top of a profile in use (all of them without one)."""
+        return [p for p in self.points if p not in self._profile_points]
+
+    def profile_rolls(self) -> list[str]:
+        """The names of the rolls the profile in use was picked on, in order of first appearance."""
+        return list(dict.fromkeys(p.frame.parent.name for p in self._profile_points))
+
+    def adopt_points(self, profile_path: Path) -> None:
+        """After a save: every point now belongs to the profile at `profile_path`."""
+        if self.profile_in_use is not None:
+            self.profile_in_use = profile_path
+            self._profile_points = list(self.points)
 
     def set_roll(self, paths: list[Path], scans: list[ScanSettings | None], folder: Path | None) -> None:
         """Load a roll's frames. Points already in the session (a reopened profile) whose frame
@@ -177,8 +212,9 @@ class CalibrationSession:
                 self.selected -= 1
 
     def clear_points(self, frame: Path | None = None) -> int:
-        """Remove every point, or just those on `frame`. Returns how many were removed."""
-        keep = [p for p in self.points if frame is not None and p.frame != frame]
+        """Remove every point, or just those on `frame`. A profile in use keeps its own points.
+        Returns how many were removed."""
+        keep = [p for p in self.points if (frame is not None and p.frame != frame) or p in self._profile_points]
         removed = len(self.points) - len(keep)
         if removed:
             self._remember()
@@ -252,6 +288,7 @@ class CalibrationSession:
                 index=i,
                 point=p,
                 frame_number=numbers.get(p.frame),
+                roll_name=p.frame.parent.name if p.frame not in numbers and p.frame.is_file() else None,
                 green_density=anchors.green_density(anchors.normalised_rgb(p, reference)),
                 agreement=agreements[i],
                 # A point from a frame with no scan EXIF can't be matched to the roll's exposure,

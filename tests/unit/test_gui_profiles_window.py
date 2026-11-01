@@ -113,7 +113,6 @@ def test_the_profiles_button_opens_the_window_and_edit_points_reopens(profiles, 
     from halide.gui.main_window import MainWindow
 
     window = MainWindow()
-    window.show()  # a window never shown makes Qt crash as the test process exits
     opened = []
     monkeypatch.setattr(window, "open_profile", opened.append)
     profiles_window = window.show_profiles()
@@ -135,7 +134,6 @@ def test_a_calibration_file_from_elsewhere_changes_nothing_in_the_profiles_folde
     elsewhere.write_text((profiles / "Portra 400.json").read_text())
     before = sorted(p.name for p in profiles.iterdir())
     window = MainWindow()
-    window.show()  # a window never shown makes Qt crash as the test process exits
     window.open_profile(elsewhere)
     assert "Calibration file" in window.profile_chip.text() and "halide-calibration.json" in window.profile_chip.toolTip()
     assert window._profile_name == ""  # Save asks for a name rather than offering "halide-calibration"

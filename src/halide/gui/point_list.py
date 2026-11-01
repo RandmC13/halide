@@ -85,13 +85,20 @@ class _Row(QFrame):
 
         # The frame number as the filmstrip prints it (edge-print face and colour), so it doesn't read
         # as a second point number, then the file's stem, dim.
-        number_label = QLabel(str(view.frame_number) if view.frame_number else "—")
-        number_label.setFont(theme.edge_font(12))
-        number_label.setStyleSheet(f"color: {theme.EDGE_PRINT};")
-        layout.addWidget(number_label)
+        if view.roll_name and not view.frame_number:  # a profile's point, picked on another roll
+            on_roll = QLabel()
+            on_roll.setText(QFontMetrics(on_roll.font()).elidedText(f"on {view.roll_name}", Qt.TextElideMode.ElideMiddle, 90))
+            on_roll.setToolTip(str(view.point.frame.parent))
+            on_roll.setStyleSheet(f"color: {theme.EDGE_PRINT};")
+            layout.addWidget(on_roll)
+        else:
+            number_label = QLabel(str(view.frame_number) if view.frame_number else "—")
+            number_label.setFont(theme.edge_font(12))
+            number_label.setStyleSheet(f"color: {theme.EDGE_PRINT};")
+            layout.addWidget(number_label)
 
         stem = view.point.frame.stem
-        name_text = stem if view.frame_number else f"{stem} (missing)"
+        name_text = stem if view.frame_number or view.roll_name else f"{stem} (missing)"
         if view.note:
             name_text += "  ⚠"
         frame = _ElidedNameLabel(name_text)
@@ -120,6 +127,24 @@ class _Row(QFrame):
             self.clicked.emit(self._index)
 
 
+def _card(lines: list[str]) -> QFrame:
+    card = QFrame()
+    card.setObjectName("profileCard")
+    card.setStyleSheet(f"QFrame#profileCard {{ border: 1px solid {theme.BORDER}; border-radius: 4px; }}")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setSpacing(2)
+    for i, text in enumerate(lines):
+        label = QLabel(text)
+        label.setWordWrap(True)
+        if i == 0:
+            label.setStyleSheet("font-weight: bold;")
+        elif i == len(lines) - 1:
+            label.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        layout.addWidget(label)
+    return card
+
+
 class PointList(QScrollArea):
     rowClicked = Signal(int)
     removeClicked = Signal(int)
@@ -140,7 +165,9 @@ class PointList(QScrollArea):
         self._rows: list[_Row] = []
         self.set_rows([], None)
 
-    def set_rows(self, views: list[PointView], selected: int | None) -> None:
+    def set_rows(self, views: list[PointView], selected: int | None, card: list[str] | None = None) -> None:
+        """The points as rows, or `card` in their place: a profile in use with nothing added yet, as
+        lines of text (name, film stock, where its points are, what to do)."""
         while self._layout.count():
             widget = self._layout.takeAt(0).widget()
             if widget is not None:
@@ -149,7 +176,10 @@ class PointList(QScrollArea):
                 widget.setParent(None)
                 widget.deleteLater()
         self._rows = []
-        if not views:
+        if card is not None:
+            self._layout.addWidget(_card(card))
+            views = []
+        elif not views:
             empty = QLabel("No points yet — click something that was white, grey or black in the real scene.")
             empty.setWordWrap(True)
             empty.setProperty("role", "dim")

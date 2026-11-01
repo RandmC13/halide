@@ -488,6 +488,7 @@ class MainWindow(QWidget):
         if self._profiles is None:
             self._profiles = ProfilesWindow(self)
             self._profiles.editRequested.connect(self.open_profile)
+            self._profiles.useRequested.connect(self.use_profile)
             self._profiles.fileOpened.connect(self.open_profile)
         self._profiles.set_roll_open(self.session.roll_folder is not None)
         self._profiles.refresh()
@@ -495,6 +496,35 @@ class MainWindow(QWidget):
         self._profiles.raise_()
         self._profiles.activateWindow()
         return self._profiles
+
+    def use_profile(self, path: Path) -> None:
+        """Put a saved profile on the open roll ("Use for this roll"): its fit drives the positive at
+        once, and points clicked now refine it."""
+        if self.session.roll_folder is None:
+            return
+        unsaved = len(self.session.points) if self.session.points != self._saved_points else 0
+        if unsaved:
+            answer = QMessageBox.question(
+                self, f"Use '{path.stem}'?",
+                f"The {console.plural(unsaved, 'point')} on screen {'isn' if unsaved == 1 else 'aren'}'t saved, "
+                "and the profile's points will replace them.",
+            )
+            self._repaint_all()
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            self.session.use_profile(path)
+        except (ValueError, KeyError, OSError) as exc:
+            self._status(f"Couldn't use {path.stem}: {exc}")
+            return
+        self._profile_name = path.stem
+        self._saved_points = list(self.session.points)
+        self.details_form.set_values(self.session.details)
+        self.print_controls.set_override(self.session.tone_override)
+        self._refresh_drawer_summaries()
+        self._nudge = None
+        self._points_changed()
+        self._status(f"Using '{path.stem}' on this roll: {console.plural(len(self.session.points), 'point')}")
 
     def open_profile(self, path: Path) -> None:
         try:
@@ -769,7 +799,10 @@ class MainWindow(QWidget):
         self._positive_profile = None
         if positive and frame is not None:
             profile, is_fit, gain = self.session.positive_source(frame, self._display_estimate)
-            if is_fit:
+            in_use = self.session.profile_in_use
+            if is_fit and in_use is not None:
+                self.source_note.setText(f"Profile {in_use.stem} · {len(self.session.points)} points")
+            elif is_fit:
                 self.source_note.setText(f"Your calibration · {len(self.session.points)} points")
             elif profile is not None:
                 self.source_note.setText("Rough auto estimate — not your final output")
@@ -918,7 +951,8 @@ class MainWindow(QWidget):
 
     def _refresh_points(self) -> None:
         views = self.session.views()
-        self.point_list.set_rows(views, self.session.selected)
+        self.point_list.set_rows(views, self.session.selected, self._profile_card())
+        self._refresh_using_chip()
         self.points_title.setText(f"Neutral points ({len(views)})" if views else "Neutral points")
         self._refresh_wedge(views)
         counts = self.session.point_counts()
@@ -929,6 +963,28 @@ class MainWindow(QWidget):
         fitted = self.session.profile() is not None
         self.primary_button.setEnabled(fitted)
         self.proof_button.setEnabled(fitted and bool(self.session.frames))
+
+    def _profile_card(self) -> list[str] | None:
+        """A profile in use with nothing added yet shows as a card instead of its points' rows."""
+        session = self.session
+        if session.profile_in_use is None or session.new_points():
+            return None
+        stock = session.details.get("film_stock", "").strip()
+        rolls = session.profile_rolls()
+        where = f" on {', '.join(rolls)}" if rolls else ""
+        return [
+            session.profile_in_use.stem,
+            *([stock] if stock else []),
+            f"{console.plural(len(session.points), 'point')}{where}",
+            "Click points on this roll to refine it",
+        ]
+
+    def _refresh_using_chip(self) -> None:
+        if self.session.profile_in_use is None:
+            return
+        added = len(self.session.new_points())
+        extra = f" + {console.plural(added, 'new point')}" if added else ""
+        self._show_profile_name(self.session.profile_in_use.stem, "Using", extra, keep_stamp=True)
 
     def _refresh_wedge(self, views: list[PointView] | None = None) -> None:
         views = self.session.views() if views is None else views
@@ -1015,8 +1071,13 @@ class MainWindow(QWidget):
             self._points_changed()
 
     def _on_clear_all(self) -> None:
-        count = len(self.session.points)
-        if count and self._confirm(f"Remove all {count} point(s) and start the calibration again?"):
+        if self.session.profile_in_use is not None:
+            count = len(self.session.new_points())
+            question = f"Remove the {console.plural(count, 'new point')}? The profile's own points stay."
+        else:
+            count = len(self.session.points)
+            question = f"Remove all {count} point(s) and start the calibration again?"
+        if count and self._confirm(question):
             self.session.clear_points()
             self._nudge = None
             self._points_changed()
@@ -1097,22 +1158,29 @@ class MainWindow(QWidget):
             self.pickCompleted.emit((profile, self.session.tone_override, note))
             self.close()
             return
-        dialog = SaveProfileDialog(self, self.session.profile_to_save(), self.session.sidecars(), self._profile_name)
+        in_use = self.session.profile_in_use
+        dialog = SaveProfileDialog(
+            self, self.session.profile_to_save(), self.session.sidecars(),
+            "" if in_use is not None else self._profile_name,
+            update_name=in_use.stem if in_use is not None and self.session.new_points() else None,
+        )
         dialog.saved.connect(self._on_saved)
         dialog.exec()
         self._repaint_all()
 
-    def _show_profile_name(self, name: str, kind: str = "Profile") -> None:
+    def _show_profile_name(self, name: str, kind: str = "Profile", extra: str = "", keep_stamp: bool = False) -> None:
         bold = QFont(self.profile_chip.font())
         bold.setBold(True)
         short = QFontMetrics(bold).elidedText(name, Qt.TextElideMode.ElideMiddle, PROFILE_NAME_MAX_W)
-        self.profile_chip.setText(f"{kind} <b>{html.escape(short)}</b>")
+        self.profile_chip.setText(f"{kind} <b>{html.escape(short)}</b>{html.escape(extra)}")
         self.profile_chip.setToolTip(name)
-        self.save_stamp.hide()
-        self.profile_chip.show()
+        if not (keep_stamp and self.save_stamp.isVisible()):
+            self.save_stamp.hide()
+            self.profile_chip.show()
 
     def _on_saved(self, name: str, message: str) -> None:
         self._profile_name = name
+        self.session.adopt_points(default_profiles_dir() / f"{name}.json")
         self.last_saved = (name, self.session.roll_folder)
         if self._profiles is not None:
             self._profiles.refresh(select=name)

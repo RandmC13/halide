@@ -54,7 +54,6 @@ def test_top_bar_counter_chip_and_contact_sheet_button(tmp_path, monkeypatch, ap
 
 def test_contact_sheet_button_hidden_in_a_pick_session(app):
     window = MainWindow(is_pick_session=True)
-    window.show()  # a window never shown makes Qt crash as the test process exits
     assert window.proof_button.isHidden()
     window._closing = True
     window.close()

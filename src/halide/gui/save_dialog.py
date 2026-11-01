@@ -24,16 +24,30 @@ class SaveProfileDialog(QDialog):
 
     saved = Signal(str, str)  # (name, message)
 
-    def __init__(self, parent: QWidget, profile: DensityProfile, sidecars: dict, suggested_name: str = "") -> None:
+    def __init__(
+        self, parent: QWidget, profile: DensityProfile, sidecars: dict, suggested_name: str = "",
+        update_name: str | None = None,
+    ) -> None:
+        """`update_name`: a profile in use that has new points - offered as "Update '<name>'" beside
+        saving under a new name, which then leaves it exactly as it was."""
         super().__init__(parent, Qt.WindowType.Dialog)
         self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setWindowTitle("Save calibration profile")
         self._profile = profile
         self._sidecars = sidecars
         self._pending_overwrite_name: str | None = None
+        self._save_label = "Save as a new profile" if update_name else "Save"
+        self._prompt = "Or save as a new profile, named:" if update_name else "Name this calibration:"
 
         layout = QVBoxLayout(self)
-        self._message = QLabel("Name this calibration:")
+        self.update_button: QPushButton | None = None
+        if update_name:
+            self.update_button = QPushButton(f"Update '{update_name}'")
+            self.update_button.setProperty("role", "primary")
+            self.update_button.setToolTip(f"Add the new points to '{update_name}', for every later roll")
+            self.update_button.clicked.connect(lambda: self._save(update_name))
+            layout.addWidget(self.update_button)
+        self._message = QLabel(self._prompt)
         self._message.setWordWrap(True)
         layout.addWidget(self._message)
         self._name_input = QLineEdit(suggested_name)
@@ -46,8 +60,9 @@ class SaveProfileDialog(QDialog):
         self._name_error.hide()
         layout.addWidget(self._name_error)
         row = QHBoxLayout()
-        self._save_button = QPushButton("Save")
-        self._save_button.setProperty("role", "primary")
+        self._save_button = QPushButton(self._save_label)
+        if not update_name:
+            self._save_button.setProperty("role", "primary")
         self._save_button.clicked.connect(self._on_save_clicked)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
@@ -62,8 +77,8 @@ class SaveProfileDialog(QDialog):
         if text != self._pending_overwrite_name:
             # The name changed since an "already exists" prompt (if any) - back to a plain Save.
             self._pending_overwrite_name = None
-            self._save_button.setText("Save")
-            self._message.setText("Name this calibration:")
+            self._save_button.setText(self._save_label)
+            self._message.setText(self._prompt)
         try:
             validate_profile_name(text)
         except ProfileNameError as exc:
@@ -88,6 +103,9 @@ class SaveProfileDialog(QDialog):
             self._message.setText(f"A profile named '{name}' already exists - save again to overwrite it.")
             self._save_button.setText("Overwrite")
             return
+        self._save(name)
+
+    def _save(self, name: str) -> None:
         try:
             path = save_named_profile(self._profile, name, overwrite=True, **self._sidecars)
         except (ProfileError, OSError) as exc:
