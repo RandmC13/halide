@@ -308,11 +308,8 @@ def test_single_file_dry_run_refuses_before_resolving_the_device(tmp_path, monke
     (["--output", "flat", "--exposure", "0.1"], "--exposure does nothing with --output flat"),
     (["--notes", "x"], "--notes is saved with a profile"),
 ])
-@pytest.mark.parametrize("command", ["invert", "batch"])
-@pytest.mark.parametrize("dry", [False, True])
+@pytest.mark.parametrize("command, dry", [("invert", False), ("batch", False), ("batch", True)])
 def test_flags_that_would_do_nothing_are_refused(tmp_path, roll, command, extra, message, dry):
-    if dry and command == "invert":
-        pytest.skip("invert has no --dry-run")
     frame = roll / "frame_00.tif"
     if command == "invert":
         args = ["invert", str(frame), str(tmp_path / "out.tif")]
