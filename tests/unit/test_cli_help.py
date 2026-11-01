@@ -12,7 +12,7 @@ from halide.cli._help import (
     contrast_grade, finite_float, positive_float, worker_count,
 )
 
-COMMANDS = ("invert", "batch", "print", "export", "contact", "check", "profile", "calibrate", "gpu")
+COMMANDS = ("invert", "batch", "print", "export", "contact", "check", "profile", "open", "gpu")
 PROFILE_COMMANDS = ("list", "show", "rename", "delete", "edit")
 
 
@@ -65,8 +65,8 @@ def test_profile_subcommands_have_a_description(argv, capsys):
     assert body.strip() and not body.startswith("positional") and not body.startswith("options")
 
 
-def test_calibrate_profile_help_is_a_whole_sentence(capsys):
-    out = " ".join(_help(["calibrate"], capsys).split())
+def test_open_profile_help_is_a_whole_sentence(capsys):
+    out = " ".join(_help(["open"], capsys).split())
     assert "roll folder" in out.split(" --profile PROFILE ")[1].split("--device")[0]
 
 

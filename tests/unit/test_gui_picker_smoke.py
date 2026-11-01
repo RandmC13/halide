@@ -16,7 +16,8 @@ from PySide6.QtWidgets import QApplication
 
 from halide.calibration.profile_store import default_profiles_dir
 from halide.gui import proof_window
-from halide.gui.main_window import MainWindow, SaveProfileDialog
+from halide.gui.main_window import MainWindow
+from halide.gui.save_dialog import SaveProfileDialog
 from halide.io.tiff import write_tiff
 from tests.unit._gui_helpers import ParkedLoader, record_started_threads
 from tests.unit.test_icc import LINEAR_TAGS, build_icc
@@ -103,9 +104,9 @@ def test_picker_session_from_load_to_saved_profile_to_clean_close(tmp_path, monk
     assert saved.exists()
     data = json.loads(saved.read_text())
     assert len(data["white_balance"]) == 3 and len(data["density_scale"]) == 3
-    assert len(data["anchors"]) == 2 and os.path.basename(data["roll"]) == "roll"
+    assert len(data["anchors"]) == 2 and "roll" not in data
     assert data["film_stock"] == "Test Stock"
-    assert window.status_label.full_text().startswith("Saved calibration profile 'smoke'")
+    assert window.status_label.full_text().startswith("Saved profile 'smoke'")
 
     # Close with a frame load still mid-flight (the close-time crash path): close() must not return
     # while any thread the window started is running.

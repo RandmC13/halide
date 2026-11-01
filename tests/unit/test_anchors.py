@@ -215,29 +215,18 @@ def test_a_relative_frame_is_stored_absolute(tmp_path, monkeypatch):
     assert anchors.point_to_dict(relative)["frame"] == str(tmp_path / "roll" / "a.tif")
 
 
-def test_an_unfound_relative_frame_is_kept_as_recorded_not_guessed(tmp_path, monkeypatch):
-    # An older profile opened from a different folder than it was made in: which folder its relative
-    # path meant is unknowable, so saving must not bake the current folder into it.
-    monkeypatch.chdir(tmp_path)
-    record = {"frame": "pre-processed/a.tif", "x": 1, "y": 2, "rgb": [0.1, 0.2, 0.3], "scan": None}
-    point = anchors.point_from_dict(record)
-    assert point.frame == Path("pre-processed/a.tif")
-    assert anchors.point_to_dict(point)["frame"] == "pre-processed/a.tif"
-
-
 def test_profile_anchors_sidecar_roundtrips_and_survives_edit_and_rename(tmp_path):
     points = [_point(0.9), _point(1.5, AT_1_60)]
     profile = DensityProfile(white_balance=WB, density_scale=SCALE)
     records = [anchors.point_to_dict(p) for p in points]
-    save_named_profile(profile, "roll16", profiles_dir=tmp_path, anchors=records, roll="/films/Roll16")
+    save_named_profile(profile, "roll16", profiles_dir=tmp_path, anchors=records)
 
     update_profile("roll16", profiles_dir=tmp_path, film_stock="Kodak Portra 400")
     path = rename_profile("roll16", "roll16-portra", profiles_dir=tmp_path)
-    saved, roll = load_anchors(path)
-    assert roll == "/films/Roll16"
+    saved = load_anchors(path)
     assert [anchors.point_from_dict(r) for r in saved] == points
 
 
 def test_profiles_without_anchors_load_empty(tmp_path):
     path = save_named_profile(DensityProfile(white_balance=WB, density_scale=SCALE), "old", profiles_dir=tmp_path)
-    assert load_anchors(path) == ([], None)
+    assert load_anchors(path) == []

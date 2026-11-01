@@ -14,7 +14,8 @@ from halide.calibration import anchors
 from halide.calibration.anchors import NeutralPoint
 from halide.gui import main_window as mw
 from halide.gui.filmstrip import _Strip
-from halide.gui.main_window import ElidedLabel, MainWindow, window_size_for
+from halide.gui.main_window import MainWindow, window_size_for
+from halide.gui.widgets import ElidedLabel
 from halide.io.scan_metadata import ScanSettings
 from tests.unit._gui_helpers import ParkedLoader, record_started_threads
 
@@ -410,7 +411,7 @@ def test_reopening_a_profile_unchanged_then_closing_asks_nothing(monkeypatch, tm
     path = _saved_profile(window, tmp_path)
     monkeypatch.setattr(window, "_confirm_new_calibration", lambda: True)
     (tmp_path / "a.tif").touch()  # the recorded roll folder must hold scans, or nothing is reopened
-    monkeypatch.setattr(window, "load_roll", lambda *a, **k: None)  # (they aren't real ones)
+    monkeypatch.setattr(window, "_start_rolls", lambda *a, **k: None)  # (they aren't real ones)
     window.open_profile(path)
     assert window.session.points
     asked = _close_asks(window, monkeypatch, False)
@@ -425,7 +426,7 @@ def test_opening_an_unreadable_profile_keeps_the_points_and_asks_nothing(monkeyp
     monkeypatch.setattr(window, "_confirm_new_calibration", lambda: pytest.fail("asked"))
     window.open_profile(bad)
     assert window.session.points == before
-    assert "Couldn't open bad.json" in window.status_label.toolTip()
+    assert window.notice_bar.notices()["error"].title.startswith("Couldn't open bad.json")
 
 
 def test_grade_slider_never_reaches_zero(app):
@@ -435,7 +436,7 @@ def test_grade_slider_never_reaches_zero(app):
     controls = PrintControls()
     assert controls.grade.minimum() == 1
     emitted = []
-    controls.changed.connect(lambda tone, _flat: emitted.append(tone))
+    controls.changed.connect(lambda preview, _pin, _flat: emitted.append(preview))
     controls.set_override(ToneCurveParams(mode="paper", exposure=0.0, contrast=0.0))  # an old saved zero
     controls.exposure.setValue(10)
     assert emitted[-1].contrast == pytest.approx(0.01)

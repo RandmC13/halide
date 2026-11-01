@@ -216,7 +216,7 @@ def _destination(args: argparse.Namespace, would_create: bool = False) -> str:
 
 # The automatic tiers are approximate (see auto calibration's known limits); say what's better.
 AUTO_CALIBRATION_ADVICE = (
-    "automatic estimate - for the most faithful colour, pick neutral points with `halide calibrate`"
+    "automatic estimate - for the most faithful colour, pick neutral points with `halide open`"
 )
 
 
@@ -242,7 +242,7 @@ def _no_calibration_text(input_dir: Path) -> str:
     text = "none given — a real run would ask you to choose"
     if newest:
         return f"{text} (saved: {', '.join(stem for stem, _ in newest)})"
-    return f"{text}; no saved profiles yet (make one with: halide calibrate {input_dir})"
+    return f"{text}; no saved profiles yet (make one with: halide open {input_dir})"
 
 
 def _check_profile_exists(name: str) -> None:

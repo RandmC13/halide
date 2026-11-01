@@ -1,10 +1,9 @@
-"""`halide profile` — list/show/rename/delete saved calibration profiles."""
+"""`halide profile` — list/show/rename/delete saved profiles."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -55,8 +54,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         sub.add_argument("--debug", action="store_true", default=argparse.SUPPRESS, help=DEBUG_HELP)
         return sub
 
-    add("list", "List saved calibration profiles", "halide profile list",
-        description="List every saved calibration profile, newest first, with its film stock and "
+    add("list", "List saved profiles", "halide profile list",
+        description="List every saved profile, newest first, with its film stock and "
         "when it was made.")
 
     show_parser = add("show", "Show one saved profile's details", 'halide profile show "Portra 400"',
@@ -97,7 +96,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_list(args: argparse.Namespace) -> int:
     profiles = list_profiles()
     if not profiles:
-        print(f"No saved profiles in {default_profiles_dir()} — make one with `halide calibrate ROLL`")
+        print(f"No saved profiles in {default_profiles_dir()} — make one with `halide open ROLL`")
         return 0
 
     lines = [f"Saved profiles in {default_profiles_dir()}:"]
@@ -143,27 +142,24 @@ def _run_show(args: argparse.Namespace) -> int:
 
 
 def _show_roll(path: Path) -> None:
-    """Where the picker's points came from (profiles saved by `halide calibrate`), flagging a roll
-    or frames that have been moved or deleted since. Older profiles recorded paths relative to the
-    folder the picker was started in; those are read against the current folder, as the picker does."""
-    records, roll = load_anchors(path)
+    """Where the picker's points came from (profiles saved by `halide open`): each roll with its point
+    count, flagging a roll or frames that have been moved or deleted since."""
+    records = load_anchors(path)
+    if not records:
+        return
     warn = f"                {console.Style.YELLOW}{console.ICON_WARN} {{}}{console.Style.RESET}"
-    if roll:
-        roll_path = Path(roll)
-        if roll_path.is_absolute() or roll_path.is_dir():
-            roll_path = Path(os.path.abspath(roll_path))
-            print(f"Roll:           {roll_path}")
-            if not roll_path.is_dir():
-                print(warn.format("not found - moved or deleted?"))
-        else:  # an older profile's relative path; which folder it was relative to isn't recorded
-            print(f"Roll:           {roll}")
-            print(warn.format("recorded relative to the folder halide calibrate ran in, and not in this one"))
-            print("                  reopen it in halide calibrate --profile and use Find roll… to record its full path")
-    if records:
-        frames = {Path(r["frame"]) for r in records}
-        missing = sum(not f.is_file() for f in frames)
-        note = f" ({missing} missing)" if missing else ""
-        print(f"Points:         {len(records)} on {console.plural(len(frames), 'frame')}{note}")
+    counts: dict[Path, int] = {}
+    for r in records:
+        folder = Path(r["frame"]).parent
+        counts[folder] = counts.get(folder, 0) + 1
+    for n, (folder, count) in enumerate(counts.items()):
+        print(f"{'Rolls:' if n == 0 else '':<16}{folder} ({console.plural(count, 'point')})")
+        if not folder.is_dir():
+            print(warn.format("not found - moved or deleted?"))
+    frames = {Path(r["frame"]) for r in records}
+    missing = sum(not f.is_file() for f in frames)
+    note = f" ({missing} missing)" if missing else ""
+    print(f"Points:         {len(records)} on {console.plural(len(frames), 'frame')}{note}")
 
 
 def _reject_path_like(value: str, command: str) -> None:
@@ -198,7 +194,7 @@ def _delete_confirmation_detail(path: Path) -> str:
         profile = load_profile(path)
     except (ValueError, json.JSONDecodeError, OSError):
         return "damaged - can't read its details"
-    records, _ = load_anchors(path)
+    records = load_anchors(path)
     bits = []
     if records:
         frames = {r["frame"] for r in records}

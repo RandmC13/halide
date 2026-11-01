@@ -2,7 +2,7 @@
 scene - on any frames of a roll, and fit the film's density balance through all of them.
 
 Layout (landscape, fixed size, never scrolls - see _compute_window_size):
-  top bar         roll name in edge print · FRAME n / N · profile in use · Contact sheet · Open profile… ·
+  top bar         roll name in edge print · FRAME n / N · profile in use · Contact sheet · Profiles ·
                   Load roll…
   filmstrip       the whole roll, current frame outlined, point counts under frames (gui/filmstrip.py)
   left column     Negative | Positive switch + what the positive is · the image with numbered point
@@ -10,7 +10,7 @@ Layout (landscape, fixed size, never scrolls - see _compute_window_size):
                   the negative; never soften it) · status line
   right panel     step wedge (gui/step_wedge.py) · neutral points list (gui/point_list.py) · notice
                   line · Extra information / Print / Details drawers (gui/drawers.py,
-                  accordion) · the one red primary button: Save calibration profile (Develop in the
+                  accordion) · the one red primary button: Save profile (Develop in the
                   one-shot `invert --pick` flow)
 
 All picking state and logic is in gui/roll.py::CalibrationSession (no Qt); this module lays out the
@@ -24,46 +24,40 @@ import html
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
+from PySide6.QtCore import QEvent, QPointF, QRect, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QCheckBox,
-    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from halide.io.roll import list_scans
-from halide.calibration.anchors import NeutralPoint
+from halide.calibration.anchors import NeutralPoint, point_rolls
 from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask
-from halide.calibration.profile_store import (
-    ProfileError,
-    ProfileNameError,
-    default_profiles_dir,
-    find_profile,
-    save_named_profile,
-    validate_profile_name,
-)
+from halide.calibration.scan_consistency import assess_roll, frame_flags
+from halide.calibration.profile_store import default_profiles_dir, find_profile
 from halide.cli import console
 from halide.core.tone_render import ResolvedTone
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.device import ComputeDevice
-from halide.gui import motion, theme
+from halide.gui import theme
 from halide.gui.drawers import Accordion, Drawer, PrintControls, RollDetailsForm
 from halide.gui.filmstrip import Filmstrip
+from halide.gui.image_view import ImageView
 from halide.gui.loaders import FrameLoader, PreviewLoader
+from halide.gui.notices import Notice, NoticeBar
 from halide.gui.point_list import CC_EXPLANATION, PointList, agreement_colour, no_wrap
+from halide.gui.profiles_window import ProfilesWindow
 from halide.gui.proof_window import ProofWindow, wait_for_stopping_renderers
 from halide.gui.render import negative_display, positive_display, print_patch
 from halide.gui.roll import PREVIEW_LONG_EDGE, CalibrationSession, Frame, PointView, quiet_auto_estimate
+from halide.gui.save_dialog import SaveProfileDialog
 from halide.gui.sampling import (
     apply_stretch,
     compute_stretch_bounds,
@@ -75,6 +69,7 @@ from halide.gui.sampling import (
     snap_to_representative_pixel,
 )
 from halide.gui.step_wedge import StepWedge, WedgeTick
+from halide.gui.widgets import PROFILE_NAME_MAX_W, SaveStamp, ViewSwitch
 from halide.io.contact_sheet import downsample_linear
 from halide.processing import read_roll_scan_metadata
 
@@ -87,11 +82,7 @@ _PANEL_WIDTH = 340
 # Names in the top bar are cut beyond these widths (full name in the tooltip), so at the 900 px floor
 # the roll name, counter, profile stamp and three buttons all fit on one row.
 _ROLL_NAME_MAX_W = 160
-_PROFILE_NAME_MAX_W = 140
 _LAYOUT_MARGIN = 14
-# The frame sits in a strip of film: more rebate above and below (where the edge print runs) than at the sides.
-_CARRIER_MARGIN_X = 16
-_CARRIER_MARGIN_Y = 22
 _DISPLAY_BUDGET = (1600, 1100)  # downsampled display resolution; painted scaled to fit the image area
 
 # Re-printing all the filmstrip thumbnails takes ~0.4 s on a 37-frame roll, so a slider drag or a run of
@@ -100,17 +91,18 @@ _THUMBS_DELAY_MS = 150
 
 _MAGNIFIER_RADIUS = 10
 _MAGNIFIER_ZOOM = 6
-_MARKER_RADIUS = 7
 _MARKER_HIT_RADIUS = 10  # display pixels: a click this close to a marker selects it instead of adding
 _OVERLAY_TINT = np.array([0.0, 1.0, 0.0], dtype=np.float32)
 
+# The guide under the picture. On the negative the reversal is the one thing a newcomer must not miss,
+# so it's picked out in the warning colour (never softened).
 _CAPTION_NEGATIVE = (
-    "Click things that were white, grey or black in the real scene. This is the raw negative, so "
-    "brightness is reversed: real whites look DARK here, real shadows look LIGHT."
+    "Click things that were white, grey or black in the scene. Brightness is reversed: "
+    f"<b style='color:{theme.TEXT_WARNING}'>real whites look DARK here</b>."
 )
 _CAPTION_POSITIVE = (
-    "Click things that were white, grey or black in the real scene. Points are always measured on "
-    "the negative, whichever view you click on."
+    "Click things that were white, grey or black in the scene. Points are measured on the negative "
+    "either way."
 )
 
 
@@ -139,489 +131,6 @@ def _qimage(rgb: np.ndarray) -> QImage:
     return QImage(rgb.data, width, height, 3 * width, QImage.Format.Format_RGB888).copy()
 
 
-class ElidedLabel(QLabel):
-    """A one-line label that elides with "…" to the width it's given instead of forcing the window
-    wider, and carries its full text as the tooltip (the status line: long paths and errors)."""
-
-    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._full = ""
-        self.set_full_text(text)
-
-    def full_text(self) -> str:
-        return self._full
-
-    def set_full_text(self, text: str) -> None:
-        self._full = text
-        self.setToolTip(text)
-        self._elide()
-
-    def _elide(self) -> None:
-        one_line = self._full.replace("\n", " ")
-        self.setText(QFontMetrics(self.font()).elidedText(one_line, Qt.TextElideMode.ElideRight, max(0, self.width())))
-
-    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
-        super().resizeEvent(event)
-        self._elide()
-
-
-class ImageView(QWidget):
-    """Paints the current frame scaled to fit its area, surrounded by film rebate carrying the edge
-    print, plus numbered point markers; reports clicks and hovers in the *displayed image's* pixel coordinates
-    (MainWindow maps those to full resolution via gui/sampling.py)."""
-
-    clicked = Signal(int, int)
-    hovered = Signal(int, int)
-    left = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setMouseTracking(True)
-        self._pixmap: QPixmap | None = None
-        self._placeholder = "Load a roll to begin"
-        self._edge_print = ""
-        self.markers: list[tuple[int, int, int, str, bool]] = []  # (x, y, number, colour, selected)
-        self._flash: int | None = None  # number of a marker currently flashing
-        self._flash_on = False
-        self._flash_timer = QTimer(self)
-        self._flash_timer.timeout.connect(self._flash_step)
-        self._flash_steps = 0
-        self._old_pixmap: QPixmap | None = None  # the picture being faded out, if a fade is running
-        self._blend = 1.0  # how much of the new picture shows
-        # The loupe is painted here, over the image, rather than in a window of its own: a separate
-        # window can't be placed exactly or made round on Wayland, and showing and hiding one on every
-        # mouse move made Qt's Wayland text-input warn in the terminal.
-        self._loupe: tuple[QPixmap, float, QPointF] | None = None  # (patch, density, cursor)
-        self._probe_number: int | None = None  # the marker still closing in on its spot
-        self._probe = 1.0
-
-    def set_image(self, pixmap: QPixmap | None, placeholder: str = "", fade: bool = False) -> None:
-        """`fade`: cross-fade from the picture shown now (the Negative/Positive switch)."""
-        motion.stop(self, "fade")
-        self._old_pixmap = self._pixmap if fade and pixmap is not None else None
-        self._pixmap = pixmap
-        if placeholder:
-            self._placeholder = placeholder
-
-        def set_blend(value: float) -> None:
-            self._blend = value
-            self.update()
-
-        def done() -> None:
-            self._old_pixmap = None
-
-        self._blend = 0.0 if self._old_pixmap is not None else 1.0
-        if self._old_pixmap is not None:
-            motion.animate(self, "fade", 0.0, 1.0, 250, set_blend, done)
-        self.update()
-
-    def set_loupe(self, pixmap: QPixmap, density: float, cursor: QPointF) -> None:
-        self._loupe = (pixmap, density, cursor)
-        self.update()
-
-    def clear_loupe(self) -> None:
-        if self._loupe is not None:
-            self._loupe = None
-            self.update()
-
-    def loupe_rect(self) -> QRectF | None:
-        return None if self._loupe is None else loupe_rect(self._loupe[2], QRectF(self.rect()))
-
-    def probe(self, number: int) -> None:
-        """Close marker `number` in on its spot, as a probe lands (a newly added point)."""
-        def set_probe(value: float) -> None:
-            self._probe = value
-            self.update()
-
-        def done() -> None:
-            self._probe_number = None
-
-        self._probe_number = number
-        motion.animate(self, "probe", 0.0, 1.0, 200, set_probe, done)
-
-    def set_edge_print(self, text: str) -> None:
-        self._edge_print = text
-        self.update()
-
-    def flash(self, number: int) -> None:
-        self._flash, self._flash_steps = number, 6
-        self._flash_timer.start(140)
-
-    def _flash_step(self) -> None:
-        self._flash_on = not self._flash_on
-        self._flash_steps -= 1
-        if self._flash_steps <= 0:
-            self._flash_timer.stop()
-            self._flash, self._flash_on = None, False
-        self.update()
-
-    def _image_rect(self) -> QRectF | None:
-        """Where the image is drawn: scaled to fit inside the rebate, centred."""
-        return None if self._pixmap is None else self._fit_rect(self._pixmap)
-
-    def _fit_rect(self, pixmap: QPixmap) -> QRectF:
-        avail_w = self.width() - 2 * _CARRIER_MARGIN_X
-        avail_h = self.height() - 2 * _CARRIER_MARGIN_Y
-        scale = min(avail_w / pixmap.width(), avail_h / pixmap.height())
-        w, h = pixmap.width() * scale, pixmap.height() * scale
-        return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
-
-    def _scale(self) -> float:
-        rect = self._image_rect()
-        return rect.width() / self._pixmap.width() if rect is not None else 1.0
-
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        rect = self._image_rect()
-        if rect is None:
-            painter.fillRect(self.rect(), QColor(theme.FILM_REBATE))
-            painter.setPen(QColor(theme.TEXT_DIM))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._placeholder)
-            return
-        painter.fillRect(self.rect(), QColor(theme.FILM_REBATE))
-        self._paint_edge_print(painter)
-        if self._old_pixmap is not None and self._blend < 1.0:
-            # In its own fitted rect: the outgoing picture may be another shape (a frame still loading).
-            painter.drawPixmap(self._fit_rect(self._old_pixmap), self._old_pixmap, QRectF(self._old_pixmap.rect()))
-        painter.setOpacity(self._blend)
-        painter.drawPixmap(rect, self._pixmap, QRectF(self._pixmap.rect()))
-        painter.setOpacity(1.0)
-
-        scale = self._scale()
-        label_font = QFont(self.font())
-        label_font.setPixelSize(10)
-        label_font.setBold(True)
-        painter.setFont(label_font)
-        for x, y, number, colour, selected in self.markers:
-            if number == self._flash and not self._flash_on:
-                continue
-            centre = QPointF(rect.x() + (x + 0.5) * scale, rect.y() + (y + 0.5) * scale)
-            landing = number == self._probe_number
-            radius = _MARKER_RADIUS * (1 + 1.6 * (1 - self._probe)) if landing else _MARKER_RADIUS
-            painter.setOpacity(self._probe if landing else 1.0)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(QColor(0, 0, 0, 170), 4 if selected else 3))
-            painter.drawEllipse(centre, radius, radius)
-            painter.setPen(QPen(QColor(colour), 2.5 if selected else 1.5))
-            painter.drawEllipse(centre, radius, radius)
-            label = QRectF(centre.x() + _MARKER_RADIUS, centre.y() - _MARKER_RADIUS - 12, 22, 14)
-            painter.setPen(QColor(0, 0, 0, 200))
-            painter.drawText(label.translated(1, 1), Qt.AlignmentFlag.AlignLeft, str(number))
-            painter.setPen(QColor(colour))
-            painter.drawText(label, Qt.AlignmentFlag.AlignLeft, str(number))
-            painter.setOpacity(1.0)
-        if self._loupe is not None:
-            pixmap, density, _ = self._loupe
-            paint_loupe(painter, self.loupe_rect(), pixmap, density)
-
-    def _paint_edge_print(self, painter: QPainter) -> None:
-        if not self._edge_print:
-            return
-        painter.setFont(theme.edge_font(10))
-        colour = QColor(theme.EDGE_PRINT)
-        painter.setPen(colour)
-        strip = self.height() - _CARRIER_MARGIN_Y
-        painter.drawText(
-            QRectF(_CARRIER_MARGIN_X, strip, self.width(), _CARRIER_MARGIN_Y),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            self._edge_print,
-        )
-        colour.setAlphaF(0.8)
-        painter.setPen(colour)
-        painter.drawText(
-            QRectF(0, 0, self.width() - _CARRIER_MARGIN_X, _CARRIER_MARGIN_Y),
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            "HALIDE",
-        )
-
-    def _to_image(self, event) -> tuple[int, int] | None:
-        rect = self._image_rect()
-        if rect is None:
-            return None
-        pos = event.position()
-        if not rect.contains(pos):
-            return None
-        scale = self._scale()
-        return int((pos.x() - rect.x()) / scale), int((pos.y() - rect.y()) / scale)
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        point = self._to_image(event) if event.button() == Qt.MouseButton.LeftButton else None
-        if point is not None:
-            self.clicked.emit(*point)
-
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        point = self._to_image(event)
-        if point is not None:
-            self.hovered.emit(*point)
-        else:
-            self.left.emit()
-
-    def leaveEvent(self, event) -> None:  # noqa: N802
-        self.left.emit()
-
-    def display_scale(self) -> float:
-        return self._scale()
-
-
-class ViewSwitch(QWidget):
-    """The Negative | Positive switch: one recessed pill holding two checkable buttons (exclusive, in
-    a QButtonGroup), with an amber highlight painted behind the checked one that slides across when
-    the choice changes. The buttons are bare text; the pill, highlight and focus mark are painted
-    here."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.negative_button = QPushButton("Negative")
-        self.positive_button = QPushButton("Positive")
-        self.group = QButtonGroup(self)
-        self.group.setExclusive(True)
-        row = QHBoxLayout(self)
-        row.setContentsMargins(_PILL_PAD, _PILL_PAD, _PILL_PAD, _PILL_PAD)
-        row.setSpacing(0)
-        for button in (self.negative_button, self.positive_button):
-            button.setProperty("role", "segment")
-            button.setCheckable(True)
-            self.group.addButton(button)
-            button.installEventFilter(self)  # repaint the focus mark as focus moves
-            row.addWidget(button)
-        self.negative_button.setChecked(True)
-        self._from: QRectF | None = None  # where a slide in progress began
-        self._progress = 1.0
-        self.group.buttonToggled.connect(lambda button, checked: checked and self._slide_from_other(button))
-
-    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
-        if event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
-            self.update()
-        return False
-
-    def _checked_rect(self) -> QRectF:
-        button = self.group.checkedButton()
-        return QRectF(button.geometry()) if button is not None else QRectF()
-
-    def highlight_rect(self) -> QRectF:
-        target = self._checked_rect()
-        if self._from is None or self._progress >= 1.0:
-            return target
-        t = self._progress
-        return QRectF(
-            self._from.x() + (target.x() - self._from.x()) * t, target.y(),
-            self._from.width() + (target.width() - self._from.width()) * t, target.height(),
-        )
-
-    def _slide_from_other(self, checked) -> None:
-        other = self.positive_button if checked is self.negative_button else self.negative_button
-        self._from = QRectF(other.geometry())
-
-        def set_progress(value: float) -> None:
-            self._progress = value
-            self.update()
-
-        self._progress = 0.0
-        motion.animate(self, "slide", 0.0, 1.0, 220, set_progress)
-
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QColor(theme.BORDER))
-        painter.setBrush(QColor(theme.BACKGROUND_ALT))
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(theme.AMBER))
-        painter.drawRoundedRect(self.highlight_rect(), 3, 3)
-        focused = next((b for b in (self.negative_button, self.positive_button) if b.hasFocus()), None)
-        if focused is not None:  # keyboard focus: the bare-text buttons draw none of their own
-            painter.setPen(QPen(QColor(theme.TEXT), 1))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(QRectF(focused.geometry()).adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
-
-
-class SaveStamp(QWidget):
-    """"<NAME> → SAVED" stamped in edge print over a strip of rebate, settling from wide letter
-    spacing to tight as it fades in."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._text = ""
-        self._progress = 1.0
-        self.setFixedHeight(22)
-        self.hide()
-
-    def text(self) -> str:
-        return self._text
-
-    def sizeHint(self) -> QSize:  # noqa: N802 - Qt override
-        font = theme.edge_font(11)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
-        return QSize(QFontMetrics(font).horizontalAdvance(self._text) + 20, 22)  # 4 spare: Qt elides text that fits exactly
-
-    def stamp(self, name: str) -> None:
-        font = theme.edge_font(11)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
-        short = QFontMetrics(font).elidedText(name.upper(), Qt.TextElideMode.ElideMiddle, _PROFILE_NAME_MAX_W)
-        self._text = f"{short} \u2192 SAVED"
-        self.setToolTip(name)
-        self.setMinimumWidth(self.sizeHint().width())  # the top bar's stretch must not cut it further
-        self.show()
-
-        def set_progress(value: float) -> None:
-            self._progress = value
-            self.update()
-
-        self._progress = 0.0
-        motion.animate(self, "stamp", 0.0, 1.0, 350, set_progress)
-
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(theme.FILM_REBATE))
-        font = theme.edge_font(11)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 4 - 2.8 * self._progress)
-        painter.setFont(font)
-        painter.setOpacity(self._progress)
-        painter.setPen(QColor(theme.EDGE_PRINT))
-        text = QFontMetrics(font).elidedText(self._text, Qt.TextElideMode.ElideRight, self.width() - 16)
-        painter.drawText(self.rect().adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
-
-
-_PILL_PAD = 2  # the switch's recess around its two buttons
-_LOUPE = 120  # the lens's diameter
-_LOUPE_OFFSET = QPointF(22, -150)  # from the cursor to the lens's top-left: above and to the right
-_READOUT_SIZE = QSizeF(80, 22)
-
-
-def loupe_rect(cursor: QPointF, bounds: QRectF) -> QRectF:
-    """Where the lens goes for a cursor at `cursor`: above and to the right of it, flipped below or to
-    the left where that would leave `bounds` (the image view), so it never hides under an edge."""
-    x, y = cursor.x() + _LOUPE_OFFSET.x(), cursor.y() + _LOUPE_OFFSET.y()
-    if x + _LOUPE > bounds.right():
-        x = cursor.x() - _LOUPE_OFFSET.x() - _LOUPE
-    if y < bounds.top():
-        y = cursor.y() + _LOUPE_OFFSET.x()
-    return QRectF(x, y, _LOUPE, _LOUPE)
-
-
-def paint_loupe(painter: QPainter, lens: QRectF, pixmap: QPixmap, density: float) -> None:
-    """A round lens of `pixmap` with a crosshair and a ring on the pixel a click would sample, and
-    the density that click would read in edge print underneath."""
-    painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setOpacity(1.0)
-    path = QPainterPath()
-    path.addEllipse(lens)
-    painter.save()
-    painter.setClipPath(path)
-    painter.drawPixmap(lens, pixmap, QRectF(pixmap.rect()))
-    painter.restore()
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-    painter.setPen(QPen(QColor(0, 0, 0, 120), 6))  # a soft dark edge, so the ring reads on light frames
-    painter.drawEllipse(lens.adjusted(-2, -2, 2, 2))
-    painter.setPen(QPen(QColor(theme.LOUPE_RING), 3))
-    painter.drawEllipse(lens.adjusted(1.5, 1.5, -1.5, -1.5))
-    centre = lens.center()
-    painter.setPen(QPen(QColor(255, 255, 255, 128), 1))
-    painter.drawLine(QPointF(lens.left() + 6, centre.y()), QPointF(centre.x() - 8, centre.y()))
-    painter.drawLine(QPointF(centre.x() + 8, centre.y()), QPointF(lens.right() - 6, centre.y()))
-    painter.drawLine(QPointF(centre.x(), lens.top() + 6), QPointF(centre.x(), centre.y() - 8))
-    painter.drawLine(QPointF(centre.x(), centre.y() + 8), QPointF(centre.x(), lens.bottom() - 6))
-    painter.drawEllipse(centre, 8, 8)
-    readout = QRectF(centre.x() - _READOUT_SIZE.width() / 2, lens.bottom() + 4, _READOUT_SIZE.width(), _READOUT_SIZE.height())
-    painter.setBrush(QColor(theme.READOUT_BG))
-    painter.setPen(QColor(theme.BORDER))
-    painter.drawRoundedRect(readout, 3, 3)
-    painter.setFont(theme.edge_font(12))
-    painter.setPen(QColor(theme.EDGE_PRINT))  # not a status colour: a density isn't good or bad
-    painter.drawText(readout, Qt.AlignmentFlag.AlignCenter, loupe_text(density))
-    painter.restore()
-
-
-def loupe_text(density: float) -> str:
-    return f"D {density:.2f}"
-
-
-class SaveProfileDialog(QDialog):
-    """Name the calibration and save it. On a name collision (checked via find_profile, so a name
-    differing only by case counts too) the same dialog asks again, with its button
-    relabelled "Overwrite", rather than stacking a second dialog. The name is validated live as it's
-    typed: an invalid name disables Save and shows why, rather than only failing once
-    clicked, and any disk error is shown in the dialog rather than escaping it."""
-
-    saved = Signal(str, str)  # (name, message)
-
-    def __init__(self, parent: QWidget, profile: DensityProfile, sidecars: dict, suggested_name: str = "") -> None:
-        super().__init__(parent, Qt.WindowType.Dialog)
-        self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.setWindowTitle("Save calibration profile")
-        self._profile = profile
-        self._sidecars = sidecars
-        self._pending_overwrite_name: str | None = None
-
-        layout = QVBoxLayout(self)
-        self._message = QLabel("Name this calibration:")
-        self._message.setWordWrap(True)
-        layout.addWidget(self._message)
-        self._name_input = QLineEdit(suggested_name)
-        self._name_input.returnPressed.connect(self._on_save_clicked)
-        self._name_input.textChanged.connect(self._validate_name)
-        layout.addWidget(self._name_input)
-        self._name_error = QLabel("")
-        self._name_error.setProperty("role", "warning")
-        self._name_error.setWordWrap(True)
-        self._name_error.hide()
-        layout.addWidget(self._name_error)
-        row = QHBoxLayout()
-        self._save_button = QPushButton("Save")
-        self._save_button.setProperty("role", "primary")
-        self._save_button.clicked.connect(self._on_save_clicked)
-        cancel = QPushButton("Cancel")
-        cancel.clicked.connect(self.reject)
-        row.addWidget(self._save_button)
-        row.addWidget(cancel)
-        layout.addLayout(row)
-        self._name_input.setFocus()
-        self._name_input.selectAll()
-        self._validate_name(self._name_input.text())
-
-    def _validate_name(self, text: str) -> None:
-        if text != self._pending_overwrite_name:
-            # The name changed since an "already exists" prompt (if any) - back to a plain Save.
-            self._pending_overwrite_name = None
-            self._save_button.setText("Save")
-            self._message.setText("Name this calibration:")
-        try:
-            validate_profile_name(text)
-        except ProfileNameError as exc:
-            self._name_error.setText(str(exc))
-            self._name_error.show()
-            self._save_button.setEnabled(False)
-            return
-        self._name_error.hide()
-        self._save_button.setEnabled(True)
-
-    def _on_save_clicked(self) -> None:
-        if not self._save_button.isEnabled():
-            return  # Enter can still reach here with an invalid name typed but not yet re-validated
-        try:
-            name = validate_profile_name(self._name_input.text())
-        except ProfileNameError as exc:
-            self._name_error.setText(str(exc))
-            self._name_error.show()
-            return
-        if find_profile(name) is not None and self._pending_overwrite_name != name:
-            self._pending_overwrite_name = name
-            self._message.setText(f"A profile named '{name}' already exists - save again to overwrite it.")
-            self._save_button.setText("Overwrite")
-            return
-        try:
-            path = save_named_profile(self._profile, name, overwrite=True, **self._sidecars)
-        except (ProfileError, OSError) as exc:
-            QMessageBox.warning(self, "Couldn't save profile", str(exc))
-            return
-        self.saved.emit(name, f"Saved calibration profile '{name}' to {path}")
-        self.accept()
-
-
 class MainWindow(QWidget):
     """`is_pick_session=True` is the one-shot `invert --pick` variant (see quick_pick.py): one frame,
     so no filmstrip, roll loading or contact sheet; the red button reads "Develop" and emits
@@ -634,6 +143,7 @@ class MainWindow(QWidget):
         self, *, show_load_controls: bool = True, is_pick_session: bool = False, device: ComputeDevice | None = None
     ) -> None:
         super().__init__()
+        self.setWindowTitle("halide")
         self.device = device  # what the contact sheet window develops frames on (None = CPU)
         self.show_load_controls = show_load_controls and not is_pick_session
         self.is_pick_session = is_pick_session
@@ -641,6 +151,8 @@ class MainWindow(QWidget):
         self.session = CalibrationSession()
         self._saved_points: list = []  # the points as last saved or reopened; close asks if they differ
         self._profile_name = ""  # a reopened profile's name, offered again on save
+        self.last_saved: tuple[str, Path | None] | None = None  # (profile name, its roll): the last save here
+        self._profiles: ProfilesWindow | None = None
 
         self._current: int | None = None  # index into session.frames
         self.full_image: np.ndarray | None = None  # the current frame, working space, full resolution
@@ -653,12 +165,14 @@ class MainWindow(QWidget):
         self._positive_profile: DensityProfile | None = None
         self._positive_gain = 1.0
         self._flat_preview = False
+        self._preview_tone: ToneCurveParams | None = None  # the Print sliders' test strip, this frame only
         self._nudge: str | None = None
         self._shown_positive = False  # the view the image last rendered in
         self._pending_flash: int | None = None
         # A status worth keeping ("Reopened …", "Skipped …"): loading doesn't replace it until the
         # person moves to another frame themselves.
         self._sticky_status: str | None = None
+        self._scan_flags_by_index: dict[int, str] = {}
         self._proof: ProofWindow | None = None
         self._preview_loader: PreviewLoader | None = None
         self._frame_loader: FrameLoader | None = None
@@ -688,6 +202,8 @@ class MainWindow(QWidget):
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self, activated=self._remove_selected)
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, activated=self._remove_selected)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, activated=self._deselect)
+        QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self, activated=self._undo)
+        self.setAcceptDrops(self.show_load_controls)  # not in the one-frame `invert --pick` window
         self._refresh_points()
 
     # --- layout ---------------------------------------------------------------------------------
@@ -722,10 +238,10 @@ class MainWindow(QWidget):
         self.proof_button.clicked.connect(self._on_proof)
         top.addWidget(self.proof_button)
         if self.show_load_controls:
-            open_button = QPushButton("Open profile…")
-            open_button.setToolTip("Reopen a saved profile's neutral points and extra information to add to or change them")
-            open_button.clicked.connect(self._on_open_profile)
-            top.addWidget(open_button)
+            profiles_button = QPushButton("Profiles")
+            profiles_button.setToolTip("Your saved profiles: use one on this roll, edit its points, rename or delete it")
+            profiles_button.clicked.connect(self.show_profiles)
+            top.addWidget(profiles_button)
             load_button = QPushButton("Load roll…")
             load_button.setToolTip("Choose a folder of scans (one roll)")
             load_button.clicked.connect(self._on_load_roll)
@@ -770,13 +286,24 @@ class MainWindow(QWidget):
         self.image_view.left.connect(self.image_view.clear_loupe)
         left.addWidget(self.image_view, stretch=1)
 
+        guide = QHBoxLayout()
+        guide.setSpacing(8)
+        self.view_mark = QLabel("NEGATIVE")
+        self.view_mark.setFont(theme.edge_font(11))
+        self.view_mark.setStyleSheet(
+            f"color: {theme.FILM_REBATE}; background: {theme.EDGE_PRINT}; border-radius: 2px; padding: 0 4px;"
+        )
+        guide.addWidget(self.view_mark, 0, Qt.AlignmentFlag.AlignTop)
         self.caption = QLabel(_CAPTION_NEGATIVE)
         self.caption.setWordWrap(True)
-        self.caption.setProperty("role", "dim")
-        left.addWidget(self.caption)
-        self.status_label = ElidedLabel("")
-        self.status_label.setProperty("role", "dim")
-        left.addWidget(self.status_label)
+        guide.addWidget(self.caption, 1)
+        left.addLayout(guide)
+        # What's true of the roll as chips that stay; what's happening now as text that fades.
+        self.notice_bar = NoticeBar()
+        self.notice_bar.set_host(self.image_view)
+        self.notice_bar.frameRequested.connect(self._go_to_frame)
+        self.status_label = self.notice_bar.activity
+        left.addWidget(self.notice_bar)
         body.addLayout(left, stretch=1)
 
         # right panel: wedge, points, notice, proof, drawers, primary
@@ -858,7 +385,7 @@ class MainWindow(QWidget):
         self._accordion.openChanged.connect(self._on_drawer_opened)
         panel.addWidget(self._accordion)
 
-        self.primary_button = QPushButton("Develop" if self.is_pick_session else "Save calibration profile")
+        self.primary_button = QPushButton("Develop" if self.is_pick_session else "Save profile")
         self.primary_button.setProperty("role", "primary")
         self.primary_button.setEnabled(False)
         self.primary_button.clicked.connect(self._on_primary_clicked)
@@ -873,9 +400,24 @@ class MainWindow(QWidget):
         if folder:
             self.load_roll(Path(folder))
 
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt override
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+        event.acceptProposedAction()
+        if len(paths) == 1 and paths[0].is_dir():
+            self.load_roll(paths[0])
+        elif paths and all(p.is_file() and p.suffix.lower() in (".tif", ".tiff") for p in paths):
+            if self._confirm_new_calibration():
+                self.load_files(paths)
+        else:
+            self._status("Drop a folder of scans, or TIFF scans")
+
     def _confirm_new_calibration(self) -> bool:
-        if not self.session.points:
-            return True
+        if not self.session.points or self.session.points == self._saved_points:
+            return True  # nothing to lose: no points, or just saved or reopened
         answer = QMessageBox.question(
             self,
             "Start a new calibration?",
@@ -888,7 +430,7 @@ class MainWindow(QWidget):
     def load_roll(self, folder: Path, keep_points: bool = False) -> None:
         paths, left_out = list_scans(folder)
         if not paths:
-            self._status(f"No TIFF scans in {folder}")
+            self._error("No TIFF scans", f"No TIFF scans in {folder}")
             return
         if not keep_points:
             if not self._confirm_new_calibration():
@@ -896,11 +438,16 @@ class MainWindow(QWidget):
             self._new_calibration()
         self._start_roll(paths, folder)
         if left_out:
-            self._sticky(f"Skipped {left_out.describe()}")
+            count = sum((left_out.hidden, left_out.contact_sheets, left_out.folders, left_out.positives, *left_out.other.values()))
+            self.notice_bar.set_notice("skipped", Notice(
+                chip=f"{count} skipped", title=f"Left out of the roll, not being scans: {left_out.describe()}",
+            ))
 
     def _new_calibration(self) -> None:
         """Forget the calibration in hand: points, profile name, extra information, print pin, and
         the top bar's profile chip or save stamp, which would otherwise name a profile this isn't."""
+        self._sticky_status = None  # the last roll's message is about the last roll
+        self.notice_bar.clear_all()
         self.session.reset()
         self._profile_name = ""
         self.details_form.set_values(self.session.details)
@@ -911,12 +458,17 @@ class MainWindow(QWidget):
         self.profile_chip.show()
 
     def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
-        """Individual scans as a roll of their own (`halide calibrate a.tif b.tif`, `invert --pick`)."""
+        """Individual scans as a roll of their own (`halide open a.tif b.tif`, `invert --pick`)."""
         if not keep_points:
             self._new_calibration()
         self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None)
 
     def _start_roll(self, paths: list[Path], folder: Path | None) -> None:
+        self._start_rolls([(folder, paths)])
+
+    def _start_rolls(self, rolls: list[tuple[Path | None, list[Path]]]) -> None:
+        """Load one or more rolls side by side in the filmstrip. Each roll's scan check is its own:
+        rolls may legitimately differ from one another."""
         self._stop_loaders()
         self._generation += 1
         generation = self._generation
@@ -924,15 +476,34 @@ class MainWindow(QWidget):
         if self._proof is not None:  # its frames belong to the roll being replaced
             old, self._proof = self._proof, None
             old.close()
+        paths = [p for _, roll_paths in rolls for p in roll_paths]
         metadata = read_roll_scan_metadata(paths)
-        scans = [metadata[str(p)][0] for p in paths]
-        self.session.set_roll(paths, scans, folder)
+        self.session.set_rolls([(folder, roll_paths, [metadata[str(p)][0] for p in roll_paths]) for folder, roll_paths in rolls])
+        if self._profiles is not None:
+            self._profiles.set_roll_open(self.session.roll_folder is not None)
         # The counter carries the frame count. A long name is cut, with the full one as the tooltip,
         # so the top bar's buttons always fit the fixed-width window.
-        name = (folder.name if folder is not None else paths[0].stem).upper()
-        self.roll_label.setText(QFontMetrics(self.roll_label.font()).elidedText(name, Qt.TextElideMode.ElideMiddle, _ROLL_NAME_MAX_W))
-        self.roll_label.setToolTip(name)
-        self.filmstrip.strip.set_frames([f.number for f in self.session.frames])
+        names = [(folder.name if folder is not None else roll_paths[0].stem) for folder, roll_paths in rolls]
+        if len(names) == 1:
+            label, tip = names[0].upper(), names[0].upper()
+        else:
+            label, tip = f"{len(names)} ROLLS", "\n".join(n.upper() for n in names)
+        self.roll_label.setText(QFontMetrics(self.roll_label.font()).elidedText(label, Qt.TextElideMode.ElideMiddle, _ROLL_NAME_MAX_W))
+        self.roll_label.setToolTip(tip)
+        if not self.is_pick_session:
+            self.setWindowTitle(f"halide · {names[0] if len(names) == 1 else f'{len(names)} rolls'}")
+        starts, at = [], 0
+        for name, (_, roll_paths) in zip(names, rolls):
+            starts.append((at, name))
+            at += len(roll_paths)
+        self.filmstrip.strip.set_frames([f.number for f in self.session.frames], starts if len(rolls) > 1 else None)
+        flags: dict[str, str] = {}
+        for _, roll_paths in rolls:
+            flags.update(frame_flags(assess_roll({str(p): metadata[str(p)] for p in roll_paths})))
+        # Keyed by the paths as given (relative when typed so on the command line), in frame order.
+        self._scan_flags_by_index = {i: flags[str(p)] for i, p in enumerate(paths) if str(p) in flags}
+        self.filmstrip.strip.set_flags(self._scan_flags_by_index)
+        self.notice_bar.clear_notice("skipped")  # the caller sets it again for this roll
         self._current = None
         self.full_image = None
         self.display = None
@@ -943,85 +514,173 @@ class MainWindow(QWidget):
             self._start_thread(self._preview_loader)
         self._select_frame(0)
         self._refresh_points()
+        self._show_scan_check(flags)
 
-    def _on_open_profile(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open calibration profile", str(default_profiles_dir()), "halide profiles (*.json)"
-        )
-        if path:
-            self.open_profile(Path(path))
+    def _show_scan_check(self, flags: dict[str, str]) -> None:
+        """The roll's scan check as a chip; its list names each frame and why, and goes to it."""
+        if not flags:
+            self.notice_bar.clear_notice("scan")
+            return
+        several = len(self.session.rolls) > 1
+        rows = []
+        for i, frame in enumerate(self.session.frames):
+            reason = self._scan_flags_by_index.get(i)
+            if reason:
+                label = f"FRAME {frame.number:02d}" + (f" {frame.roll.name.upper()}" if several else "")
+                rows.append((label, reason, i))
+        n = len(rows)
+        self.notice_bar.set_notice("scan", Notice(
+            chip=f"⚠ {n} scanned differently",
+            title=f"{console.plural(n, 'frame')} {'was' if n == 1 else 'were'} scanned differently from most of the roll",
+            rows=rows,
+            footer="One profile shifts colour between them; scan a roll at one manual exposure and one white "
+                   "balance (halide batch --match-scan-exposure evens out exposure)",
+        ))
+
+    def show_profiles(self) -> ProfilesWindow:
+        if self._profiles is None:
+            self._profiles = ProfilesWindow(self)
+            self._profiles.editRequested.connect(self.open_profile)
+            self._profiles.useRequested.connect(self.use_profile)
+            self._profiles.renamed.connect(self._on_profile_renamed)
+            self._profiles.deleted.connect(self._on_profile_deleted)
+            self._profiles.fileOpened.connect(self.open_profile)
+        self._profiles.set_roll_open(self.session.roll_folder is not None)
+        self._profiles.refresh()
+        self._profiles.show()
+        self._profiles.raise_()
+        self._profiles.activateWindow()
+        return self._profiles
+
+    def _is_current_profile(self, name: str) -> bool:
+        in_use = self.session.profile_in_use
+        current = in_use.stem if in_use is not None else self._profile_name
+        return bool(current) and current.casefold() == name.casefold()
+
+    def _on_profile_renamed(self, old: str, new: str) -> None:
+        """The profile on screen was renamed in the Profiles window: follow it, so Save updates it."""
+        if not self._is_current_profile(old):
+            return
+        self._profile_name = new
+        if self.session.profile_in_use is not None:
+            self.session.profile_in_use = self.session.profile_in_use.with_name(f"{new}.json")
+            self._refresh_using_chip()
+        else:
+            self._show_profile_name(new)
+
+    def _on_profile_deleted(self, name: str) -> None:
+        """The profile on screen was deleted: its points stay, as an unsaved calibration, so a save
+        can't quietly bring the deleted file back."""
+        if not self._is_current_profile(name):
+            return
+        self.session.forget_profile()
+        self._profile_name = ""
+        self._saved_points = []
+        self.save_stamp.hide()
+        self.profile_chip.setText("New calibration")
+        self.profile_chip.show()
+        self._refresh_points()
+
+    def use_profile(self, path: Path) -> None:
+        """Put a saved profile on the open roll ("Use for this roll"): its fit drives the positive at
+        once, and points clicked now refine it."""
+        if self.session.roll_folder is None:
+            return
+        unsaved = len(self.session.points) if self.session.points != self._saved_points else 0
+        if unsaved:
+            answer = QMessageBox.question(
+                self, f"Use '{path.stem}'?",
+                f"The {console.plural(unsaved, 'point')} on screen {'isn' if unsaved == 1 else 'aren'}'t saved, "
+                "and the profile's points will replace them.",
+            )
+            self._repaint_all()
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            self.session.use_profile(path)
+        except (ValueError, KeyError, OSError) as exc:
+            self._error(f"Couldn't use {path.stem}", f"Couldn't use {path.stem}: {exc}")
+            return
+        self._profile_name = path.stem
+        self._saved_points = list(self.session.points)
+        self.details_form.set_values(self.session.details)
+        self.print_controls.set_override(self.session.tone_override)
+        self._refresh_drawer_summaries()
+        self._nudge = None
+        self._points_changed()
+        self._status(f"Using '{path.stem}' on this roll: {console.plural(len(self.session.points), 'point')}")
 
     def open_profile(self, path: Path) -> None:
         try:
-            recorded_folder = CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
+            CalibrationSession().restore(path)  # read it first: an unreadable file changes nothing
         except (ValueError, KeyError, OSError) as exc:
-            self._status(f"Couldn't open {path.name}: {exc}")
-            return
-        if recorded_folder is not None and not list_scans(recorded_folder)[0]:
-            self._status(f"Couldn't open {path.name}: no TIFF scans in {recorded_folder}")
+            self._error(f"Couldn't open {path.name}", f"Couldn't open {path.name}: {exc}")
             return
         if not self._confirm_new_calibration():
             return
+        self.notice_bar.clear_all()
         self.session.reset()
         try:
-            folder = self.session.restore(path)
+            self.session.restore(path)
         except (ValueError, KeyError, OSError) as exc:
-            self._status(f"Couldn't open {path.name}: {exc}")
+            self._error(f"Couldn't open {path.name}", f"Couldn't open {path.name}: {exc}")
             return
-        self._profile_name = path.stem
-        self._show_profile_name(path.stem)
+        if path.parent.resolve() == default_profiles_dir().resolve():
+            self._profile_name = path.stem
+            self._show_profile_name(path.stem)
+        else:  # a calibration file from elsewhere: Save keeps it as a profile, under a name asked for then
+            self._profile_name = ""
+            self._show_profile_name(path.name, "Profile file")
         self.details_form.set_values(self.session.details)
         self.print_controls.set_override(self.session.tone_override)
         self._refresh_drawer_summaries()
         self._sticky(f"Reopened '{path.stem}': {console.plural(len(self.session.points), 'point')}")
-        recorded = self.session.recorded_roll
-        if folder is not None:
-            self.load_roll(folder, keep_points=True)
-        elif recorded is None and (on_disk := sorted({p.frame for p in self.session.points if p.frame.is_file()})):
-            self.load_files(on_disk, keep_points=True)  # made from single scans, not a roll folder
+        loaded: list[tuple[Path, list[Path]]] = []
+        for folder in point_rolls(self.session.points):
+            scans = list_scans(folder)[0] if folder.is_dir() else []
+            if not scans:
+                folder = self._roll_not_found(path.stem, folder)
+                scans = list_scans(folder)[0] if folder is not None else []
+                if folder is not None and not scans:
+                    self._error("No TIFF scans", f"No TIFF scans in {folder} - that roll's points still count in the fit")
+            if scans and folder not in [f for f, _ in loaded]:  # Find roll… may name a roll already open
+                loaded.append((folder, scans))
+        if loaded:
+            self._start_rolls(loaded)
         else:
             self._refresh_points()
-        if recorded is not None and folder is None:
-            self._roll_not_found(path.stem, recorded)
-        else:
-            self._warn_missing_frames()
+        self._warn_missing_frames()
         self._saved_points = list(self.session.points)
 
-    def _roll_not_found(self, profile_name: str, recorded: Path) -> None:
-        """The reopened profile's roll folder has gone: say so, and offer to point at where it went
-        (points re-attach to the moved scans by file name - CalibrationSession.set_roll)."""
+    def _roll_not_found(self, profile_name: str, missing: Path) -> Path | None:
+        """One of the reopened profile's rolls has gone: say so, and offer to point at where it went
+        (points re-attach to the moved scans by file name - CalibrationSession.set_rolls). Returns the
+        folder chosen to take its place, or None to continue without it."""
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("Roll not found")
-        if recorded.is_absolute():
-            box.setText(f"'{profile_name}' was made from\n{recorded}\nwhich has been moved or deleted.")
-        else:  # an older profile: it recorded the roll relative to wherever `halide calibrate` ran
-            box.setText(
-                f"'{profile_name}' recorded its roll only as '{recorded}', relative to the folder "
-                "halide calibrate was started in - and it isn't in this folder."
-            )
+        box.setText(f"'{profile_name}' was made from\n{missing}\nwhich has been moved or deleted.")
         box.setInformativeText(
-            f"Its {len(self.session.points)} point(s) still count in the fit. Point to the roll's new "
+            "Its points on that roll still count in the fit. Point to the roll's new "
             "folder to see them on their frames again."
-            if recorded.is_absolute()
-            else f"Its {len(self.session.points)} point(s) still count in the fit. Point to the roll's "
-            "folder to see them on their frames again - saving the profile then records its full path."
         )
         box.addButton("Continue without", QMessageBox.ButtonRole.RejectRole)
         find = box.addButton("Find roll…", QMessageBox.ButtonRole.AcceptRole)
         box.setDefaultButton(find)
         box.exec()
         self._repaint_all()
-        if box.clickedButton() is not find:
-            self._status(f"Roll not found: {recorded} - its points still count in the fit")
-            return
-        start = next((str(p) for p in recorded.parents if recorded.is_absolute() and p.is_dir()), str(Path.home()))
-        chosen = QFileDialog.getExistingDirectory(self, "Find the roll (its folder of scans)", start)
-        if chosen:
-            self.load_roll(Path(chosen), keep_points=True)
-            self._warn_missing_frames()
-        else:
-            self._status(f"Roll not found: {recorded} - its points still count in the fit")
+        chosen = None
+        if box.clickedButton() is find:
+            start = next((str(q) for q in missing.parents if q.is_dir()), str(Path.home()))
+            chosen = QFileDialog.getExistingDirectory(self, "Find the roll (its folder of scans)", start)
+        if not chosen:
+            self.notice_bar.set_notice(f"missing {missing}", Notice(
+                chip=f"⚠ {missing.name} not found",
+                title=f"Roll not found: {missing}. Its points still count in the fit; reopen the profile and "
+                      "use Find roll… to show them on their frames",
+            ))
+            return None
+        return Path(chosen)
 
     def _warn_missing_frames(self) -> None:
         """Frames points were picked on that aren't in the loaded roll or on disk any more."""
@@ -1055,7 +714,7 @@ class MainWindow(QWidget):
     def _loading_progress(self, message: str) -> None:
         """Loading's own status line: it replaces anything but a sticky status that's still showing."""
         if self.status_label.full_text() != self._sticky_status:
-            self._status(message)
+            self.notice_bar.show_activity(message, lasting=message.startswith("Loading"))
 
     def _sticky(self, message: str) -> None:
         self._status(message)
@@ -1074,12 +733,19 @@ class MainWindow(QWidget):
         if index == self._current and not retry:
             return
         frame.error = None
-        self._current = index
+        previous, self._current = self._current, index
+        if previous is not None and previous != index and self.print_controls.previewing:
+            self.print_controls.drop_preview()  # a test strip belongs to the frame it was made on
+            if self._positive_mode():
+                self._refresh_thumbnail(previous)
         self._pending_flash = None
         self.filmstrip.show_frame(index)
-        digits = 3 if len(self.session.frames) > 99 else 2
+        in_roll = sum(f.roll == frame.roll for f in self.session.frames)
+        digits = 3 if in_roll > 99 else 2
+        rolls = self.session.rolls
+        which = f" · ROLL {rolls.index(frame.roll) + 1} OF {len(rolls)}" if len(rolls) > 1 else ""
         self.frame_counter.setText(
-            f"FRAME <span style='color:{theme.TEXT}'>{frame.number:0{digits}d}</span> / {len(self.session.frames):0{digits}d}"
+            f"FRAME <span style='color:{theme.TEXT}'>{frame.number:0{digits}d}</span> / {in_roll:0{digits}d}{which}"
         )
         number = 1 if self.is_pick_session else frame.number
         self.image_view.set_edge_print(f"{number}  →{number}A")  # the contact sheet's own arrow
@@ -1132,7 +798,7 @@ class MainWindow(QWidget):
             self.session.frames[self._current].error = str(error)
             self.image_view.set_image(None, f"Couldn't load {path.name}")
             self.filmstrip.strip.mark_failed(self._current, str(error))
-            self._status(f"Error: {error}")
+            self._error(f"Couldn't load {path.name}", f"Couldn't load {path.name}: {error}")
             return
         self.full_image = image
         frame = self.session.frames[self._current]
@@ -1178,8 +844,12 @@ class MainWindow(QWidget):
     def _positive_mode(self) -> bool:
         return self.positive_button.isChecked()
 
-    def _tone(self) -> ToneCurveParams:
-        return ToneCurveParams(mode="linear") if self._flat_preview else self.session.print_tone()
+    def _tone(self, current: bool = True) -> ToneCurveParams:
+        """The print for the frame on screen, or (`current=False`) for any other frame, which never
+        shows the sliders' preview."""
+        if self._flat_preview:
+            return ToneCurveParams(mode="linear")
+        return (self._preview_tone if current else None) or self.session.print_tone()
 
     def _thumbnail(self, frame: Frame) -> np.ndarray:
         """A frame's filmstrip thumbnail in the current view (negative, or positive by the same rule
@@ -1189,8 +859,14 @@ class MainWindow(QWidget):
         if self._positive_mode():
             profile, _is_fit, gain = self.session.positive_source(frame)
             if profile is not None:
-                return positive_display(frame.preview, profile, self._tone(), gain)[0]
+                current = self._current is not None and frame is self.session.frames[self._current]
+                return positive_display(frame.preview, profile, self._tone(current), gain)[0]
         return negative_display(frame.preview, compute_stretch_bounds(frame.preview))
+
+    def _refresh_thumbnail(self, index: int) -> None:
+        frame = self.session.frames[index]
+        if frame.preview is not None:
+            self.filmstrip.strip.set_pixmap(index, QPixmap.fromImage(_qimage(self._thumbnail(frame))))
 
     def _refresh_filmstrip_thumbnails(self) -> None:
         for i, frame in enumerate(self.session.frames):
@@ -1201,12 +877,16 @@ class MainWindow(QWidget):
         """Re-render the current frame in the current view, and the view's labels."""
         positive = self._positive_mode()
         self.caption.setText(_CAPTION_POSITIVE if positive else _CAPTION_NEGATIVE)
+        self.view_mark.setText("POSITIVE" if positive else "NEGATIVE")
         frame = self.session.frames[self._current] if self._current is not None else None
         self._resolved = None
         self._positive_profile = None
         if positive and frame is not None:
             profile, is_fit, gain = self.session.positive_source(frame, self._display_estimate)
-            if is_fit:
+            in_use = self.session.profile_in_use
+            if is_fit and in_use is not None:
+                self.source_note.setText(f"Profile in use · {len(self.session.points)} points")  # the top bar names it
+            elif is_fit:
                 self.source_note.setText(f"Your calibration · {len(self.session.points)} points")
             elif profile is not None:
                 self.source_note.setText("Rough auto estimate — not your final output")
@@ -1293,6 +973,17 @@ class MainWindow(QWidget):
         if self.session.selected is not None:
             self._remove_point(self.session.selected)
 
+    def _undo(self) -> None:
+        change = self.session.undo()
+        if change is None:
+            return
+        self._nudge = None
+        self._points_changed()
+        if change > 0:
+            self._status(f"Restored {console.plural(change, 'point')}")
+        elif change < 0:
+            self._status(f"Took back {console.plural(-change, 'point')}")
+
     def _deselect(self) -> None:
         self.session.selected = None
         self._refresh_points()
@@ -1344,7 +1035,8 @@ class MainWindow(QWidget):
 
     def _refresh_points(self) -> None:
         views = self.session.views()
-        self.point_list.set_rows(views, self.session.selected)
+        self.point_list.set_rows(views, self.session.selected, self._profile_card())
+        self._refresh_using_chip()
         self.points_title.setText(f"Neutral points ({len(views)})" if views else "Neutral points")
         self._refresh_wedge(views)
         counts = self.session.point_counts()
@@ -1354,7 +1046,34 @@ class MainWindow(QWidget):
         self._refresh_details(views)
         fitted = self.session.profile() is not None
         self.primary_button.setEnabled(fitted)
-        self.proof_button.setEnabled(fitted and bool(self.session.frames))
+        one_roll = len(self.session.rolls) <= 1
+        self.proof_button.setEnabled(fitted and bool(self.session.frames) and one_roll)
+        self.proof_button.setToolTip(
+            "A zoomable contact sheet of the whole roll printed with this calibration" if one_roll
+            else "The contact sheet shows one roll: open a single roll to print one"
+        )
+
+    def _profile_card(self) -> list[str] | None:
+        """A profile in use with nothing added yet shows as a card instead of its points' rows."""
+        session = self.session
+        if session.profile_in_use is None or session.changed_from_profile():
+            return None
+        stock = session.details.get("film_stock", "").strip()
+        rolls = session.profile_rolls()
+        where = f" on {', '.join(rolls)}" if rolls else ""
+        return [
+            session.profile_in_use.stem,
+            *([stock] if stock else []),
+            f"{console.plural(len(session.points), 'point')}{where}",
+            "Click points on this roll to refine it",
+        ]
+
+    def _refresh_using_chip(self) -> None:
+        if self.session.profile_in_use is None:
+            return
+        added = len(self.session.new_points())
+        extra = f" + {console.plural(added, 'new point')}" if added else " (edited)" if self.session.changed_from_profile() else ""
+        self._show_profile_name(self.session.profile_in_use.stem, "Using", extra, keep_stamp=True)
 
     def _refresh_wedge(self, views: list[PointView] | None = None) -> None:
         views = self.session.views() if views is None else views
@@ -1441,8 +1160,13 @@ class MainWindow(QWidget):
             self._points_changed()
 
     def _on_clear_all(self) -> None:
-        count = len(self.session.points)
-        if count and self._confirm(f"Remove all {count} point(s) and start the calibration again?"):
+        if self.session.profile_in_use is not None:
+            count = len(self.session.new_points())
+            question = f"Remove the {console.plural(count, 'new point')}? The profile's own points stay."
+        else:
+            count = len(self.session.points)
+            question = f"Remove all {count} point(s) and start the calibration again?"
+        if count and self._confirm(question):
             self.session.clear_points()
             self._nudge = None
             self._points_changed()
@@ -1459,18 +1183,26 @@ class MainWindow(QWidget):
     def _refresh_drawer_summaries(self) -> None:
         stock = self.session.details.get("film_stock", "").strip()
         self.extra_drawer.set_summary(stock or "film stock, process, scanner")
-        self.print_drawer.set_summary("pinned for every frame" if self.print_controls.pinned else "fitted per frame")
+        controls = self.print_controls
+        self.print_drawer.set_summary(
+            "previewing on this frame" if controls.previewing else "pinned for every frame" if controls.pinned else "fitted per frame"
+        )
 
-    def _on_print_changed(self, tone: ToneCurveParams | None, flat: bool) -> None:
-        stale = tone != self.session.tone_override
-        self.session.tone_override = tone
+    def _on_print_changed(self, preview: ToneCurveParams | None, pin: ToneCurveParams | None, flat: bool) -> None:
+        pin_changed = pin != self.session.tone_override
+        everywhere = pin_changed or flat != self._flat_preview  # changes every thumbnail, not just this frame's
+        self.session.tone_override = pin
+        self._preview_tone = preview
         self._flat_preview = flat
         self._refresh_drawer_summaries()
-        if stale:
+        if pin_changed:
             self._proof_is_stale()
         if self._positive_mode():
             self._refresh_image()
-            self._thumbs_timer.start(_THUMBS_DELAY_MS)
+            if everywhere:
+                self._thumbs_timer.start(_THUMBS_DELAY_MS)
+            elif self._current is not None:
+                self._refresh_thumbnail(self._current)
 
     # --- magnifier ------------------------------------------------------------------------------
 
@@ -1515,22 +1247,32 @@ class MainWindow(QWidget):
             self.pickCompleted.emit((profile, self.session.tone_override, note))
             self.close()
             return
-        dialog = SaveProfileDialog(self, self.session.profile_to_save(), self.session.sidecars(), self._profile_name)
+        in_use = self.session.profile_in_use
+        dialog = SaveProfileDialog(
+            self, self.session.profile_to_save(), self.session.sidecars(),
+            "" if in_use is not None else self._profile_name,
+            update_name=in_use.stem if self.session.changed_from_profile() else None,
+        )
         dialog.saved.connect(self._on_saved)
         dialog.exec()
         self._repaint_all()
 
-    def _show_profile_name(self, name: str) -> None:
+    def _show_profile_name(self, name: str, kind: str = "Profile", extra: str = "", keep_stamp: bool = False) -> None:
         bold = QFont(self.profile_chip.font())
         bold.setBold(True)
-        short = QFontMetrics(bold).elidedText(name, Qt.TextElideMode.ElideMiddle, _PROFILE_NAME_MAX_W)
-        self.profile_chip.setText(f"Profile <b>{html.escape(short)}</b>")
+        short = QFontMetrics(bold).elidedText(name, Qt.TextElideMode.ElideMiddle, PROFILE_NAME_MAX_W)
+        self.profile_chip.setText(f"{kind} <b>{html.escape(short)}</b>{html.escape(extra)}")
         self.profile_chip.setToolTip(name)
-        self.save_stamp.hide()
-        self.profile_chip.show()
+        if not (keep_stamp and self.save_stamp.isVisible()):
+            self.save_stamp.hide()
+            self.profile_chip.show()
 
     def _on_saved(self, name: str, message: str) -> None:
         self._profile_name = name
+        self.session.adopt_points(find_profile(name) or default_profiles_dir() / f"{name}.json")  # its real file, case and all
+        self.last_saved = (name, self.session.roll_folder)
+        if self._profiles is not None:
+            self._profiles.refresh(select=name)
         self._show_profile_name(name)
         self._saved_points = list(self.session.points)
         self.profile_chip.hide()
@@ -1560,12 +1302,17 @@ class MainWindow(QWidget):
             self._repaint_all()
 
     def _status(self, message: str) -> None:
-        self.status_label.set_full_text(message)
+        self.notice_bar.show_activity(message)
+
+    def _error(self, chip: str, message: str) -> None:
+        """Something went wrong: a red chip that stays until it's read, not a line the next message
+        replaces."""
+        self.notice_bar.set_notice("error", Notice(chip=f"✕ {chip}", title=message, error=True))
 
     def _confirm_close(self, count: int) -> bool:
         box = QMessageBox(
             QMessageBox.Icon.Question,
-            "Close the picker?",
+            "Close the window?",
             f"The {console.plural(count, 'neutral point')} you picked "
             f"{'isn' if count == 1 else 'aren'}'t saved in a profile and will be lost.",
             parent=self,
@@ -1588,6 +1335,8 @@ class MainWindow(QWidget):
         self._stop_loaders(wait=True)
         if self._proof is not None:
             self._proof.close()  # stops its full-quality workers too
+        if self._profiles is not None:
+            self._profiles.close()
         wait_for_stopping_renderers()
         if self.is_pick_session and not self._pick_result_emitted:
             self._pick_result_emitted = True

@@ -57,7 +57,7 @@ class PreviewLoader(QThread):
         finally:
             # Interrupted (window closed, another roll loaded): stop the frames still decoding
             # rather than letting them finish - otherwise the interpreter waits on them at exit and
-            # `halide calibrate` sat ~7 s in the terminal after its window had closed (measured).
+            # `halide open` sat ~7 s in the terminal after its window had closed (measured).
             # concurrent.futures has no public "terminate", hence the private process table.
             if self.isInterruptionRequested():
                 for process in list(getattr(executor, "_processes", {}).values()):

@@ -160,7 +160,7 @@ def test_batch_cli_prints_its_settings_as_one_run_sheet_before_developing(roll_d
     # The automatic tiers point to the faithful one, on a dimmed line of their own
     assert rows["Calibration"] == (
         f"auto{nbsp}· one profile for the whole roll, from 4 frames automatic estimate - for the most "
-        "faithful colour, pick neutral points with `halide calibrate`"
+        "faithful colour, pick neutral points with `halide open`"
     )
     assert rows["Output"] == f"print{nbsp}· grade 0.80{nbsp}· exposure fitted per frame"
     assert rows["Workers"] == "1 (--workers)"
@@ -263,7 +263,7 @@ def test_batch_skip_existing_contact_sheet_covers_new_and_old_frames(roll_dir, t
 def test_run_sheet_advises_picking_points_after_an_automatic_estimate(roll_dir, tmp_path, capsys, source, advised):
     assert main(["batch", str(roll_dir), str(tmp_path / "out"), *source, "--workers", "1"]) == 0
     out = " ".join(capsys.readouterr().out.split())  # a long row wraps with a hanging indent
-    advice = "automatic estimate - for the most faithful colour, pick neutral points with `halide calibrate`"
+    advice = "automatic estimate - for the most faithful colour, pick neutral points with `halide open`"
     assert (advice in out) is advised
 
 
@@ -275,7 +275,7 @@ def test_auto_density_roll_with_another_source_is_argparses_refusal(roll_dir, tm
 
 
 def test_batch_has_no_pick_option(roll_dir, tmp_path, capsys):
-    """Picking is `invert --pick` only; a roll is calibrated in `halide calibrate`."""
+    """Picking is `invert --pick` only; a roll is calibrated in `halide open`."""
     with pytest.raises(SystemExit) as refused:
         main(["batch", str(roll_dir), str(tmp_path / "out"), "--pick"])
     assert refused.value.code == 2

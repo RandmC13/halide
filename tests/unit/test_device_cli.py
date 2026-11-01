@@ -122,7 +122,7 @@ def test_device_row_gpu_names_the_card():
         ["print", "in.tif", "out.tif", "--device", "cpu"],
         ["export", "in.tif", "out.png", "--device", "cpu"],
         ["contact", "in_dir", "sheet.jpg", "--device", "cpu"],
-        ["calibrate", "--device", "cpu"],
+        ["open", "--device", "cpu"],
     ],
 )
 def test_every_command_accepts_device_flag(argv):
@@ -475,7 +475,7 @@ def test_empty_env_value_is_not_an_error_on_the_cli(negative_tiff, tmp_path, mon
     assert main(["invert", str(negative_tiff), str(tmp_path / "out.tif"), *MANUAL]) == 0
 
 
-def test_calibrate_hands_the_device_to_the_picker(monkeypatch, gpu_resolves):
+def test_open_hands_the_device_to_the_picker(monkeypatch, gpu_resolves):
     # The picker's contact-sheet window develops every frame through batch's own _worker.
     import types
 
@@ -484,7 +484,7 @@ def test_calibrate_hands_the_device_to_the_picker(monkeypatch, gpu_resolves):
     fake_app.main = lambda **kwargs: seen.update(kwargs)
     monkeypatch.setitem(sys.modules, "halide.gui.app", fake_app)
     monkeypatch.setenv("DISPLAY", ":99")
-    assert main(["calibrate"]) == 0
+    assert main(["open"]) == 0
     assert seen["device"] is _FAKE_GPU
 
 

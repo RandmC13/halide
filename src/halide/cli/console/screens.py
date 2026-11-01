@@ -21,7 +21,7 @@ def welcome_screen() -> str:
     arguments are required: command" error with something that actually orients a non-programmer
     photographer, instead of just failing."""
     starts = [
-        ("halide calibrate in_dir/", "pick neutral points, save a profile"),
+        ("halide open in_dir/", "pick neutral points, save a profile"),
         ("halide invert negative.tif positive.tif", "develop a single scan"),
         ("halide check in_dir/", "check a roll was scanned consistently"),
         ("halide batch in_dir/ out_dir/", "develop a whole roll"),

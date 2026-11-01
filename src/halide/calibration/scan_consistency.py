@@ -117,6 +117,30 @@ class RollScanReport:
         return lines
 
 
+def frame_flags(report: RollScanReport) -> dict[str, str]:
+    """Scan name -> one line on how that frame was scanned differently from the rest of the roll:
+    outside the main exposure or white-balance group, exported with tone modules on, or without the
+    EXIF the others have. A consistent roll gives {}. A roll with no EXIF at all flags nothing for
+    it: every frame would carry the same mark, which says nothing about any one of them."""
+    reasons: dict[str, list[str]] = {}
+    if report.exposure_inconsistent:
+        main, *others = sorted(report.exposure_groups.items(), key=lambda g: -len(g[1]))
+        for described, names in others:
+            for name in names:
+                reasons.setdefault(name, []).append(f"digitized at {described}, most of the roll at {main[0]}")
+    if report.white_balance_inconsistent:
+        _, *others = sorted(report.white_balance_groups.values(), key=len, reverse=True)
+        for names in others:
+            for name in names:
+                reasons.setdefault(name, []).append("exported with a different raw white balance from most of the roll")
+    for name, modules in report.tonal_modules.items():
+        reasons.setdefault(name, []).append(f"tone/colour modules active in darktable ({', '.join(modules)})")
+    if len(report.missing_exif) < len(report.settings):
+        for name in report.missing_exif:
+            reasons.setdefault(name, []).append("no camera EXIF, so it can't be checked against the others")
+    return {name: "; ".join(lines) for name, lines in reasons.items()}
+
+
 def assess_roll(metadata: dict[str, tuple[ScanSettings | None, DarktableState | None]]) -> RollScanReport:
     settings = {name: s for name, (s, _) in metadata.items()}
     darktable = {name: d for name, (_, d) in metadata.items()}

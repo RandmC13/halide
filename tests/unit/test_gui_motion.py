@@ -41,7 +41,7 @@ def _settle(app, until, timeout=5.0):
 def test_a_new_image_after_a_finished_fade_does_not_touch_the_deleted_animation(app, monkeypatch):
     # With motion on, a finished cross-fade deletes itself; the next picture (the next frame after a
     # Negative/Positive switch) once stopped that dead animation and wedged the picker.
-    from halide.gui.main_window import ImageView
+    from halide.gui.image_view import ImageView
 
     monkeypatch.delenv("HALIDE_MOTION")
     view = ImageView()

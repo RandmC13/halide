@@ -134,7 +134,7 @@ def test_no_calibration_lists_saved_profiles_without_asking(roll, tmp_path, caps
 def test_no_calibration_and_no_saved_profiles(roll, tmp_path, capsys):
     code, out = _run(capsys, "batch", str(roll), str(tmp_path / "out"), "--dry-run")
     assert code == 0
-    assert "no saved profiles yet (make one with: halide calibrate" in out and "choose; no saved" in out
+    assert "no saved profiles yet (make one with: halide open" in out and "choose; no saved" in out
 
 
 def test_auto_density_roll_reads_no_pixels(roll, tmp_path, capsys, monkeypatch):

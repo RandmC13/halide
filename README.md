@@ -90,7 +90,7 @@ The `halide` command then works whenever that virtual environment is active.
 works; it just doesn't copy EXIF.
 
 <details>
-<summary>Linux: the calibration window won't open?</summary>
+<summary>Linux: the halide window won’t open?</summary>
 
 Minimal Linux installs can be missing libraries Qt needs. On Debian/Ubuntu:
 
@@ -159,7 +159,7 @@ A typical roll:
 halide check portra-roll-03/
 
 # 2. Pick neutral points across the roll and save them as a profile
-halide calibrate portra-roll-03/
+halide open portra-roll-03/
 
 # 3. Develop the whole roll with that profile
 halide batch portra-roll-03/ portra-roll-03-developed/ --profile "Portra 400"
@@ -170,7 +170,7 @@ halide contact portra-roll-03-developed/ portra-roll-03-sheet.jpg
 ```
 
 Run `invert` or `batch` without a calibration flag and halide offers your saved profiles, the
-picker, or an automatic estimate. For a single frame:
+picking in the halide window, or an automatic estimate. For a single frame:
 
 ```bash
 halide invert IMG_0158.tif IMG_0158-positive.tif --pick    # click neutrals on this frame
@@ -187,7 +187,7 @@ preview.jpg` develops every frame at full quality but keeps only the contact she
 
 | Command | What it does |
 |---|---|
-| `halide calibrate [roll]` | GUI: pick neutral points on any frames, see a live positive, save a profile |
+| `halide open [roll]` | The halide window: load a roll, pick neutral points on any frames or use a saved profile, see a live positive, save a profile |
 | `halide invert IN OUT` | Develop one negative (`--profile`, `--pick`, `--auto-density`, `--output flat`, …) |
 | `halide batch IN_DIR [OUT_DIR]` | Develop a folder in parallel; `--contact-sheet` for a preview or proof |
 | `halide print IN OUT` | Print a flat positive, for example after editing it in darktable |
@@ -270,7 +270,7 @@ finish. Use `--log FILE` to put the notebook somewhere else, or `--no-log` to sk
 - **Developed images have no camera metadata (EXIF).** Install exiftool (see Install). Without it
   halide works but doesn't copy EXIF. If exiftool is installed but fails on one file, that frame
   is still developed and you get a warning.
-- **The calibration window won't open (Qt errors).** See the Linux libraries note under Install.
+- **The halide window won’t open (Qt errors).** See the Linux libraries note under Install.
 - **The GPU wasn't used.** Run `halide gpu` to see what halide finds. If a frame doesn't fit on
   the card, or the GPU fails part-way, halide develops that frame on the CPU and prints a warning;
   the result is the same picture. `--device cpu` (or `HALIDE_DEVICE=cpu`) skips the GPU entirely.
@@ -331,7 +331,7 @@ python -m pytest tests/ -q
 
 Code layout: `src/halide/core/` holds the pure image maths, `io/` handles TIFF/ICC/export,
 `calibration/` handles profiles and fitting, `batch/` does parallel processing, `cli/` holds the
-commands and `gui/` the Qt picker. `benchmarks/gpu_bench.py` times CPU against GPU on your own
+commands and `gui/` the Qt window. `benchmarks/gpu_bench.py` times CPU against GPU on your own
 machine.
 
 ## Acknowledgements

@@ -8,18 +8,18 @@ from halide.cli import console
 from halide.cli._help import DEBUG_HELP, HELP_FORMATTER, examples, wrapped
 from halide.cli.commands import (
     batch_cmd,
-    calibrate_cmd,
     check_cmd,
     contact_cmd,
     export_cmd,
     gpu_cmd,
     invert_cmd,
+    open_cmd,
     print_cmd,
     profile_cmd,
 )
 
 _SUBCOMMANDS = (
-    "invert", "batch", "print", "export", "contact", "check", "profile", "calibrate", "gpu",
+    "invert", "batch", "print", "export", "contact", "check", "profile", "open", "gpu",
 )
 
 
@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="halide", description="Develop scanned colour negative film into a positive image.",
         formatter_class=HELP_FORMATTER,
         epilog=examples(
-            "halide calibrate portra-roll-03/",
+            "halide open portra-roll-03/",
             "halide batch portra-roll-03/ portra-roll-03-developed/ --profile \"Portra 400\"",
             "halide invert negative.tif positive.tif --pick",
         ),
@@ -96,18 +96,18 @@ def build_parser() -> argparse.ArgumentParser:
         "halide check portra-roll-03/")
 
     profile_parser = subparsers.add_parser(
-        "profile", help="Manage saved calibration profiles",
-        description=wrapped("Manage saved calibration profiles: list, show, rename, delete, or edit the "
+        "profile", help="Manage saved profiles",
+        description=wrapped("Manage saved profiles: list, show, rename, delete, or edit the "
         "details recorded with one."),
         formatter_class=HELP_FORMATTER,
     )
     profile_parser.add_argument("--debug", action="store_true", default=argparse.SUPPRESS, help=DEBUG_HELP)
     profile_cmd.add_arguments(profile_parser)
 
-    add("calibrate", "Open the picker: click neutral points on a roll and save a calibration "
-        "profile", calibrate_cmd,
-        "halide calibrate portra-roll-03/",
-        'halide calibrate --profile "Portra 400"')
+    add("open", "Open the halide window: load a roll, pick neutral points or use a saved "
+        "profile, save profiles", open_cmd,
+        "halide open portra-roll-03/",
+        'halide open --profile "Portra 400"')
     add("gpu", "Find an NVIDIA GPU and report or add optional GPU support", gpu_cmd,
         "halide gpu",
         "halide gpu --install")
@@ -143,8 +143,8 @@ def main(argv: list[str] | None = None) -> int:
         return check_cmd.run(args)
     if args.command == "profile":
         return profile_cmd.run(args)
-    if args.command == "calibrate":
-        return calibrate_cmd.run(args)
+    if args.command == "open":
+        return open_cmd.run(args)
     if args.command == "gpu":
         return gpu_cmd.run(args)
 

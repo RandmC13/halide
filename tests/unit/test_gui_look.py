@@ -13,7 +13,8 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from halide.gui import theme
-from halide.gui.main_window import ImageView, MainWindow
+from halide.gui.image_view import ImageView
+from halide.gui.main_window import MainWindow
 from tests.unit.test_gui_picker_smoke import _frame_ready, _pump, _write_frame
 
 
@@ -34,17 +35,19 @@ def test_top_bar_counter_chip_and_contact_sheet_button(tmp_path, monkeypatch, ap
         _write_frame(roll / f"frame_{i:02d}.tiff", seed=i)
     window = MainWindow()
     window.show()
-    assert window.frame_counter.text() == ""
+    assert window.frame_counter.text() == "" and window.windowTitle() == "halide"
     window.load_roll(roll)
     _pump(app, lambda: _frame_ready(window, 0))
-    assert _plain(window.frame_counter) == "FRAME 01 / 03"
+    assert _plain(window.frame_counter) == "FRAME 01 / 03" and window.windowTitle() == "halide · roll"
     QTest.keyClick(window, Qt.Key.Key_Right)
     _pump(app, lambda: _frame_ready(window, 1))
     assert _plain(window.frame_counter) == "FRAME 02 / 03"
     assert not window.proof_button.isEnabled()
     before = window.profile_chip.text()
+    assert window.last_saved is None
     window._on_saved("X", "msg")
     assert window.profile_chip.text() != before and "X" in _plain(window.profile_chip)
+    assert window.last_saved == ("X", roll)  # what `halide open` names in its next step
     window._closing = True
     window.close()
 
@@ -113,7 +116,7 @@ def test_long_roll_and_profile_names_are_cut_so_the_top_bar_buttons_fit(tmp_path
     assert window.roll_label.toolTip() == long_name.upper() and "…" in window.roll_label.text()
     from PySide6.QtWidgets import QPushButton
 
-    top = [b for b in window.findChildren(QPushButton) if b.text() in ("Contact sheet", "Open profile…", "Load roll…")]
+    top = [b for b in window.findChildren(QPushButton) if b.text() in ("Contact sheet", "Profiles", "Load roll…")]
     assert len(top) == 3
     for button in top:  # whole, and inside the window
         assert button.mapTo(window, button.rect().bottomRight()).x() <= window.width()

@@ -122,9 +122,8 @@ def test_save_and_restore_round_trip(tmp_path):
     path = save_named_profile(profile, "roll16", profiles_dir=tmp_path / "profiles", **session.sidecars())
 
     restored = CalibrationSession()
-    folder = restored.restore(path)
-    assert folder == tmp_path
-    restored.set_roll(paths, [AT_1_30] * 3, folder)
+    restored.restore(path)
+    restored.set_roll(paths, [AT_1_30] * 3, session.roll_folder)
     assert restored.points == session.points
     assert restored.details["notes"] == "trike + shirt"
     assert restored.tone_override.exposure == pytest.approx(0.2)
@@ -138,7 +137,7 @@ def test_restore_reattaches_points_to_a_moved_roll_by_file_name(tmp_path):
     path = save_named_profile(old.profile_to_save(), "moved", profiles_dir=tmp_path / "profiles", **old.sidecars())
 
     session = CalibrationSession()
-    assert session.restore(path) is None  # the recorded roll folder doesn't exist any more
+    session.restore(path)
     moved = [tmp_path / "new" / n for n in ("a.tif", "b.tif", "c.tif")]
     session.set_roll(moved, [AT_1_30] * 3, tmp_path / "new")
     assert [p.frame for p in session.points] == moved
@@ -173,7 +172,7 @@ def test_reset_starts_over(tmp_path):
 
 
 def test_a_roll_loaded_by_relative_path_is_saved_as_absolute(tmp_path, monkeypatch):
-    # `halide calibrate Roll16` from the folder above the roll: the profile must reopen from anywhere.
+    # `halide open Roll16` from the folder above the roll: the profile must reopen from anywhere.
     monkeypatch.chdir(tmp_path)
     session = CalibrationSession()
     relative = [Path("roll") / n for n in ("a.tif", "b.tif", "c.tif")]
@@ -181,32 +180,15 @@ def test_a_roll_loaded_by_relative_path_is_saved_as_absolute(tmp_path, monkeypat
     for i, g in enumerate((0.8, 1.2, 1.6)):
         session.add_point(_pt(session.frames[i].path, g))
     sidecars = session.sidecars()
-    assert sidecars["roll"] == str(tmp_path / "roll")
+    assert "roll" not in sidecars
     assert [a["frame"] for a in sidecars["anchors"]] == [str(tmp_path / "roll" / n) for n in ("a.tif", "b.tif", "c.tif")]
 
     (tmp_path / "roll").mkdir()
     path = save_named_profile(session.profile_to_save(), "rel", profiles_dir=tmp_path / "profiles", **sidecars)
     monkeypatch.chdir(tmp_path / "profiles")  # somewhere else entirely
     reopened = CalibrationSession()
-    assert reopened.restore(path) == tmp_path / "roll"
-
-
-def test_an_older_profile_with_relative_paths_still_reads_against_the_current_folder(tmp_path, monkeypatch):
-    session, paths = _session(tmp_path)
-    for p in paths:
-        p.write_bytes(b"")
-    for i, g in enumerate((0.8, 1.2, 1.6)):
-        session.add_point(_pt(paths[i], g))
-    sidecars = session.sidecars()
-    sidecars["roll"] = tmp_path.name
-    for a in sidecars["anchors"]:
-        a["frame"] = str(Path(a["frame"]).relative_to(tmp_path.parent))
-    path = save_named_profile(session.profile_to_save(), "old", profiles_dir=tmp_path / "profiles", **sidecars)
-
-    monkeypatch.chdir(tmp_path.parent)
-    reopened = CalibrationSession()
-    assert reopened.restore(path) == tmp_path
-    assert [p.frame for p in reopened.points] == paths
+    reopened.restore(path)
+    assert [p.frame for p in reopened.points] == [tmp_path / "roll" / n for n in ("a.tif", "b.tif", "c.tif")]
 
 
 def test_missing_frames_are_the_picked_frames_that_have_gone(tmp_path):
@@ -219,53 +201,23 @@ def test_missing_frames_are_the_picked_frames_that_have_gone(tmp_path):
     paths[1].unlink()  # deleted from the roll since
 
     reopened = CalibrationSession()
-    assert reopened.restore(path) == tmp_path
-    assert reopened.recorded_roll == tmp_path
+    reopened.restore(path)
     reopened.set_roll([paths[0], paths[2]], [AT_1_30] * 2, tmp_path)
     assert reopened.missing_frames() == [paths[1]]
     assert len(reopened.points) == 3  # its point still counts in the fit
 
 
-def test_a_moved_roll_is_reported_as_the_recorded_folder(tmp_path):
+def test_a_moved_roll_is_found_again_by_file_name(tmp_path):
     old, old_paths = _session(tmp_path / "old")
     for i, g in enumerate((0.8, 1.2, 1.6)):
         old.add_point(_pt(old_paths[i], g))
     path = save_named_profile(old.profile_to_save(), "moved", profiles_dir=tmp_path / "profiles", **old.sidecars())
 
     session = CalibrationSession()
-    assert session.restore(path) is None
-    assert session.recorded_roll == tmp_path / "old"
+    session.restore(path)
     assert session.missing_frames() == old_paths  # nothing loaded, nothing on disk
     session.set_roll([tmp_path / "new" / n for n in ("a.tif", "b.tif", "c.tif")], [AT_1_30] * 3, tmp_path / "new")
     assert session.missing_frames() == []  # all re-attached by file name
-
-
-def test_an_older_relative_profile_opened_from_another_folder_isnt_given_a_guessed_path(tmp_path, monkeypatch):
-    roll = tmp_path / "films" / "pre-processed"
-    roll.mkdir(parents=True)
-    session, paths = _session(roll)
-    for i, g in enumerate((0.8, 1.2, 1.6)):
-        session.add_point(_pt(paths[i], g))
-    sidecars = session.sidecars()
-    sidecars["roll"] = "pre-processed"  # as older profiles recorded `halide calibrate pre-processed`
-    for a in sidecars["anchors"]:
-        a["frame"] = str(Path(a["frame"]).relative_to(tmp_path / "films"))
-    path = save_named_profile(session.profile_to_save(), "old", profiles_dir=tmp_path / "profiles", **sidecars)
-
-    monkeypatch.chdir(tmp_path)  # not the folder it was made in
-    reopened = CalibrationSession()
-    assert reopened.restore(path) is None
-    assert reopened.recorded_roll == Path("pre-processed")  # as recorded, not tmp_path/pre-processed
-    assert reopened.missing_frames() == sorted(Path("pre-processed") / n for n in ("a.tif", "b.tif", "c.tif"))
-    resaved = reopened.sidecars()  # "Continue without", then Save
-    assert resaved["roll"] == "pre-processed"
-    assert [a["frame"] for a in resaved["anchors"]] == [f"pre-processed/{n}" for n in ("a.tif", "b.tif", "c.tif")]
-
-    reopened.set_roll(paths, [AT_1_30] * 3, roll)  # Find roll…: now it records the real full path
-    assert reopened.missing_frames() == []
-    found = reopened.sidecars()
-    assert found["roll"] == str(roll)
-    assert [a["frame"] for a in found["anchors"]] == [str(p) for p in paths]
 
 
 def test_a_fit_the_points_dont_pin_down_is_reported_not_raised(tmp_path):
@@ -310,3 +262,19 @@ def test_reliability_follows_the_fit_and_the_rolls_range(tmp_path):
     session.add_point(_pt(paths[0], 0.5, x=300))
     session.add_point(_pt(paths[2], 1.55, x=300))
     assert session.reliability().warning() is None
+
+
+def test_set_rolls_numbers_each_roll_from_one_and_keeps_them_apart(tmp_path):
+    session = CalibrationSession()
+    one, two = tmp_path / "one", tmp_path / "two"
+    session.set_rolls([
+        (one, [one / "a.tif", one / "b.tif"], [AT_1_30] * 2),
+        (two, [two / "a.tif", two / "b.tif", two / "c.tif"], [AT_1_30] * 3),
+    ])
+    assert [f.number for f in session.frames] == [1, 2, 1, 2, 3]
+    assert [f.roll for f in session.frames] == [one] * 2 + [two] * 3
+    assert session.rolls == [one, two] and session.roll_folder is None
+    session.set_rolls([(one, [one / "a.tif"], [AT_1_30])])
+    assert session.roll_folder == one and session.rolls == [one]
+    session.set_rolls([(None, [one / "a.tif"], [AT_1_30])])  # loose scans belong to their folder
+    assert session.rolls == [one] and session.roll_folder is None
