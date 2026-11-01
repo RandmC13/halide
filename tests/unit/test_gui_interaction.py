@@ -148,12 +148,13 @@ def test_clear_buttons_remove_points_only_when_confirmed(window, monkeypatch, ap
     assert all(p.frame == window.session.frames[1].path for p in window.session.points)
 
 
-def test_save_and_contact_sheet_need_two_separated_points(window):
-    assert not window.primary_button.isEnabled() and not window.proof_button.isEnabled()
+def test_save_develop_and_contact_sheet_need_two_separated_points(window):
+    buttons = (window.save_button, window.primary_button, window.proof_button)
+    assert not any(b.isEnabled() for b in buttons)
     _click_image(window, SHADOW)
-    assert not window.primary_button.isEnabled() and not window.proof_button.isEnabled()
+    assert not any(b.isEnabled() for b in buttons)
     _click_image(window, HIGHLIGHT)
-    assert window.primary_button.isEnabled() and window.proof_button.isEnabled()
+    assert all(b.isEnabled() for b in buttons)
 
 
 def test_drawer_summaries_follow_the_film_stock_and_the_print_sliders(window):

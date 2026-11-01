@@ -10,8 +10,9 @@ Layout (landscape, fixed size, never scrolls - see _compute_window_size):
                   the negative; never soften it) · status line
   right panel     step wedge (gui/step_wedge.py) · neutral points list (gui/point_list.py) · notice
                   line · Extra information / Print / Details drawers (gui/drawers.py,
-                  accordion) · the one red primary button: Save profile (Develop in the
-                  one-shot `invert --pick` flow)
+                  accordion) · Save profile (quiet) and Develop roll… (the one red button), which turns the
+                  panel over to the develop side (gui/develop_panel.py) and its summary; in the
+                  one-shot `invert --pick` flow a single red Develop
 
 All picking state and logic is in gui/roll.py::CalibrationSession (no Qt); this module lays out the
 widgets and keeps them in step with it. Picks always sample the raw full-resolution negative
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -46,7 +48,8 @@ from halide.cli import console
 from halide.core.tone_render import ResolvedTone
 from halide.core.types import DensityProfile, ToneCurveParams
 from halide.device import ComputeDevice
-from halide.gui import theme
+from halide.gui import motion, theme
+from halide.gui.develop_panel import DevelopPanel
 from halide.gui.drawers import Accordion, Drawer, PrintControls, RollDetailsForm
 from halide.gui.filmstrip import Filmstrip
 from halide.gui.image_view import ImageView
@@ -173,6 +176,8 @@ class MainWindow(QWidget):
         # person moves to another frame themselves.
         self._sticky_status: str | None = None
         self._scan_flags_by_index: dict[int, str] = {}
+        self._loose = False  # the open frames are loose scans, not a roll folder
+        self._exposure_differs = False  # the scan check found frames digitized at different exposures
         self._proof: ProofWindow | None = None
         self._preview_loader: PreviewLoader | None = None
         self._frame_loader: FrameLoader | None = None
@@ -310,7 +315,6 @@ class MainWindow(QWidget):
         panel = QVBoxLayout()
         panel.setSpacing(6)
         panel_widget = QWidget()
-        panel_widget.setFixedWidth(_PANEL_WIDTH)
         panel_widget.setLayout(panel)
 
         coverage_title = QLabel("Coverage of the roll's densities")
@@ -385,12 +389,44 @@ class MainWindow(QWidget):
         self._accordion.openChanged.connect(self._on_drawer_opened)
         panel.addWidget(self._accordion)
 
-        self.primary_button = QPushButton("Develop" if self.is_pick_session else "Save profile")
+        # The points state ends in Save profile (quiet) and Develop roll… (the one red button); the
+        # one-shot `invert --pick` window has just a red Develop.
+        self.primary_button = QPushButton("Develop" if self.is_pick_session else "Develop roll\u2026")
         self.primary_button.setProperty("role", "primary")
         self.primary_button.setEnabled(False)
-        self.primary_button.clicked.connect(self._on_primary_clicked)
-        panel.addWidget(self.primary_button)
-        body.addWidget(panel_widget)
+        if self.is_pick_session:
+            self.primary_button.clicked.connect(self._on_primary_clicked)
+            panel.addWidget(self.primary_button)
+        else:
+            self.primary_button.clicked.connect(self._open_develop)
+            self.save_button = QPushButton("Save profile")
+            self.save_button.setEnabled(False)
+            self.save_button.clicked.connect(self._on_save_clicked)
+            buttons = QHBoxLayout()
+            buttons.addWidget(self.save_button)
+            buttons.addWidget(self.primary_button)
+            panel.addLayout(buttons)
+        # The right panel is a stack of three states: points, develop, summary.
+        self._stack = QStackedWidget()
+        self._stack.setFixedWidth(_PANEL_WIDTH)
+        self._stack.addWidget(panel_widget)
+        if not self.is_pick_session:
+            self.develop_panel = DevelopPanel()
+            self.develop_panel.backClicked.connect(lambda: self._turn_to(0))
+            self.develop_panel.developClicked.connect(self._start_develop)
+            self._stack.addWidget(self.develop_panel)
+            summary = QWidget()
+            summary_col = QVBoxLayout(summary)
+            summary_col.setContentsMargins(0, 0, 0, 0)
+            self.summary_back = QPushButton("\u2190 Back to points")
+            self.summary_back.clicked.connect(lambda: self._turn_to(0))
+            back_row = QHBoxLayout()
+            back_row.addWidget(self.summary_back)
+            back_row.addStretch(1)
+            summary_col.addLayout(back_row)
+            summary_col.addStretch(1)
+            self._stack.addWidget(summary)
+        body.addWidget(self._stack)
         self._refresh_drawer_summaries()
 
     # --- loading --------------------------------------------------------------------------------
@@ -461,18 +497,20 @@ class MainWindow(QWidget):
         """Individual scans as a roll of their own (`halide open a.tif b.tif`, `invert --pick`)."""
         if not keep_points:
             self._new_calibration()
-        self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None)
+        self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None, loose=True)
 
-    def _start_roll(self, paths: list[Path], folder: Path | None) -> None:
-        self._start_rolls([(folder, paths)])
+    def _start_roll(self, paths: list[Path], folder: Path | None, loose: bool = False) -> None:
+        self._start_rolls([(folder, paths)], loose)
 
-    def _start_rolls(self, rolls: list[tuple[Path | None, list[Path]]]) -> None:
+    def _start_rolls(self, rolls: list[tuple[Path | None, list[Path]]], loose: bool = False) -> None:
         """Load one or more rolls side by side in the filmstrip. Each roll's scan check is its own:
         rolls may legitimately differ from one another."""
         self._stop_loaders()
         self._generation += 1
         generation = self._generation
+        self._loose = loose
         self._pending_flash = None
+        self._turn_to(0, animate=False)  # the roll the develop side was set up for is gone
         if self._proof is not None:  # its frames belong to the roll being replaced
             old, self._proof = self._proof, None
             old.close()
@@ -498,8 +536,11 @@ class MainWindow(QWidget):
             at += len(roll_paths)
         self.filmstrip.strip.set_frames([f.number for f in self.session.frames], starts if len(rolls) > 1 else None)
         flags: dict[str, str] = {}
+        self._exposure_differs = False
         for _, roll_paths in rolls:
-            flags.update(frame_flags(assess_roll({str(p): metadata[str(p)] for p in roll_paths})))
+            report = assess_roll({str(p): metadata[str(p)] for p in roll_paths})
+            flags.update(frame_flags(report))
+            self._exposure_differs = self._exposure_differs or report.exposure_inconsistent
         # Keyed by the paths as given (relative when typed so on the command line), in frame order.
         self._scan_flags_by_index = {i: flags[str(p)] for i, p in enumerate(paths) if str(p) in flags}
         self.filmstrip.strip.set_flags(self._scan_flags_by_index)
@@ -1034,6 +1075,7 @@ class MainWindow(QWidget):
             self._proof.mark_stale(self._on_proof)
 
     def _refresh_points(self) -> None:
+        self._turn_to(0)  # the develop side was set up for the calibration as it was
         views = self.session.views()
         self.point_list.set_rows(views, self.session.selected, self._profile_card())
         self._refresh_using_chip()
@@ -1045,8 +1087,18 @@ class MainWindow(QWidget):
         self._refresh_notice(views)
         self._refresh_details(views)
         fitted = self.session.profile() is not None
-        self.primary_button.setEnabled(fitted)
         one_roll = len(self.session.rolls) <= 1
+        if self.is_pick_session:
+            self.primary_button.setEnabled(fitted)
+        else:
+            self.save_button.setEnabled(fitted)
+            folder = self._develop_folder()
+            self.primary_button.setEnabled(fitted and folder is not None)
+            self.primary_button.setToolTip(
+                "Develop the whole roll with this calibration" if fitted and folder is not None
+                else "Develop works on one roll folder: open a single roll" if fitted
+                else "Click two neutral points of different densities first, or use a profile"
+            )
         self.proof_button.setEnabled(fitted and bool(self.session.frames) and one_roll)
         self.proof_button.setToolTip(
             "A zoomable contact sheet of the whole roll printed with this calibration" if one_roll
@@ -1233,20 +1285,70 @@ class MainWindow(QWidget):
 
     # --- save / develop -------------------------------------------------------------------------
 
-    def _on_primary_clicked(self) -> None:
-        profile = self.session.profile()
-        if profile is None:
-            return
+    def _print_view_notes(self) -> None:
         for view in self.session.views():
             if view.note:
                 print(console.warning(view.note))
-        if self.is_pick_session:
-            self._pick_result_emitted = True
-            reliability = self.session.reliability()
-            note = reliability.warning() if reliability is not None else None
-            self.pickCompleted.emit((profile, self.session.tone_override, note))
-            self.close()
+
+    def _on_primary_clicked(self) -> None:
+        """The one-shot pick window's Develop: hand the profile back and close."""
+        profile = self.session.profile()
+        if profile is None:
             return
+        self._print_view_notes()
+        self._pick_result_emitted = True
+        reliability = self.session.reliability()
+        note = reliability.warning() if reliability is not None else None
+        self.pickCompleted.emit((profile, self.session.tone_override, note))
+        self.close()
+
+    def _develop_folder(self) -> Path | None:
+        """The one roll folder Develop works on; None for several rolls or loose scans."""
+        return None if self._loose or len(self.session.rolls) != 1 else self.session.roll_folder
+
+    def _turn_to(self, index: int, animate: bool = True) -> None:
+        """Turn the right panel over to another state (0 points, 1 develop, 2 summary): the new one
+        swings in from the side it lies on."""
+        if self.is_pick_session or index == self._stack.currentIndex():
+            return
+        forward = index > self._stack.currentIndex()
+        self._stack.setCurrentIndex(index)
+        page = self._stack.currentWidget()
+        if not animate:
+            return
+        shift = _PANEL_WIDTH // 3 * (1 if forward else -1)
+
+        def swing(value: float) -> None:
+            page.move(round(shift * (1 - value)), 0)
+
+        motion.animate(self._stack, "turn", 0.0, 1.0, 280, swing, lambda: page.setGeometry(self._stack.rect()))
+
+    def _open_develop(self) -> None:
+        folder = self._develop_folder()
+        session = self.session
+        if folder is None or session.profile() is None:
+            return
+        in_use = session.profile_in_use
+        path = None
+        if in_use is not None:
+            case, path, name = ("refined" if session.changed_from_profile() else "profile"), in_use, in_use.stem
+        elif self._profile_name and session.points == self._saved_points and (path := find_profile(self._profile_name)):
+            case, name = "profile", self._profile_name
+        else:
+            case, name = "new", ""
+        self.develop_panel.prepare(
+            folder, case, profile_path=path, name=name, new_points=len(session.new_points()),
+            suggested_name="" if in_use is not None else self._profile_name, exposure_differs=self._exposure_differs,
+        )
+        self._turn_to(1)
+
+    def _start_develop(self, settings, choice) -> None:
+        """Run the roll with these settings (the run itself is not built yet)."""
+
+    def _on_save_clicked(self) -> None:
+        if self.session.profile() is None:
+            return
+        self._print_view_notes()
         in_use = self.session.profile_in_use
         dialog = SaveProfileDialog(
             self, self.session.profile_to_save(), self.session.sidecars(),
