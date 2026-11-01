@@ -411,8 +411,14 @@ class SaveStamp(QWidget):
     def text(self) -> str:
         return self._text
 
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt override
+        font = theme.edge_font(11)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
+        return QSize(QFontMetrics(font).horizontalAdvance(self._text) + 20, 22)  # 4 spare: Qt elides text that fits exactly
+
     def stamp(self, name: str) -> None:
         self._text = f"{name.upper()} \u2192 SAVED"
+        self.setMinimumWidth(self.sizeHint().width())  # the top bar's stretch must not cut the name
         self.show()
 
         def set_progress(value: float) -> None:
@@ -671,6 +677,10 @@ class MainWindow(QWidget):
         self.profile_chip = QLabel("New calibration")
         self.profile_chip.setProperty("role", "dim")
         top.addWidget(self.profile_chip)
+        # A save stamps the profile's name where the chip was, rather than taking a row of the panel,
+        # which can't spare the height in the smallest window.
+        self.save_stamp = SaveStamp()
+        top.addWidget(self.save_stamp)
         top.addStretch(1)
         self.proof_button = QPushButton("Contact sheet")
         self.proof_button.setToolTip("A zoomable contact sheet of the whole roll printed with this calibration")
@@ -813,8 +823,6 @@ class MainWindow(QWidget):
         self._panel = panel
         self._accordion = Accordion(drawers)
         self._accordion.openChanged.connect(self._on_drawer_opened)
-        self.save_stamp = SaveStamp()
-        panel.addWidget(self.save_stamp)
         panel.addWidget(self._accordion)
 
         self.primary_button = QPushButton("Develop" if self.is_pick_session else "Save calibration profile")
@@ -1249,6 +1257,7 @@ class MainWindow(QWidget):
     def _points_changed(self) -> None:
         """The fit may have changed: everything that shows it follows."""
         self.save_stamp.hide()
+        self.profile_chip.show()
         self._refresh_points()
         self._proof_is_stale()
         if self._positive_mode():
@@ -1338,6 +1347,7 @@ class MainWindow(QWidget):
             text, colour = "", theme.TEXT_DIM
         self.notice.setText(text)
         self.notice.setStyleSheet(f"color: {colour};")
+        self.notice.setVisible(bool(text))  # an empty notice keeps no height from the point list
 
     def _refresh_details(self, views: list[PointView]) -> None:
         lines = []
@@ -1464,11 +1474,14 @@ class MainWindow(QWidget):
 
     def _show_profile_name(self, name: str) -> None:
         self.profile_chip.setText(f"Profile <b>{html.escape(name)}</b>")
+        self.save_stamp.hide()
+        self.profile_chip.show()
 
     def _on_saved(self, name: str, message: str) -> None:
         self._profile_name = name
         self._show_profile_name(name)
         self._saved_points = list(self.session.points)
+        self.profile_chip.hide()
         self.save_stamp.stamp(name)
         self._status(message)
 

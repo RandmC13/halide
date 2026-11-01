@@ -85,6 +85,7 @@ class Drawer(QWidget):
         super().__init__()
         self._title = title
         self.expanding = expanding
+        self._max_height = max_height
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
@@ -102,6 +103,8 @@ class Drawer(QWidget):
         else:
             # Open to exactly the content's own height (capped): a drawer that opens shorter than its
             # content hides fields behind an inner scrollbar, which reads as broken, not compact.
+            # Measured again on opening (set_open): the stylesheet applied after construction can
+            # make the content taller than it measured here.
             self.body.setFixedHeight(min(max_height, content.sizeHint().height() + 4))
         layout.addWidget(self.body)
         self.set_open(False)
@@ -111,6 +114,8 @@ class Drawer(QWidget):
         self.header.update()
 
     def set_open(self, open_: bool) -> None:
+        if open_ and not self.expanding:
+            self.body.setFixedHeight(min(self._max_height, self.body.widget().sizeHint().height() + 4))
         self.header.setChecked(open_)
         self.header.update()
         self.body.setVisible(open_)

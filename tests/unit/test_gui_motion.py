@@ -48,5 +48,6 @@ def test_save_stamp_shows_after_a_save_and_hides_when_points_change(window):
     _click_image(window, SHADOW)
     window._on_saved("Portra 400", "saved")
     assert window.save_stamp.isVisible() and "PORTRA 400" in window.save_stamp.text()
+    assert not window.profile_chip.isVisible()  # the stamp stands where the profile chip was
     _click_image(window, HIGHLIGHT)
-    assert not window.save_stamp.isVisible()
+    assert not window.save_stamp.isVisible() and window.profile_chip.isVisible()
