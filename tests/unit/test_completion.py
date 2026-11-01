@@ -250,3 +250,10 @@ def test_generated_scripts_list_profiles_from_application_support_on_macos(monke
         assert "$HOME/.config" not in script.replace("~/.config/fish", "")
     monkeypatch.setattr("sys.platform", "linux")
     assert "$HOME/.config" in completion.bash_script(build_parser())
+
+
+def test_name_templates_are_not_completed_as_profiles():
+    subparsers = dict(completion._subparsers(build_parser()))
+    for command in ("batch", "print", "export"):
+        action = next(a for a in subparsers[command]._actions if a.dest == "name")
+        assert completion._kind(command, action) is None, command

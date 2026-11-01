@@ -87,7 +87,7 @@ def test_running_again_without_a_policy_refuses_once(holiday):
 def test_existing_outputs_are_refused_once_for_all_rolls(holiday, tmp_path):
     out = tmp_path / "Out"
     assert _batch(holiday, out, "--recursive") == 0
-    with pytest.raises(SystemExit, match=r"4 of 4 outputs already exist.*--overwrite.*--skip-existing") as exc:
+    with pytest.raises(SystemExit, match=r"4 of 4 outputs already exist in 2 folders.*--overwrite.*--skip-existing") as exc:
         _batch(holiday, out, "--recursive")
     assert str(exc.value).count("already exist") == 1
 

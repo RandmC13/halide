@@ -52,6 +52,10 @@ _KINDS = {
 # (subcommand, dest) exceptions to the table above.
 _KIND_OVERRIDES = {
     ("contact", "inputs"): "file",  # processed TIFFs or exported PNG/JPEGs, then the sheet to write
+    # --name is a naming template on the developing commands, not a profile
+    ("batch", "name"): None,
+    ("print", "name"): None,
+    ("export", "name"): None,
 }
 
 # shtab completers per kind. zsh: an action for _arguments (`man zshcompsys`); `(#i)` =

@@ -132,7 +132,8 @@ def resolve_existing(
         )
         decline_hint = "(--skip-existing leaves it as is.)"
     else:
-        where = existing[0][1] if n == 1 else existing[0][1].parent
+        folders = {out.parent for _, out in existing}
+        where = existing[0][1] if n == 1 else folders.pop() if len(folders) == 1 else f"{len(folders)} folders"
         question = f"{n} of {total} outputs already exist in {where} — overwrite them?"
         refusal = (
             f"{n} of {total} outputs already exist in {where}. Add --overwrite to replace them, "
