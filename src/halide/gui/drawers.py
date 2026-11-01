@@ -5,7 +5,7 @@ grow or scroll (the same reason the original Details panel became a fixed-height
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -31,18 +31,21 @@ _EXPOSURE_RANGE = (-200, 200)  # hundredths, i.e. -2.00..2.00
 _GRADE_RANGE = (1, 100)  # hundredths, i.e. 0.01..1.00; a grade of 0 has no print to render
 
 
-_RULE = "#2a241e"  # the hairline under a drawer header
 _HEADER_HEIGHT = 26
 
 
 class _DrawerHeader(QToolButton):
     """A flat full-width row: the title on the left, a dim summary of what's inside on the right,
-    and a hairline under it. The title brightens when the drawer is open or the pointer is over it."""
+    and a hairline under it. An open drawer's title is bright; hovering brightens the summary
+    instead, so hover never looks like open. Disabled (Print on the negative) it is dimmer still and
+    doesn't react. Keyboard focus draws an outline. The title is also the button's text, for screen
+    readers."""
 
     def __init__(self, title: str) -> None:
         super().__init__()
         self.title = title
         self.summary = ""
+        self.setText(title)
         self.setCheckable(True)
         self.setFixedHeight(_HEADER_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -51,18 +54,29 @@ class _DrawerHeader(QToolButton):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
         w, h = self.width(), self.height()
-        bright = self.isChecked() or self.underMouse()
+        enabled = self.isEnabled()
+        hover = enabled and self.underMouse()
         painter.setFont(self.font())
         metrics = QFontMetrics(self.font())
-        painter.setPen(QColor(theme.TEXT if bright else theme.TEXT_DIM))
+        title_colour = theme.TEXT if (enabled and self.isChecked()) else theme.TEXT_DIM if enabled else theme.BORDER
+        painter.setPen(QColor(title_colour))
         title_w = metrics.horizontalAdvance(self.title)
         painter.drawText(QRectF(2, 0, title_w + 2, h - 1), Qt.AlignmentFlag.AlignVCenter, self.title)
         room = w - title_w - 24
         if room > 20:
-            painter.setPen(QColor(theme.TEXT_DIM))
+            painter.setPen(QColor(theme.TEXT if hover else theme.TEXT_DIM if enabled else theme.BORDER))
             text = metrics.elidedText(self.summary, Qt.TextElideMode.ElideRight, room)
             painter.drawText(QRectF(title_w + 16, 0, w - title_w - 18, h - 1), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, text)
-        painter.fillRect(0, h - 1, w, 1, QColor(_RULE))
+        painter.fillRect(0, h - 1, w, 1, QColor(theme.RULE))
+        if self.hasFocus():
+            painter.setPen(QColor(theme.AMBER_ACTIVE))
+            painter.drawRect(0, 0, w - 1, h - 2)
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            self.setCursor(Qt.CursorShape.PointingHandCursor if self.isEnabled() else Qt.CursorShape.ArrowCursor)
+            self.update()
 
     def enterEvent(self, event) -> None:  # noqa: N802
         super().enterEvent(event)

@@ -22,8 +22,8 @@ _BAR_TOP = 14
 _BAR_HEIGHT = 18  # tall enough for the density labels inside the bands
 _TICK_ROW = _BAR_TOP + _BAR_HEIGHT + 3
 _LABEL_H = 13
-_RELIABLE_H = 8
-_STUB = 4  # length of a point's tick inside the bar, from each edge  # the reliable-range bracket's row, between the tick labels and the caption
+_RELIABLE_H = 8  # the reliable-range bracket's row, between the tick labels and the caption
+_STUB = 4  # length of a point's tick inside the bar, from each edge
 
 
 def band_labels(density_range: tuple[float, float], steps: int) -> list[str]:
@@ -95,9 +95,12 @@ class StepWedge(QWidget):
         painter.setFont(font)
         labels = band_labels(self._range, _STEPS)
         text_w = QFontMetrics(font).horizontalAdvance(labels[0])
-        # Every other band: a label in all of them crowds the bar and runs under the point ticks.
-        stride = 2 if 2 * step_w >= text_w + 4 else 0
-        for i in range(0, _STEPS if stride else 0, stride or 1):
+        # Every other band: a label in all of them crowds the bar and runs under the point ticks. A
+        # label may spill into its unlabelled neighbours, but needs that much room or none is drawn.
+        if 2 * step_w < text_w + 4:
+            painter.restore()
+            return
+        for i in range(0, _STEPS, 2):
             dark = round(255 * (i / (_STEPS - 1)) ** (1 / 2.2)) < 128
             painter.setPen(QColor(theme.TEXT if dark else theme.BACKGROUND))
             painter.drawText(QRectF(left + i * step_w, _BAR_TOP, step_w, _BAR_HEIGHT), Qt.AlignmentFlag.AlignCenter, labels[i])

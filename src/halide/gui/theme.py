@@ -28,6 +28,9 @@ RED = "#c4342a"
 RED_HOVER = "#e0453a"
 RED_ACTIVE = "#f5584c"
 RED_EDGE = "#7a1f18"  # the primary button's lower lip
+RULE = "#2a241e"  # hairlines, e.g. under a drawer header
+LOUPE_RING = "#1a1714"
+READOUT_BG = "#0e0c0a"  # behind the loupe's density readout
 
 # Neutral-point agreement (calibration/anchors.py bands): the markers on the image, the point list
 # and the step wedge's ticks all read these, so a point is the same colour everywhere. AGREE_RED is
@@ -115,7 +118,9 @@ QPushButton[role="primary"]:hover {{
 }}
 QPushButton[role="primary"]:pressed {{
     background-color: {RED_ACTIVE};
-    border-bottom: none;
+    /* All four sides reset: a pressed button is also focused, and the focus ring's side borders
+       would otherwise add to this padding and shift the label sideways. */
+    border: none;
     border-top: 2px solid {RED_EDGE};  /* the lip moves to the top: the label sits 1 px lower */
     padding: 9px 18px 9px 18px;
 }}

@@ -84,6 +84,10 @@ from halide.processing import read_roll_scan_metadata
 _WINDOW_MIN = QSize(900, 700)
 _WINDOW_MAX = QSize(1400, 900)
 _PANEL_WIDTH = 340
+# Names in the top bar are cut beyond these widths (full name in the tooltip), so at the 900 px floor
+# the roll name, counter, profile stamp and three buttons all fit on one row.
+_ROLL_NAME_MAX_W = 160
+_PROFILE_NAME_MAX_W = 140
 _LAYOUT_MARGIN = 14
 # The frame sits in a strip of film: more rebate above and below (where the edge print runs) than at the sides.
 _CARRIER_MARGIN_X = 16
@@ -238,12 +242,13 @@ class ImageView(QWidget):
 
     def _image_rect(self) -> QRectF | None:
         """Where the image is drawn: scaled to fit inside the rebate, centred."""
-        if self._pixmap is None:
-            return None
+        return None if self._pixmap is None else self._fit_rect(self._pixmap)
+
+    def _fit_rect(self, pixmap: QPixmap) -> QRectF:
         avail_w = self.width() - 2 * _CARRIER_MARGIN_X
         avail_h = self.height() - 2 * _CARRIER_MARGIN_Y
-        scale = min(avail_w / self._pixmap.width(), avail_h / self._pixmap.height())
-        w, h = self._pixmap.width() * scale, self._pixmap.height() * scale
+        scale = min(avail_w / pixmap.width(), avail_h / pixmap.height())
+        w, h = pixmap.width() * scale, pixmap.height() * scale
         return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
 
     def _scale(self) -> float:
@@ -263,7 +268,8 @@ class ImageView(QWidget):
         painter.fillRect(self.rect(), QColor(theme.FILM_REBATE))
         self._paint_edge_print(painter)
         if self._old_pixmap is not None and self._blend < 1.0:
-            painter.drawPixmap(rect, self._old_pixmap, QRectF(self._old_pixmap.rect()))
+            # In its own fitted rect: the outgoing picture may be another shape (a frame still loading).
+            painter.drawPixmap(self._fit_rect(self._old_pixmap), self._old_pixmap, QRectF(self._old_pixmap.rect()))
         painter.setOpacity(self._blend)
         painter.drawPixmap(rect, self._pixmap, QRectF(self._pixmap.rect()))
         painter.setOpacity(1.0)
@@ -416,8 +422,12 @@ class SaveStamp(QWidget):
         return QSize(QFontMetrics(font).horizontalAdvance(self._text) + 20, 22)  # 4 spare: Qt elides text that fits exactly
 
     def stamp(self, name: str) -> None:
-        self._text = f"{name.upper()} \u2192 SAVED"
-        self.setMinimumWidth(self.sizeHint().width())  # the top bar's stretch must not cut the name
+        font = theme.edge_font(11)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
+        short = QFontMetrics(font).elidedText(name.upper(), Qt.TextElideMode.ElideMiddle, _PROFILE_NAME_MAX_W)
+        self._text = f"{short} \u2192 SAVED"
+        self.setToolTip(name)
+        self.setMinimumWidth(self.sizeHint().width())  # the top bar's stretch must not cut it further
         self.show()
 
         def set_progress(value: float) -> None:
@@ -484,7 +494,7 @@ class Magnifier(QWidget):
             painter.drawPixmap(lens, self._pixmap, QRectF(self._pixmap.rect()))
             painter.restore()
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor("#1a1714"), 3))
+        painter.setPen(QPen(QColor(theme.LOUPE_RING), 3))
         painter.drawEllipse(lens.adjusted(1.5, 1.5, -1.5, -1.5))
         centre = lens.center()
         cross = QColor(255, 255, 255, 128)
@@ -494,11 +504,11 @@ class Magnifier(QWidget):
         painter.drawLine(QPointF(centre.x(), lens.top() + 6), QPointF(centre.x(), centre.y() - 8))
         painter.drawLine(QPointF(centre.x(), centre.y() + 8), QPointF(centre.x(), lens.bottom() - 6))
         painter.drawEllipse(centre, 8, 8)  # the pixel a click would sample
-        painter.setBrush(QColor("#0e0c0a"))
+        painter.setBrush(QColor(theme.READOUT_BG))
         painter.setPen(QColor(theme.BORDER))
         painter.drawRect(self._READOUT.adjusted(0, 0, -1, -1))
         painter.setFont(theme.edge_font(12))
-        painter.setPen(QColor(theme.AGREE_RED))
+        painter.setPen(QColor(theme.EDGE_PRINT))  # not a status colour: a density isn't good or bad
         painter.drawText(self._READOUT, Qt.AlignmentFlag.AlignCenter, self.readout_text())
 
     def readout_text(self) -> str:
@@ -859,19 +869,27 @@ class MainWindow(QWidget):
         if not keep_points:
             if not self._confirm_new_calibration():
                 return
-            self.session.reset()
-            self._profile_name = ""
-            self.details_form.set_values(self.session.details)
-            self.print_controls.set_override(None)
-            self._refresh_drawer_summaries()
+            self._new_calibration()
         self._start_roll(paths, folder)
         if left_out:
             self._sticky(f"Skipped {left_out.describe()}")
 
+    def _new_calibration(self) -> None:
+        """Forget the calibration in hand: points, profile name, extra information, print pin, and
+        the top bar's profile chip or save stamp, which would otherwise name a profile this isn't."""
+        self.session.reset()
+        self._profile_name = ""
+        self.details_form.set_values(self.session.details)
+        self.print_controls.set_override(None)
+        self._refresh_drawer_summaries()
+        self.save_stamp.hide()
+        self.profile_chip.setText("New calibration")
+        self.profile_chip.show()
+
     def load_files(self, paths: list[Path], keep_points: bool = False) -> None:
         """Individual scans as a roll of their own (`halide calibrate a.tif b.tif`, `invert --pick`)."""
         if not keep_points:
-            self.session.reset()
+            self._new_calibration()
         self._start_roll(sorted(paths) if len(paths) > 1 else list(paths), paths[0].parent if len(paths) > 1 else None)
 
     def _start_roll(self, paths: list[Path], folder: Path | None) -> None:
@@ -885,9 +903,11 @@ class MainWindow(QWidget):
         metadata = read_roll_scan_metadata(paths)
         scans = [metadata[str(p)][0] for p in paths]
         self.session.set_roll(paths, scans, folder)
-        self.roll_label.setText(
-            (folder.name if folder is not None else paths[0].stem).upper()  # the counter carries the frame count
-        )
+        # The counter carries the frame count. A long name is cut, with the full one as the tooltip,
+        # so the top bar's buttons always fit the fixed-width window.
+        name = (folder.name if folder is not None else paths[0].stem).upper()
+        self.roll_label.setText(QFontMetrics(self.roll_label.font()).elidedText(name, Qt.TextElideMode.ElideMiddle, _ROLL_NAME_MAX_W))
+        self.roll_label.setToolTip(name)
         self.filmstrip.strip.set_frames([f.number for f in self.session.frames])
         self._current = None
         self.full_image = None
@@ -1038,7 +1058,7 @@ class MainWindow(QWidget):
             f"FRAME <span style='color:{theme.TEXT}'>{frame.number:0{digits}d}</span> / {len(self.session.frames):0{digits}d}"
         )
         number = 1 if self.is_pick_session else frame.number
-        self.image_view.set_edge_print(f"{number}  ▸{number}A")
+        self.image_view.set_edge_print(f"{number}  →{number}A")  # the contact sheet's own arrow
         self.full_image = None
         self.display = None
         self._display_estimate = None
@@ -1472,7 +1492,11 @@ class MainWindow(QWidget):
         self._repaint_all()
 
     def _show_profile_name(self, name: str) -> None:
-        self.profile_chip.setText(f"Profile <b>{html.escape(name)}</b>")
+        bold = QFont(self.profile_chip.font())
+        bold.setBold(True)
+        short = QFontMetrics(bold).elidedText(name, Qt.TextElideMode.ElideMiddle, _PROFILE_NAME_MAX_W)
+        self.profile_chip.setText(f"Profile <b>{html.escape(short)}</b>")
+        self.profile_chip.setToolTip(name)
         self.save_stamp.hide()
         self.profile_chip.show()
 
