@@ -301,3 +301,32 @@ def test_single_file_dry_run_refuses_before_resolving_the_device(tmp_path, monke
     for command in ("print", "export"):
         with pytest.raises(SystemExit, match="plans a folder run"):
             main([command, str(f), str(tmp_path / "o.tif"), "--dry-run"])
+
+
+@pytest.mark.parametrize("extra, message", [
+    (["--output", "flat", "--contrast", "0.8"], "--contrast does nothing with --output flat"),
+    (["--output", "flat", "--exposure", "0.1"], "--exposure does nothing with --output flat"),
+    (["--notes", "x"], "--notes is saved with a profile"),
+])
+@pytest.mark.parametrize("command", ["invert", "batch"])
+@pytest.mark.parametrize("dry", [False, True])
+def test_flags_that_would_do_nothing_are_refused(tmp_path, roll, command, extra, message, dry):
+    if dry and command == "invert":
+        pytest.skip("invert has no --dry-run")
+    frame = roll / "frame_00.tif"
+    if command == "invert":
+        args = ["invert", str(frame), str(tmp_path / "out.tif")]
+        outputs = [tmp_path / "out.tif"]
+    else:
+        args = ["batch", str(roll), str(tmp_path / "out")]
+        outputs = [tmp_path / "out"]
+    argv = args + MANUAL + extra + (["--dry-run"] if dry else [])
+    with pytest.raises(SystemExit, match=message):
+        main(argv)
+    assert not any(p.exists() for p in outputs)
+
+
+def test_flat_with_a_saved_profile_or_notes_with_save_as_is_fine(tmp_path, roll):
+    out = tmp_path / "out.tif"
+    assert main(["invert", str(roll / "frame_00.tif"), str(out), *MANUAL, "--output", "flat",
+                 "--save-profile-as", "p", "--notes", "x"]) == 0

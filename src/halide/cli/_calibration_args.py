@@ -108,7 +108,7 @@ def add_calibration_arguments(
     parser.add_argument(
         "--notes",
         help="Attach a free-text note to the profile saved via --save-profile-as (e.g. how it "
-        "was generated) — ignored without --save-profile-as; edit later with `halide profile edit`",
+        "was generated) — needs --save-profile-as; edit later with `halide profile edit`",
     )
     return sources
 
@@ -201,6 +201,17 @@ def resolve_tone_params(args: argparse.Namespace, saved_tone: ToneCurveParams | 
     contrast = args.contrast if args.contrast is not None else (saved_tone.contrast if saved_tone else None)
     flat = getattr(args, "output_mode", None) == "flat"
     return ToneCurveParams(mode="linear" if flat else "paper", exposure=exposure, contrast=contrast)
+
+
+def check_no_ignored_flags(args: argparse.Namespace) -> None:
+    """Refuse flags this run would silently ignore, before anything starts."""
+    if getattr(args, "output_mode", None) == "flat":
+        for flag in ("exposure", "contrast"):
+            if getattr(args, flag, None) is not None:
+                raise SystemExit(f"--{flag} does nothing with --output flat — flat output has no print. "
+                                 f"Drop it, or use --output print")
+    if getattr(args, "notes", None) and not getattr(args, "save_profile_as", None):
+        raise SystemExit("--notes is saved with a profile — add --save-profile-as NAME, or drop --notes")
 
 
 def describe_resolved_tone(resolved) -> str:
