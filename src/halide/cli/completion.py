@@ -44,6 +44,7 @@ _KINDS = {
     "log": "file",
     "input_dir": "dir",
     "output_dir": "dir",
+    "into": "dir",
     "profile": "profile",
     "name": "profile",  # profile show/edit/delete
     "old_name": "profile",  # profile rename

@@ -27,9 +27,9 @@ def frame_count(n: int) -> str:
     return console.plural(n, "frame")
 
 
-def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str) -> None:
+def roll_row(sheet: RunSheet, input_dir: Path, n_frames: int, destination: str, name: str | None = None) -> None:
     # resolve(): `halide batch .` would otherwise name the roll "" (Path(".").name is empty).
-    sheet.row("Roll", f"{input_dir.resolve().name}{RunSheet.SEP}{frame_count(n_frames)} → {destination}")
+    sheet.row("Roll", f"{name or input_dir.resolve().name}{RunSheet.SEP}{frame_count(n_frames)} → {destination}")
 
 
 def skipped_row(sheet: RunSheet, skipped) -> None:
