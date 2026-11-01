@@ -67,3 +67,25 @@ def _no_real_gpu_service_in_tests(request, monkeypatch):
         return real(kind, initializer, cancel)
 
     monkeypatch.setattr(orchestrator, "_start_service", start)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Delete every window the GUI tests left behind, while Python is still running. Left to Qt's
+    own clean-up at interpreter exit, a window's children are torn down in an order that crashes the
+    process (a segfault or "pure virtual method called") after every test has passed."""
+    import sys
+
+    if "PySide6.QtWidgets" not in sys.modules:
+        return
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in QApplication.topLevelWidgets():
+        if hasattr(widget, "_confirm_close"):
+            widget._confirm_close = lambda count: True  # unsaved points would ask, and nobody is there to answer
+        widget.close()
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
