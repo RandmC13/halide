@@ -202,6 +202,39 @@ or refuse (in a script); add `--overwrite` to replace it, or `--skip-existing` t
 the frames that are missing (resuming an interrupted roll). Outputs are written whole or not at
 all, so a cancelled run leaves no half-written file.
 
+### A folder of rolls
+
+`batch --recursive` develops every folder of scans under the input folder as its own roll, one
+after another, each with its own run sheet, scan checks and log. `--into` says where each roll's
+prints go, relative to its scan folder:
+
+```bash
+# Holiday/Roll1/pre-processed/*.tif  →  Holiday/Roll1/inversion/
+halide batch Holiday/ --recursive --into ../inversion --profile "Portra 400"
+```
+
+With an output folder instead (`halide batch Holiday/ Prints/ --recursive`), each roll gets a
+subfolder named after it. Folders of halide's own prints are skipped, so running the same command
+again with `--skip-existing` develops only new frames. You're asked about existing outputs, or a
+missing calibration, once for the whole run.
+
+### Naming outputs
+
+`--name` names each output from a template instead of the scan's own name; halide adds the
+extension. It works on `batch` and on folder `print` and `export`.
+
+| Field | Is |
+|---|---|
+| `{stem}` | the scan's name, without its extension |
+| `{roll}` | the roll's name (the input folder, or the roll's folder with `--recursive`) |
+| `{n}` | the frame's number in the roll, from 1; `{n:02}` pads it to two digits |
+| `{stock}` | the profile's film stock |
+
+`--name "{roll}_{n:02}"` gives `Roll1_01.tif`, `Roll1_02.tif`, and so on. Frames are numbered in
+natural order (`frame_2` before `frame_10`), over every scan of the roll, so a resumed run keeps
+each frame's number. A template that would give two frames the same name is refused before
+anything is written. `--dry-run` lists each frame's new name.
+
 ### After a run
 
 When `batch`, `print` or `export` finishes a folder, a few lines under the "Developed" line tell
