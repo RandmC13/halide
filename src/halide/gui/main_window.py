@@ -711,7 +711,7 @@ class MainWindow(QWidget):
         scans = [metadata[str(p)][0] for p in paths]
         self.session.set_roll(paths, scans, folder)
         self.roll_label.setText(
-            (f"{folder.name} · {len(paths)} frames" if folder is not None else paths[0].name).upper()
+            (folder.name if folder is not None else paths[0].stem).upper()  # the counter carries the frame count
         )
         self.filmstrip.strip.set_frames([f.number for f in self.session.frames])
         self._current = None
