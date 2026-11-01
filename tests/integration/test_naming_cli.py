@@ -99,3 +99,10 @@ def test_folder_print_and_export_take_name(roll, tmp_path):
     assert main(["export", str(tmp_path / "printed"), str(tmp_path / "png"), "--workers", "1", "--no-log",
                  "--name", "{n:02}"]) == 0
     assert _names(tmp_path / "png") == ["01.png", "02.png", "03.png"]
+
+
+def test_name_on_a_contact_sheet_preview_is_refused(roll, tmp_path):
+    # a preview keeps no outputs, so --name would do nothing
+    with pytest.raises(SystemExit, match="--name names the developed frames"):
+        main(["batch", str(roll), "--contact-sheet", str(tmp_path / "s.jpg"), *MANUAL, "--name", "{n}"])
+    assert not (tmp_path / "s.jpg").exists()

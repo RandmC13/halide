@@ -291,6 +291,9 @@ def run(args: argparse.Namespace) -> int:
     check_input_folder(input_dir)
     if args.output_dir is None and not args.contact_sheet:
         raise SystemExit("give an output directory, --contact-sheet SHEET (a preview), or both")
+    if args.output_dir is None and args.name:
+        raise SystemExit("--name names the developed frames, and a contact-sheet preview keeps none — "
+                         "give an output directory, or drop --name")
     sheet_path = Path(args.contact_sheet) if args.contact_sheet else None
     if sheet_path is not None:
         from halide.io.contact_sheet import check_sheet_path

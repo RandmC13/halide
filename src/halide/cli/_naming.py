@@ -72,7 +72,6 @@ def parse_template(text: str) -> Template:
     return template
 
 
-
 CLASH_FIX = "add {n} or {stem} to --name"
 
 
