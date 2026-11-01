@@ -7,7 +7,8 @@ the same numbers and colours.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+import shiboken6
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
@@ -106,7 +107,8 @@ class _Row(QFrame):
         layout.addWidget(remove)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        self.clicked.emit(self._index)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._index)
 
 
 class PointList(QScrollArea):
@@ -152,4 +154,12 @@ class PointList(QScrollArea):
             self._rows.append(row)
         self._layout.addStretch(1)
         if selected is not None and selected < len(self._rows):
-            self.ensureWidgetVisible(self._rows[selected])
+            row = self._rows[selected]
+            # Deferred, and after the pending layout: new rows have no geometry (and the scroll range
+            # hasn't grown) until it has run, so scrolling at once misses a row past the visible ones.
+            QTimer.singleShot(0, lambda: self._reveal(row))
+
+    def _reveal(self, row: QWidget) -> None:
+        if shiboken6.isValid(row):
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+            self.ensureWidgetVisible(row)

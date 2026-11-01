@@ -7,7 +7,6 @@ from halide.gui.sampling import (
     display_to_full_res_coords,
     downsample_for_display,
     extract_magnifier_patch,
-    full_res_to_display_coords,
     magnify_patch,
     patch_chroma,
     preview_stretch,
@@ -107,11 +106,6 @@ def test_display_to_full_res_coords_clamps_to_image_bounds():
     # multiplied by stride (integer downsampling isn't exact) — must clamp, not go out of bounds.
     x, y = display_to_full_res_coords(999, 999, stride=4, image_width=100, image_height=50)
     assert x == 99 and y == 49
-
-
-def test_full_res_to_display_coords_is_the_inverse_mapping():
-    full_x, full_y = display_to_full_res_coords(10, 20, stride=4, image_width=1000, image_height=1000)
-    assert full_res_to_display_coords(full_x, full_y, stride=4) == (10, 20)
 
 
 def test_extract_magnifier_patch_shape_is_always_fixed_size():

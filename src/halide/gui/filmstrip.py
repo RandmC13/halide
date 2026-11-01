@@ -65,6 +65,10 @@ class _Strip(QWidget):
             self._failed[index] = reason or "couldn't load"
             self.update(self.frame_rect(index).adjusted(-2, -2, 2, 2))
 
+    def clear_failure(self, index: int) -> None:
+        if self._failed.pop(index, None) is not None:
+            self.update(self.frame_rect(index).adjusted(-2, -2, 2, 2))
+
     def failure_at(self, pos) -> str | None:
         for i in self._failed:
             if self.frame_rect(i).contains(pos):
@@ -153,6 +157,8 @@ class _Strip(QWidget):
                 painter.setBrush(QColor(theme.FILM_SPROCKET))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
         pos = event.position().toPoint()
         for i in range(len(self._numbers)):
             if self.frame_rect(i).adjusted(-GAP // 2, -REBATE, GAP // 2, REBATE).contains(pos):
@@ -181,6 +187,13 @@ class Filmstrip(QScrollArea):
         delta = event.angleDelta().y() or event.angleDelta().x()
         bar = self.horizontalScrollBar()
         bar.setValue(bar.value() - delta)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        # Left/Right step through the frames (handled by the window), not scroll the strip's own view.
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            event.ignore()
+        else:
+            super().keyPressEvent(event)
 
     def show_frame(self, index: int) -> None:
         self.strip.set_current(index)

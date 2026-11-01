@@ -100,12 +100,6 @@ def display_to_full_res_coords(
     return full_x, full_y
 
 
-def full_res_to_display_coords(full_x: int, full_y: int, stride: int) -> tuple[int, int]:
-    """The inverse of display_to_full_res_coords — where a full-res point (e.g. a picked shadow/
-    highlight point) lands on the downsampled display, for drawing a marker at the right spot."""
-    return full_x // stride, full_y // stride
-
-
 def extract_magnifier_patch(image: np.ndarray, x: int, y: int, radius: int = 12) -> np.ndarray:
     """Crop a fixed-size (2*radius+1, 2*radius+1, 3) patch from `image` centered at (x, y),
     edge-padding near the image border rather than shrinking — the caller shows this in a
