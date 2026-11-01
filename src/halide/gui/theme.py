@@ -15,6 +15,7 @@ from __future__ import annotations
 BACKGROUND = "#181512"
 BACKGROUND_ALT = "#201c18"
 BORDER = "#4a3c2e"
+BORDER_DISABLED = "#2f2822"  # still reads as a button, clearly not one you can press
 TEXT = "#e8e0d4"
 TEXT_DIM = "#968c7c"
 TEXT_WARNING = "#e6b450"
@@ -90,7 +91,7 @@ QPushButton:pressed {{
 }}
 QPushButton:disabled {{
     color: {TEXT_DIM};
-    border-color: {BACKGROUND_ALT};
+    border-color: {BORDER_DISABLED};
 }}
 QPushButton:checked {{
     background-color: {AMBER_ACTIVE};
