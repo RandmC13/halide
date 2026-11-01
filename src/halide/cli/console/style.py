@@ -65,6 +65,10 @@ ICON_WARN = "⚠"  # ⚠
 # piece of pure decoration in this module, used sparingly (see rule()).
 SPROCKET = "▫"  # ▫
 
+# The two orange shades a frame pulses between while it develops: the batch contact sheet and the
+# single-file commands' one frame.
+PULSE_COLORS = ("\033[38;5;208m", "\033[38;5;214m")
+
 # Real darkroom terms mapped onto what each command actually does, so headers/spinners/finish
 # banners read consistently instead of each command inventing its own wording. `export` used to
 # be "Printing" too, back when no separate print step existed; now that `halide print` is the real

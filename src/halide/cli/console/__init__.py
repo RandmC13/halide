@@ -30,6 +30,7 @@ from halide.cli.console.style import (  # noqa: F401
     ICON_OK,
     ICON_WARN,
     NOUN,
+    PULSE_COLORS,
     SPROCKET,
     Style,
     VERB,
@@ -71,24 +72,9 @@ from halide.cli.console.runsheet import (  # noqa: F401
 )
 
 from halide.cli.console.animation import (  # noqa: F401
-    ENLARGER_FRAMES,
-    ENLARGER_MIN_SIZE,
-    MINI_SPINNERS,
-    TANK_MIN_SIZE,
-    _ENLARGER_CONE,
-    _ENLARGER_DEVELOP_STAGES,
-    _ENLARGER_LAMP,
-    _ENLARGER_SWAP_STAGES,
-    _ENLARGER_TRAY_BOTTOM,
-    _ENLARGER_TRAY_TOP,
-    _enlarger_frame,
-    _terminal_fits,
+    IRIS,
     animation,
-    random_mini_spinner_frames,
-    slide_strings,
-    spinner,
-    tank_frames,
-    themed_animation,
+    developing,
 )
 
 from halide.cli.console.prompts import (  # noqa: F401

@@ -83,50 +83,21 @@ def test_run_guarded_debug_flag_reraises_full_exception():
         console.run_guarded(main_func, argv=["--debug"])
 
 
-def test_slide_strings_endpoints_and_length():
-    frames = console.slide_strings("AAAAA", "BBBBB", steps=6)
-    assert len(frames) == 6
-    assert frames[0] == "AAAAA"
-    assert frames[-1] == "BBBBB"
-    assert all(len(f) == 5 for f in frames)
+def test_developing_pulses_one_contact_sheet_frame_in_the_batch_colours(monkeypatch):
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    anim = console.developing("Developing x.tif…")
+    assert len(anim.frames) == 2
+    for colour, frame in zip(console.PULSE_COLORS, anim.frames):
+        assert frame == f"│ {colour}███{console.Style.RESET} │"
+    assert "\n" not in anim.frames[0]  # one line: nothing jumps or is left behind when cleared
 
 
-def test_slide_strings_rejects_unequal_length():
-    with pytest.raises(ValueError):
-        console.slide_strings("AA", "BBB")
-
-
-def test_mini_spinners_all_have_multiple_frames():
-    assert len(console.MINI_SPINNERS) >= 4
-    for glyphs in console.MINI_SPINNERS.values():
-        assert len(glyphs) >= 2
-
-
-def test_random_mini_spinner_frames_returns_styled_glyphs():
-    frames = console.random_mini_spinner_frames()
-    assert len(frames) >= 2
-    assert all(isinstance(f, str) and f for f in frames)
-
-
-def test_animation_degrades_immediately_when_terminal_too_small(monkeypatch):
-    monkeypatch.setenv("COLUMNS", "10")
-    monkeypatch.setenv("LINES", "5")
-    art = ["line one\nline two", "line one\nline two"]
-    anim = console.animation(art, label="x", min_size=(200, 50))
-    assert anim.frames != art
-    assert len(anim.frames) == 4
-
-
-def test_animation_uses_given_frames_when_terminal_is_big_enough(monkeypatch):
-    monkeypatch.setenv("COLUMNS", "200")
-    monkeypatch.setenv("LINES", "50")
-    art = ["a", "b"]
-    anim = console.animation(art, label="x", min_size=(10, 5))
-    assert anim.frames == art
-
-
-def test_themed_animation_returns_an_animation_instance():
-    assert isinstance(console.themed_animation(["a"], "label", min_width=1, min_height=1), console.animation)
+def test_developing_without_colour_cycles_the_iris_so_it_never_looks_stuck(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    anim = console.developing("Developing x.tif…")
+    assert anim.frames == list(console.IRIS)
+    assert not any("\033" in f for f in anim.frames)
 
 
 def test_framed_sizes_rules_to_short_text_and_to_the_terminal_for_long_output(monkeypatch):
@@ -257,7 +228,7 @@ def test_no_colour_output_has_no_escape_codes_from_any_helper(monkeypatch):
     pieces = [
         console.success("ok"), console.error("bad"), console.warning("hmm"), console.dim("faint"),
         console.rule(), console.framed(["a", "b"]), console.help_banner(), console.welcome_screen(),
-        console.source_color("auto"), "".join(console.tank_frames()), "".join(console.random_mini_spinner_frames()),
+        console.source_color("auto"),
         console.cancelled(),
     ]
     sheet_lines = console.RunSheet()._lines("Label", "text", icon="x", icon_style=console.Style.RED)

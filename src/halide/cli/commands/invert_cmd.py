@@ -168,13 +168,7 @@ def run(args: argparse.Namespace) -> int:
     start = time.monotonic()
     label = f"{console.VERB['invert']} {input_path.name}..."
     try:
-        with console.themed_animation(
-            console.tank_frames(),
-            label,
-            min_width=console.TANK_MIN_SIZE[0],
-            min_height=console.TANK_MIN_SIZE[1],
-            interval=0.5,
-        ):
+        with console.developing(label):
             resolved = process_scan(
                 args.input, args.output, stage, density_profile, tone_params, scan_gain=gain,
                 device=device, on_warning=lambda msg: print(console.warning(msg)),

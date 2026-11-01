@@ -16,6 +16,7 @@ from halide.cli import console
 from halide.cli.console import (
     ICON_FAIL,
     ICON_OK,
+    PULSE_COLORS,
     SPROCKET,
     VERB,
     VERB_PAST,
@@ -33,12 +34,9 @@ _HOLLOW = "░░░"
 # Color states read as an actual developing process, brightest to darkest: pending frames look like
 # undeveloped film (a light, uniform orange base), an active frame pulses between two orange shades
 # so it visibly reads as "alive," and a finished frame darkens down to a near-black grey — a real
-# color brightness fade, not a glyph-density trick. (A glyph-density fade — e.g. cycling ░▒▓ — was
-# tried for the export animation's paper and turned out to read backwards on a dark terminal, sparse
-# fill looking darker than dense fill; that trap doesn't apply here since this is real ANSI color
-# brightness, which behaves the way you'd expect.)
+# color brightness fade, not a glyph-density trick. (A glyph-density fade such as ░▒▓ reads backwards
+# on a dark terminal, sparse fill looking darker than dense, and forwards on a light one.)
 _PENDING_COLOR = "\033[38;5;223m"  # light/pale orange — undeveloped film base
-_PROCESSING_COLORS = ("\033[38;5;208m", "\033[38;5;214m")  # two shades to pulse between
 _FINISHING_COLOR = "\033[38;5;130m"  # medium dark orange — mid-fade
 _DONE_COLOR = "\033[38;5;236m"  # near-black grey — fully developed
 _STATE_COLOR = {
@@ -216,7 +214,7 @@ class GridProgressRenderer(_Renderer):
         if not use_color():
             return _PLAIN_GLYPH[state]
         if state == "processing":
-            return f"{_PROCESSING_COLORS[self._tick % 2]}{_FRAME}{Style.RESET}"
+            return f"{PULSE_COLORS[self._tick % 2]}{_FRAME}{Style.RESET}"
         glyph = _HOLLOW if state == "cancelled" else _FRAME
         return f"{_state_color(state)}{glyph}{Style.RESET}"
 
