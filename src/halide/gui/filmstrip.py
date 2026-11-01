@@ -83,7 +83,7 @@ class _Strip(QWidget):
 
         def start() -> None:
             if generation == self._generation:
-                motion.animate(self, 0.0, 1.0, _FEED_MS, set_progress)
+                motion.animate(self, f"feed-{index}", 0.0, 1.0, _FEED_MS, set_progress)
 
         delay = max(0, min(_FEED_MAX_DELAY_MS, _FEED_STAGGER_MS * index) - self._since_roll.elapsed())
         if motion.duration(_FEED_MS) == 0:

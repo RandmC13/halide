@@ -185,14 +185,12 @@ class ImageView(QWidget):
         self._flash_steps = 0
         self._old_pixmap: QPixmap | None = None  # the picture being faded out, if a fade is running
         self._blend = 1.0  # how much of the new picture shows
-        self._fade = None
         self._probe_number: int | None = None  # the marker still closing in on its spot
         self._probe = 1.0
 
     def set_image(self, pixmap: QPixmap | None, placeholder: str = "", fade: bool = False) -> None:
         """`fade`: cross-fade from the picture shown now (the Negative/Positive switch)."""
-        if self._fade is not None:
-            self._fade.stop()
+        motion.stop(self, "fade")
         self._old_pixmap = self._pixmap if fade and pixmap is not None else None
         self._pixmap = pixmap
         if placeholder:
@@ -206,7 +204,8 @@ class ImageView(QWidget):
             self._old_pixmap = None
 
         self._blend = 0.0 if self._old_pixmap is not None else 1.0
-        self._fade = motion.animate(self, 0.0, 1.0, 250, set_blend, done) if self._old_pixmap is not None else None
+        if self._old_pixmap is not None:
+            motion.animate(self, "fade", 0.0, 1.0, 250, set_blend, done)
         self.update()
 
     def probe(self, number: int) -> None:
@@ -219,7 +218,7 @@ class ImageView(QWidget):
             self._probe_number = None
 
         self._probe_number = number
-        motion.animate(self, 0.0, 1.0, 200, set_probe, done)
+        motion.animate(self, "probe", 0.0, 1.0, 200, set_probe, done)
 
     def set_edge_print(self, text: str) -> None:
         self._edge_print = text
@@ -387,7 +386,7 @@ class ViewSwitch(QWidget):
             self.update()
 
         self._progress = 0.0
-        motion.animate(self, 0.0, 1.0, 220, set_progress)
+        motion.animate(self, "slide", 0.0, 1.0, 220, set_progress)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
@@ -426,7 +425,7 @@ class SaveStamp(QWidget):
             self.update()
 
         self._progress = 0.0
-        motion.animate(self, 0.0, 1.0, 350, set_progress)
+        motion.animate(self, "stamp", 0.0, 1.0, 350, set_progress)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)

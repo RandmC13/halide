@@ -22,7 +22,8 @@ _BAR_TOP = 14
 _BAR_HEIGHT = 18  # tall enough for the density labels inside the bands
 _TICK_ROW = _BAR_TOP + _BAR_HEIGHT + 3
 _LABEL_H = 13
-_RELIABLE_H = 8  # the reliable-range bracket's row, between the tick labels and the caption
+_RELIABLE_H = 8
+_STUB = 4  # length of a point's tick inside the bar, from each edge  # the reliable-range bracket's row, between the tick labels and the caption
 
 
 def band_labels(density_range: tuple[float, float], steps: int) -> list[str]:
@@ -81,7 +82,7 @@ class StepWedge(QWidget):
             self._drop_number = None
 
         self._drop_number = number
-        motion.animate(self, 0.0, 1.0, 200, set_drop, done)
+        motion.animate(self, "drop", 0.0, 1.0, 200, set_drop, done)
 
     def _x(self, density: float, left: float, width: float) -> float:
         low, high = self._range
@@ -144,7 +145,10 @@ class StepWedge(QWidget):
                 colour = QColor(tick.colour)
                 dy = -self._drop if tick.number == self._drop_number else 0.0
                 painter.setPen(QPen(colour, 3 if tick.selected else 1.5))
-                painter.drawLine(int(x), int(_BAR_TOP + dy), int(x), int(_BAR_TOP + _BAR_HEIGHT + 2 + dy))
+                # Two stubs on the bar's edges, not a line across it: the band's density label sits in the middle.
+                top, bottom = _BAR_TOP + dy, _BAR_TOP + _BAR_HEIGHT + dy
+                painter.drawLine(int(x), int(top), int(x), int(top + _STUB))
+                painter.drawLine(int(x), int(bottom - _STUB), int(x), int(bottom + 2))
                 row_y = _TICK_ROW + (rank % 2) * _LABEL_H + dy
                 label = QRectF(x - 12, row_y, 24, _LABEL_H)
                 if tick.selected:

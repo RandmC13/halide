@@ -21,8 +21,50 @@ def test_animate_with_motion_off_jumps_to_the_end(app):
     from PySide6.QtCore import QObject
 
     seen, done = [], []
-    assert motion.animate(QObject(), 0, 1, 200, seen.append, lambda: done.append(True)) is None
+    motion.animate(QObject(), "x", 0, 1, 200, seen.append, lambda: done.append(True))
     assert seen == [1] and done == [True]
+
+
+def _settle(app, until, timeout=5.0):
+    import time
+
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    deadline = time.monotonic() + timeout
+    while not until() and time.monotonic() < deadline:
+        app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)  # let finished animations delete themselves
+        time.sleep(0.01)
+    assert until()
+
+
+def test_a_new_image_after_a_finished_fade_does_not_touch_the_deleted_animation(app, monkeypatch):
+    # With motion on, a finished cross-fade deletes itself; the next picture (the next frame after a
+    # Negative/Positive switch) once stopped that dead animation and wedged the picker.
+    from halide.gui.main_window import ImageView
+
+    monkeypatch.delenv("HALIDE_MOTION")
+    view = ImageView()
+    view.resize(200, 150)
+    view.set_image(QPixmap(40, 30))
+    view.set_image(QPixmap(40, 30), fade=True)
+    _settle(app, lambda: view._blend == 1.0 and view._old_pixmap is None)
+    view.set_image(QPixmap(40, 30))  # raised RuntimeError: Internal C++ object already deleted
+    view.set_image(QPixmap(40, 30), fade=True)
+    _settle(app, lambda: view._blend == 1.0)
+
+
+def test_a_second_animation_with_the_same_name_replaces_the_first(app, monkeypatch):
+    from PySide6.QtCore import QObject, QVariantAnimation
+
+    monkeypatch.delenv("HALIDE_MOTION")
+    owner, first, second = QObject(), [], []
+    motion.animate(owner, "x", 0, 1, 1000, first.append)
+    motion.animate(owner, "x", 0, 1, 50, second.append)
+    running = [a for a in owner.findChildren(QVariantAnimation) if a.state() == QVariantAnimation.State.Running]
+    assert len(running) == 1
+    _settle(app, lambda: second and second[-1] == 1.0)
+    assert not first or first[-1] < 1.0  # the first was stopped, never finished
 
 
 def test_strip_frames_are_fully_in(window):
