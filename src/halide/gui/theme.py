@@ -5,7 +5,7 @@ widgets) rather than styled declaratively.
 Palette matches the CLI's own darkroom/film-photography language (see `cli/console/`'s `Style`
 class and the tank/enlarger animations there): a warm dark charcoal background, an amber accent for
 ordinary controls, and and a red accent reserved for exactly one "primary action"
-button per window (Save calibration profile / Develop), a cheap nod to the big red button on the
+button per window (Save profile / Develop), a cheap nod to the big red button on the
 reference enlarger controller photo (`enlarger-controller.png`) without attempting its full
 skeuomorphic skin (deferred, see the GUI redesign plan's final section).
 """

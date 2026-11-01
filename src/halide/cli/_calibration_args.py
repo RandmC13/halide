@@ -64,7 +64,7 @@ def add_calibration_arguments(
     (and in batch, for --auto-density-roll)."""
     sources = parser.add_mutually_exclusive_group()
     sources.add_argument(
-        "--profile", help="A saved calibration profile: its name, or a path to its file"
+        "--profile", help="A saved profile: its name, or a path to its file"
     )
     parser.add_argument(
         "--rm", type=positive_float, metavar="X",
@@ -101,7 +101,7 @@ def add_calibration_arguments(
         "--save-profile-as",
         metavar="NAME",
         type=_profile_name_type,
-        help="Save the calibration profile used for this run (" + (
+        help="Save the calibration used for this run as a profile (" + (
             "typed values, a saved profile, an automatic estimate or picked points" if allow_pick
             else "typed values, a saved profile or --auto-density-roll"
         ) + ") under NAME for reuse via --profile NAME next time. Refuses "
@@ -145,7 +145,7 @@ def add_tone_arguments(parser: argparse.ArgumentParser, *, allow_output_mode: bo
         default=None,
         help="Paper grade, above 0 and up to 2 (1.0 = the untouched reference paper; lower = softer). Default: "
         "fitted per image so the negative's density range fills the paper's range (capped at 1.0), "
-        "or a value saved into the resolved --profile's calibration if it has one",
+        "or a value saved in the resolved --profile if it has one",
     )
 
 
@@ -256,7 +256,7 @@ def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
         bits = [b for b in (profile.film_stock, (profile.created_at or "")[:10]) if b]
         options.append((f"profile:{stem}", f"Profile '{stem}'" + (f"  ({' · '.join(bits)})" if bits else "")))
     if hasattr(args, "pick"):
-        options.append(("pick", "Pick neutral points in the calibration picker now"))
+        options.append(("pick", "Pick neutral points in the halide window now"))
     options.append(("auto", "Quick automatic estimate, per frame (approximate)"))
     if hasattr(args, "auto_density_roll"):
         options.append(("auto_roll", "One automatic estimate for the whole roll (approximate)"))
@@ -397,7 +397,7 @@ def maybe_save_profile(
                 "choose a different --save-profile-as name"
             )
     if announce:
-        print(console.success(f"Saved calibration profile as {save_as!r} ({path})"))
+        print(console.success(f"Saved profile as {save_as!r} ({path})"))
     # Picked points that only pin the fit down over part of the frame: saved all the same,
     # but a profile is meant for the whole roll, so say where it holds.
     reliability_warning = getattr(args, "pick_reliability_warning", None)

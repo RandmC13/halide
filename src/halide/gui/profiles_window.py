@@ -1,7 +1,6 @@
 """The Profiles window: every saved profile, newest first, with what can be done to one - use it on
-the open roll, reopen its points, rename or delete it - and a way in for any calibration file, such
-as the halide-calibration.json written beside a developed roll. Small, fixed-size and non-modal, so
-the main window stays usable beside it."""
+the open roll, reopen its points, rename or delete it - and a way in for any profile file.
+Small, fixed-size and non-modal, so the main window stays usable beside it."""
 
 from __future__ import annotations
 
@@ -127,8 +126,8 @@ class ProfilesWindow(QWidget):
         bar = QHBoxLayout(self._bar)
         bar.setContentsMargins(0, 0, 0, 0)
         bar.setSpacing(8)
-        self.open_file_button = QPushButton("Open a calibration file…")
-        self.open_file_button.setToolTip("Any profile file, such as the halide-calibration.json beside a developed roll")
+        self.open_file_button = QPushButton("Open a profile file…")
+        self.open_file_button.setToolTip("A profile file from anywhere, such as one shared with you or a backup")
         self.open_file_button.clicked.connect(self._on_open_file)
         bar.addWidget(self.open_file_button)
         bar.addStretch(1)
@@ -235,7 +234,7 @@ class ProfilesWindow(QWidget):
             self.editRequested.emit(self.path_of(name))
 
     def _on_open_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open a calibration file", str(Path.home()), "halide calibrations (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open a profile file", str(Path.home()), "halide profiles (*.json)")
         if path:
             self.fileOpened.emit(Path(path))
 

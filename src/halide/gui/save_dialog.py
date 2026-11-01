@@ -32,12 +32,12 @@ class SaveProfileDialog(QDialog):
         saving under a new name, which then leaves it exactly as it was."""
         super().__init__(parent, Qt.WindowType.Dialog)
         self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.setWindowTitle("Save calibration profile")
+        self.setWindowTitle("Save profile")
         self._profile = profile
         self._sidecars = sidecars
         self._pending_overwrite_name: str | None = None
         self._save_label = "Save as a new profile" if update_name else "Save"
-        self._prompt = "Or save as a new profile, named:" if update_name else "Name this calibration:"
+        self._prompt = "Or save as a new profile, named:" if update_name else "Name this profile:"
 
         layout = QVBoxLayout(self)
         self.update_button: QPushButton | None = None
@@ -115,5 +115,5 @@ class SaveProfileDialog(QDialog):
         except (ProfileError, OSError) as exc:
             QMessageBox.warning(self, "Couldn't save profile", str(exc))
             return
-        self.saved.emit(name, f"Saved calibration profile '{name}' to {path}")
+        self.saved.emit(name, f"Saved profile '{name}' to {path}")
         self.accept()

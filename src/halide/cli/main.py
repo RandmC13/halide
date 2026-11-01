@@ -96,8 +96,8 @@ def build_parser() -> argparse.ArgumentParser:
         "halide check portra-roll-03/")
 
     profile_parser = subparsers.add_parser(
-        "profile", help="Manage saved calibration profiles",
-        description=wrapped("Manage saved calibration profiles: list, show, rename, delete, or edit the "
+        "profile", help="Manage saved profiles",
+        description=wrapped("Manage saved profiles: list, show, rename, delete, or edit the "
         "details recorded with one."),
         formatter_class=HELP_FORMATTER,
     )

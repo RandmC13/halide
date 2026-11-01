@@ -136,7 +136,7 @@ def test_a_calibration_file_from_elsewhere_changes_nothing_in_the_profiles_folde
     before = sorted(p.name for p in profiles.iterdir())
     window = MainWindow()
     window.open_profile(elsewhere)
-    assert "Calibration file" in window.profile_chip.text() and "halide-calibration.json" in window.profile_chip.toolTip()
+    assert "Profile file" in window.profile_chip.text() and "halide-calibration.json" in window.profile_chip.toolTip()
     assert window._profile_name == ""  # Save asks for a name rather than offering "halide-calibration"
     assert sorted(p.name for p in profiles.iterdir()) == before
     window._closing = True

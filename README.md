@@ -170,7 +170,7 @@ halide contact portra-roll-03-developed/ portra-roll-03-sheet.jpg
 ```
 
 Run `invert` or `batch` without a calibration flag and halide offers your saved profiles, the
-picker, or an automatic estimate. For a single frame:
+picking in the halide window, or an automatic estimate. For a single frame:
 
 ```bash
 halide invert IMG_0158.tif IMG_0158-positive.tif --pick    # click neutrals on this frame
@@ -331,7 +331,7 @@ python -m pytest tests/ -q
 
 Code layout: `src/halide/core/` holds the pure image maths, `io/` handles TIFF/ICC/export,
 `calibration/` handles profiles and fitting, `batch/` does parallel processing, `cli/` holds the
-commands and `gui/` the Qt picker. `benchmarks/gpu_bench.py` times CPU against GPU on your own
+commands and `gui/` the Qt window. `benchmarks/gpu_bench.py` times CPU against GPU on your own
 machine.
 
 ## Acknowledgements

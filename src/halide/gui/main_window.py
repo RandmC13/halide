@@ -10,7 +10,7 @@ Layout (landscape, fixed size, never scrolls - see _compute_window_size):
                   the negative; never soften it) · status line
   right panel     step wedge (gui/step_wedge.py) · neutral points list (gui/point_list.py) · notice
                   line · Extra information / Print / Details drawers (gui/drawers.py,
-                  accordion) · the one red primary button: Save calibration profile (Develop in the
+                  accordion) · the one red primary button: Save profile (Develop in the
                   one-shot `invert --pick` flow)
 
 All picking state and logic is in gui/roll.py::CalibrationSession (no Qt); this module lays out the
@@ -370,7 +370,7 @@ class MainWindow(QWidget):
         self._accordion.openChanged.connect(self._on_drawer_opened)
         panel.addWidget(self._accordion)
 
-        self.primary_button = QPushButton("Develop" if self.is_pick_session else "Save calibration profile")
+        self.primary_button = QPushButton("Develop" if self.is_pick_session else "Save profile")
         self.primary_button.setProperty("role", "primary")
         self.primary_button.setEnabled(False)
         self.primary_button.clicked.connect(self._on_primary_clicked)
@@ -593,7 +593,7 @@ class MainWindow(QWidget):
             self._show_profile_name(path.stem)
         else:  # a calibration file from elsewhere: Save keeps it as a profile, under a name asked for then
             self._profile_name = ""
-            self._show_profile_name(path.name, "Calibration file")
+            self._show_profile_name(path.name, "Profile file")
         self.details_form.set_values(self.session.details)
         self.print_controls.set_override(self.session.tone_override)
         self._refresh_drawer_summaries()
@@ -1265,7 +1265,7 @@ class MainWindow(QWidget):
     def _confirm_close(self, count: int) -> bool:
         box = QMessageBox(
             QMessageBox.Icon.Question,
-            "Close the picker?",
+            "Close the window?",
             f"The {console.plural(count, 'neutral point')} you picked "
             f"{'isn' if count == 1 else 'aren'}'t saved in a profile and will be lost.",
             parent=self,

@@ -1,4 +1,4 @@
-"""`halide profile` — list/show/rename/delete saved calibration profiles."""
+"""`halide profile` — list/show/rename/delete saved profiles."""
 
 from __future__ import annotations
 
@@ -54,8 +54,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         sub.add_argument("--debug", action="store_true", default=argparse.SUPPRESS, help=DEBUG_HELP)
         return sub
 
-    add("list", "List saved calibration profiles", "halide profile list",
-        description="List every saved calibration profile, newest first, with its film stock and "
+    add("list", "List saved profiles", "halide profile list",
+        description="List every saved profile, newest first, with its film stock and "
         "when it was made.")
 
     show_parser = add("show", "Show one saved profile's details", 'halide profile show "Portra 400"',
