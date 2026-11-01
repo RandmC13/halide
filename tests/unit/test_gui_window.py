@@ -417,3 +417,16 @@ def test_opening_an_unreadable_profile_keeps_the_points_and_asks_nothing(monkeyp
     window.open_profile(bad)
     assert window.session.points == before
     assert "Couldn't open bad.json" in window.status_label.toolTip()
+
+
+def test_grade_slider_never_reaches_zero(app):
+    from halide.core.types import ToneCurveParams
+    from halide.gui.drawers import PrintControls
+
+    controls = PrintControls()
+    assert controls.grade.minimum() == 1
+    emitted = []
+    controls.changed.connect(lambda tone, _flat: emitted.append(tone))
+    controls.set_override(ToneCurveParams(mode="paper", exposure=0.0, contrast=0.0))  # an old saved zero
+    controls.exposure.setValue(10)
+    assert emitted[-1].contrast == pytest.approx(0.01)
