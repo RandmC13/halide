@@ -131,23 +131,23 @@ QPushButton[role="primary"]:disabled {{
 }}
 
 QPushButton[role="segment"] {{
-    background-color: transparent;
+    /* bare text: the switch paints the recessed pill and the sliding amber behind these */
+    background: transparent;
     color: {TEXT_DIM};
-    border: 1px solid {BORDER};
-    border-radius: 6px;
-    padding: 4px 14px;
+    border: none;
+    padding: 3px 14px;
 }}
 QPushButton[role="segment"]:hover {{
     color: {TEXT};
 }}
 QPushButton[role="segment"]:focus {{
-    border: 1px solid {AMBER_ACTIVE};
-    padding: 4px 14px;
+    border: none;
+    padding: 3px 14px;
 }}
-/* the amber behind the checked segment is painted by ViewSwitch, so it can slide */
 QPushButton[role="segment"]:checked {{
     color: {TEXT};
-    border: 1px solid {AMBER};
+    background: transparent;
+    border: none;
 }}
 
 QPushButton[role="remove"] {{

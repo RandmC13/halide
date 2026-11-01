@@ -24,8 +24,8 @@ import html
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -189,6 +189,10 @@ class ImageView(QWidget):
         self._flash_steps = 0
         self._old_pixmap: QPixmap | None = None  # the picture being faded out, if a fade is running
         self._blend = 1.0  # how much of the new picture shows
+        # The loupe is painted here, over the image, rather than in a window of its own: a separate
+        # window can't be placed exactly or made round on Wayland, and showing and hiding one on every
+        # mouse move made Qt's Wayland text-input warn in the terminal.
+        self._loupe: tuple[QPixmap, float, QPointF] | None = None  # (patch, density, cursor)
         self._probe_number: int | None = None  # the marker still closing in on its spot
         self._probe = 1.0
 
@@ -211,6 +215,18 @@ class ImageView(QWidget):
         if self._old_pixmap is not None:
             motion.animate(self, "fade", 0.0, 1.0, 250, set_blend, done)
         self.update()
+
+    def set_loupe(self, pixmap: QPixmap, density: float, cursor: QPointF) -> None:
+        self._loupe = (pixmap, density, cursor)
+        self.update()
+
+    def clear_loupe(self) -> None:
+        if self._loupe is not None:
+            self._loupe = None
+            self.update()
+
+    def loupe_rect(self) -> QRectF | None:
+        return None if self._loupe is None else loupe_rect(self._loupe[2], QRectF(self.rect()))
 
     def probe(self, number: int) -> None:
         """Close marker `number` in on its spot, as a probe lands (a newly added point)."""
@@ -297,6 +313,9 @@ class ImageView(QWidget):
             painter.setPen(QColor(colour))
             painter.drawText(label, Qt.AlignmentFlag.AlignLeft, str(number))
             painter.setOpacity(1.0)
+        if self._loupe is not None:
+            pixmap, density, _ = self._loupe
+            paint_loupe(painter, self.loupe_rect(), pixmap, density)
 
     def _paint_edge_print(self, painter: QPainter) -> None:
         if not self._edge_print:
@@ -348,8 +367,10 @@ class ImageView(QWidget):
 
 
 class ViewSwitch(QWidget):
-    """The Negative | Positive switch: two checkable buttons (exclusive, in a QButtonGroup) with an
-    amber highlight painted behind the checked one that slides across when the choice changes."""
+    """The Negative | Positive switch: one recessed pill holding two checkable buttons (exclusive, in
+    a QButtonGroup), with an amber highlight painted behind the checked one that slides across when
+    the choice changes. The buttons are bare text; the pill, highlight and focus mark are painted
+    here."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -358,16 +379,23 @@ class ViewSwitch(QWidget):
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(_PILL_PAD, _PILL_PAD, _PILL_PAD, _PILL_PAD)
+        row.setSpacing(0)
         for button in (self.negative_button, self.positive_button):
             button.setProperty("role", "segment")
             button.setCheckable(True)
             self.group.addButton(button)
+            button.installEventFilter(self)  # repaint the focus mark as focus moves
             row.addWidget(button)
         self.negative_button.setChecked(True)
         self._from: QRectF | None = None  # where a slide in progress began
         self._progress = 1.0
         self.group.buttonToggled.connect(lambda button, checked: checked and self._slide_from_other(button))
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
+            self.update()
+        return False
 
     def _checked_rect(self) -> QRectF:
         button = self.group.checkedButton()
@@ -397,9 +425,17 @@ class ViewSwitch(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QColor(theme.BORDER))
+        painter.setBrush(QColor(theme.BACKGROUND_ALT))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(theme.AMBER))
-        painter.drawRoundedRect(self.highlight_rect(), 6, 6)
+        painter.drawRoundedRect(self.highlight_rect(), 3, 3)
+        focused = next((b for b in (self.negative_button, self.positive_button) if b.hasFocus()), None)
+        if focused is not None:  # keyboard focus: the bare-text buttons draw none of their own
+            painter.setPen(QPen(QColor(theme.TEXT), 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(focused.geometry()).adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
 
 
 class SaveStamp(QWidget):
@@ -449,70 +485,59 @@ class SaveStamp(QWidget):
         painter.drawText(self.rect().adjusted(8, 0, -8, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
 
 
-class Magnifier(QWidget):
-    """A frameless, always-on-top round loupe following the cursor over the image, with the density
-    a click there would read underneath. Needs a real parent: Wayland refuses to place a parentless
-    popup-type window. It is made round with a window mask rather than a translucent background,
-    because that needs a compositor and plain X would show black corners."""
+_PILL_PAD = 2  # the switch's recess around its two buttons
+_LOUPE = 120  # the lens's diameter
+_LOUPE_OFFSET = QPointF(22, -150)  # from the cursor to the lens's top-left: above and to the right
+_READOUT_SIZE = QSizeF(80, 22)
 
-    _LENS = 120
-    _READOUT = QRect(22, 126, 80, 22)
 
-    def __init__(self, parent: QWidget) -> None:
-        super().__init__(
-            parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
-        )
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._pixmap: QPixmap | None = None
-        self._density = 0.0
-        self.setFixedSize(self._LENS + 4, 150)
-        self.setMask(QRegion(QRect(2, 2, self._LENS, self._LENS), QRegion.RegionType.Ellipse).united(QRegion(self._READOUT)))
+def loupe_rect(cursor: QPointF, bounds: QRectF) -> QRectF:
+    """Where the lens goes for a cursor at `cursor`: above and to the right of it, flipped below or to
+    the left where that would leave `bounds` (the image view), so it never hides under an edge."""
+    x, y = cursor.x() + _LOUPE_OFFSET.x(), cursor.y() + _LOUPE_OFFSET.y()
+    if x + _LOUPE > bounds.right():
+        x = cursor.x() - _LOUPE_OFFSET.x() - _LOUPE
+    if y < bounds.top():
+        y = cursor.y() + _LOUPE_OFFSET.x()
+    return QRectF(x, y, _LOUPE, _LOUPE)
 
-    def show_patch(self, image: QImage, density: float, global_pos: QPoint) -> None:
-        ratio = self.devicePixelRatioF()
-        if ratio != 1.0:  # a crisp patch at the screen's real resolution, not a stretched one
-            image = image.scaled(
-                round(image.width() * ratio), round(image.height() * ratio),
-                Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation,
-            )
-        self._pixmap = QPixmap.fromImage(image)
-        self._pixmap.setDevicePixelRatio(ratio)
-        self._density = density
-        self.move(global_pos + QPoint(18, 18))
-        self.show()
-        self.update()
 
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        lens = QRectF(2, 2, self._LENS, self._LENS)
-        if self._pixmap is not None:
-            path = QPainterPath()
-            path.addEllipse(lens)
-            painter.save()
-            painter.setClipPath(path)
-            painter.drawPixmap(lens, self._pixmap, QRectF(self._pixmap.rect()))
-            painter.restore()
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QColor(theme.LOUPE_RING), 3))
-        painter.drawEllipse(lens.adjusted(1.5, 1.5, -1.5, -1.5))
-        centre = lens.center()
-        cross = QColor(255, 255, 255, 128)
-        painter.setPen(QPen(cross, 1))
-        painter.drawLine(QPointF(lens.left() + 6, centre.y()), QPointF(centre.x() - 8, centre.y()))
-        painter.drawLine(QPointF(centre.x() + 8, centre.y()), QPointF(lens.right() - 6, centre.y()))
-        painter.drawLine(QPointF(centre.x(), lens.top() + 6), QPointF(centre.x(), centre.y() - 8))
-        painter.drawLine(QPointF(centre.x(), centre.y() + 8), QPointF(centre.x(), lens.bottom() - 6))
-        painter.drawEllipse(centre, 8, 8)  # the pixel a click would sample
-        painter.setBrush(QColor(theme.READOUT_BG))
-        painter.setPen(QColor(theme.BORDER))
-        painter.drawRect(self._READOUT.adjusted(0, 0, -1, -1))
-        painter.setFont(theme.edge_font(12))
-        painter.setPen(QColor(theme.EDGE_PRINT))  # not a status colour: a density isn't good or bad
-        painter.drawText(self._READOUT, Qt.AlignmentFlag.AlignCenter, self.readout_text())
+def paint_loupe(painter: QPainter, lens: QRectF, pixmap: QPixmap, density: float) -> None:
+    """A round lens of `pixmap` with a crosshair and a ring on the pixel a click would sample, and
+    the density that click would read in edge print underneath."""
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setOpacity(1.0)
+    path = QPainterPath()
+    path.addEllipse(lens)
+    painter.save()
+    painter.setClipPath(path)
+    painter.drawPixmap(lens, pixmap, QRectF(pixmap.rect()))
+    painter.restore()
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.setPen(QPen(QColor(0, 0, 0, 120), 6))  # a soft dark edge, so the ring reads on light frames
+    painter.drawEllipse(lens.adjusted(-2, -2, 2, 2))
+    painter.setPen(QPen(QColor(theme.LOUPE_RING), 3))
+    painter.drawEllipse(lens.adjusted(1.5, 1.5, -1.5, -1.5))
+    centre = lens.center()
+    painter.setPen(QPen(QColor(255, 255, 255, 128), 1))
+    painter.drawLine(QPointF(lens.left() + 6, centre.y()), QPointF(centre.x() - 8, centre.y()))
+    painter.drawLine(QPointF(centre.x() + 8, centre.y()), QPointF(lens.right() - 6, centre.y()))
+    painter.drawLine(QPointF(centre.x(), lens.top() + 6), QPointF(centre.x(), centre.y() - 8))
+    painter.drawLine(QPointF(centre.x(), centre.y() + 8), QPointF(centre.x(), lens.bottom() - 6))
+    painter.drawEllipse(centre, 8, 8)
+    readout = QRectF(centre.x() - _READOUT_SIZE.width() / 2, lens.bottom() + 4, _READOUT_SIZE.width(), _READOUT_SIZE.height())
+    painter.setBrush(QColor(theme.READOUT_BG))
+    painter.setPen(QColor(theme.BORDER))
+    painter.drawRoundedRect(readout, 3, 3)
+    painter.setFont(theme.edge_font(12))
+    painter.setPen(QColor(theme.EDGE_PRINT))  # not a status colour: a density isn't good or bad
+    painter.drawText(readout, Qt.AlignmentFlag.AlignCenter, loupe_text(density))
+    painter.restore()
 
-    def readout_text(self) -> str:
-        return f"D {self._density:.2f}"
+
+def loupe_text(density: float) -> str:
+    return f"D {density:.2f}"
 
 
 class SaveProfileDialog(QDialog):
@@ -650,7 +675,6 @@ class MainWindow(QWidget):
         self._thumbs_timer.setSingleShot(True)
         self._thumbs_timer.timeout.connect(self._refresh_filmstrip_thumbnails)
 
-        self._magnifier = Magnifier(self)
         self._build_ui()
         size = _compute_window_size()
         self.setFixedSize(size)
@@ -743,7 +767,7 @@ class MainWindow(QWidget):
         self.image_view = ImageView()
         self.image_view.clicked.connect(self._on_image_clicked)
         self.image_view.hovered.connect(self._on_image_hovered)
-        self.image_view.left.connect(self._magnifier.hide)
+        self.image_view.left.connect(self.image_view.clear_loupe)
         left.addWidget(self.image_view, stretch=1)
 
         self.caption = QLabel(_CAPTION_NEGATIVE)
@@ -1064,7 +1088,7 @@ class MainWindow(QWidget):
         self._display_estimate = None
         self._auto_mask = None
         self._stretch = (0.0, 1.0)
-        self._magnifier.hide()
+        self.image_view.clear_loupe()
         if frame.preview is not None:
             self._show_placeholder_preview(frame)
         else:
@@ -1464,11 +1488,16 @@ class MainWindow(QWidget):
         else:
             shown = apply_stretch(patch, *self._stretch)
         magnified = magnify_patch(shown, zoom=_MAGNIFIER_ZOOM)
-        anchor = self.image_view.mapToGlobal(QPoint(0, 0))
         rect = self.image_view._image_rect()
         scale = self.image_view.display_scale()
-        global_pos = anchor + QPoint(int(rect.x() + disp_x * scale), int(rect.y() + disp_y * scale))
-        self._magnifier.show_patch(_qimage(magnified), density, global_pos)
+        cursor = QPointF(rect.x() + (disp_x + 0.5) * scale, rect.y() + (disp_y + 0.5) * scale)
+        pixmap = QPixmap.fromImage(_qimage(magnified))
+        ratio = self.image_view.devicePixelRatioF()
+        if ratio != 1.0:  # a crisp patch at the screen's real resolution, not a stretched one
+            pixmap = pixmap.scaled(round(pixmap.width() * ratio), round(pixmap.height() * ratio),
+                                   Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation)
+            pixmap.setDevicePixelRatio(ratio)
+        self.image_view.set_loupe(pixmap, density, cursor)
 
     # --- save / develop -------------------------------------------------------------------------
 
