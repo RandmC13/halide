@@ -63,7 +63,7 @@ _ISO_SHADOW_FRACTION_OF_DMAX = 0.9
 # artifacts, not photographed detail. Anything beyond these goes into the curve's toe/shoulder —
 # compressed, never clipped, since the curve is asymptotic at both ends.
 #
-# The highlight end is 99.5, not 99.9: chosen by the user from greyscale proof sheets of a whole
+# The highlight end is 99.5, not 99.9: chosen from greyscale proof sheets of a whole
 # real 37-frame roll at 99.9 / 99.5 / 99.0 (grade fitted to the same range each time). At 99.9 the
 # brightest 0.1% — on specular-heavy frames that's chrome glints, whose top 1% spanned ~1 stop on
 # IMG_0158 — set the exposure and printed the whole frame dark, the opposite of a printer letting
@@ -159,9 +159,8 @@ def fit_print(
     which the fitted exposure absorbs exactly) — what makes `halide print` on an externally
     exposure-adjusted flat positive well-defined.
 
-    Replaces the old shadow-only `estimate_exposure` (one percentile pinned to one fixed target,
-    whose own docstring admitted the target was a scene-dependent guess) and the fixed default
-    contrast=0.5 — together those used only about half the paper on real scans (sRGB ~45 blacks,
+    Unlike a shadow-only exposure (one percentile pinned to one fixed target, a scene-dependent
+    guess) with a fixed contrast of 0.5, which together used only about half the paper on real scans (sRGB ~45 blacks,
     ~220-233 whites, against the paper's own ~11 / 255).
     """
     shadow_point, highlight_point = paper_exposure_range(curve)

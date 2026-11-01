@@ -140,7 +140,7 @@ def rule(columns: int = 20) -> str:
     """A dim row of sprocket-hole ticks, used as a section divider that doubles as a light
     filmstrip motif — e.g. framing `profile list` or a batch run's header/footer.
 
-    Sizing convention (the user's, keep to it): framing one or two lines of output, the rule is as
+    Sizing convention: framing one or two lines of output, the rule is as
     wide as the text so it neatly wraps it; framing longer output, it spans the whole terminal line
     — a fixed-width rule over long output looks like it stops abruptly. Use framed() /
     rule_fitting() / full_width_rule() rather than guessing a column count."""

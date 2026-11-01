@@ -706,7 +706,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     # before the sheet closes (the calibration prompt must come first). The workers
     # develop on it (run_batch): on a GPU through the shared GPU service, or — if it can't be used —
     # with a CUDA context per worker, whose default count also fits the card's memory.
-    device = resolve_device_arg(args, isolated=True)  # the parent never computes on the card (2.4-7)
+    device = resolve_device_arg(args, isolated=True)  # the parent never computes on the card
     # A dry run only plans: the GPU service is never started.
     compute = plan_compute(jobs, device, "develop") if dry else start_compute(stack, sheet, jobs, device)
     compute_row(sheet, device, compute, planned=dry)

@@ -366,8 +366,7 @@ def maybe_save_profile(
     """Save the resolved profile under --save-profile-as, if given, returning where it went (None
     if nothing was asked to be saved); `announce=False` leaves reporting it to the caller. `profile=None` means no
     single profile was computed here (per-frame --auto-density produces a different profile per
-    image; --invert-only skips density balance entirely) — that is an error if the user asked to
-    save one. `tone` (e.g. from a --pick session's Print controls) is saved alongside it."""
+    image; --invert-only skips density balance entirely) — that is an error if saving one was requested. `tone` (e.g. from a --pick session's Print controls) is saved alongside it."""
     save_as = getattr(args, "save_profile_as", None)
     if not save_as:
         return None

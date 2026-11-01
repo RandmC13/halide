@@ -430,7 +430,7 @@ def process_scan(
                 copy_exif_metadata(str(input_path), str(tmp_path), drop_icc=True)
             except _EXIF_FAILURE as exc:
                 # The pixels are already fully developed and written — a missing camera-metadata
-                # copy is a warning, not a failed frame (2.3-4).
+                # copy is a warning, not a failed frame.
                 exif_warning = f"{input_path}: developed, but its camera metadata couldn't be copied ({exc})"
             if record is not None:
                 set_description(tmp_path, record)

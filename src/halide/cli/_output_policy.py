@@ -1,11 +1,10 @@
-"""What halide does when an output file already exists (the user's decision): ask in a terminal,
+"""What halide does when an output file already exists (a deliberate policy): ask in a terminal,
 refuse in a script, --overwrite / --skip-existing to choose.
 Writing over the scan being developed is refused in every mode, whatever the flags say.
 
 Shared by every command that writes files (invert/batch/print/export/contact) so the policy reads
-the same way everywhere, rather than each command inventing its own overwrite prompt (the gap this
-replaces: `console.confirm_overwrite` silently proceeded whenever stdin wasn't a tty, and no bulk
-command checked for pre-existing outputs at all)."""
+the same way everywhere, rather than each command inventing its own overwrite prompt. No command proceeds silently over
+existing outputs, tty or not."""
 
 from __future__ import annotations
 

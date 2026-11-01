@@ -39,7 +39,7 @@ class DensityProfile:
     notes: str | None = None
     """Free-form user text about how this profile was produced (e.g. light source, scanner
     settings, which frame(s) were used to anchor it) — not read by any pipeline code, purely for
-    the user's own future reference. Editable after the fact via `halide profile edit`."""
+    the profile owner's own future reference. Editable after the fact via `halide profile edit`."""
 
 
 @dataclass(frozen=True)
@@ -47,8 +47,8 @@ class ToneCurveParams:
     """Parameters for the final tone-render stage.
 
     mode="paper" (the default, the "print" output) runs the inverted, density-balanced image
-    through a print-emulating response curve with a smooth toe/shoulder, replacing the old hard
-    np.clip(0, 1) that caused inconsistent clipping. mode="linear" (the "flat" output) is the
+    through a print-emulating response curve with a smooth toe/shoulder, replacing a hard
+    np.clip(0, 1), which clips inconsistently. mode="linear" (the "flat" output) is the
     minimal-bias escape hatch: white balance + density balance + invert + one global exposure
     scale, for users who want to grade elsewhere — per the reference blog, exposure and white
     balance are the only adjustments that keep a flat positive faithful to the negative.

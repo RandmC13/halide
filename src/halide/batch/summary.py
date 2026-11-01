@@ -10,9 +10,9 @@ from typing import Callable
 
 from halide.cli.console.runsheet import RunSheet
 
-# The user's choice (2026-10-02, option A): only a fitted grade well under the rest of the roll is
-# worth a look. Checked on Roll 16: healthy frames 0.86-1.00 (median 1.00); the old badly cropped
-# frames (an opaque film-holder strip in the crop) fitted ~0.46.
+# Only a fitted grade well under the rest of the roll is worth a look. Measured on a real 37-frame
+# roll: healthy frames 0.86-1.00 (median 1.00); badly cropped frames (an opaque film-holder strip
+# in the crop) fitted ~0.46.
 LOW_GRADE_MARGIN = 0.25
 MIN_FRAMES_FOR_CHECK = 5  # a median of two or three frames says little
 GRADE_CAP = 1.0  # fit_print caps the grade at the real paper's own

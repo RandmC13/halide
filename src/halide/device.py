@@ -74,7 +74,7 @@ def resolve_device(requested: str | None = None, *, isolated: bool = False) -> C
 
     `isolated=True` does the probe in a short-lived child process instead of here, for a caller
     that never computes on the card itself (a batch's parent: its workers or the GPU service do) —
-    so no CUDA context, and none of CuPy's host memory, ever exists in that process (2.4-7). The
+    so no CUDA context, and none of CuPy's host memory, ever exists in that process. The
     result is the same ComputeDevice; only the process that learned it differs.
     """
     requested = requested_device(requested)
@@ -184,7 +184,7 @@ class NvidiaDriver:
 
 def detect_nvidia_driver() -> NvidiaDriver | None:
     """Look for an NVIDIA driver directly via `ctypes` — no CuPy, no subprocess, and no parsing
-    `nvidia-smi`'s output (its header format changes between driver versions; the user's own reads
+    `nvidia-smi`'s output (its header format changes between driver versions; a driver's own reads
     "CUDA UMD Version", not "CUDA Version"). This runs in the main process only (see `halide gpu`
     and the CLI's GPU hint), and only bothers when CuPy itself isn't already importable — most
     people running this have no NVIDIA card at all, so "not found" must be the fast, silent, normal

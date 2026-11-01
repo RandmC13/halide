@@ -43,8 +43,7 @@ class Cube1D:
         [domain_min, domain_max] are clamped to the LUT's endpoints — the same floor/ceiling a
         physical curve (e.g. photographic paper) has.
 
-        Follows `x`'s own dtype throughout (used to hardcode float64/int64 regardless of caller
-        dtype) — on a full-size image array, forcing float64 here silently doubled the memory of
+        Follows `x`'s own dtype throughout (not a fixed float64/int64) — on a full-size image array, forcing float64 here silently doubled the memory of
         this function's several image-shaped temporaries even when the rest of the pipeline had
         carefully stayed in float32. `x`'s own precision already bounds the result's accuracy, so
         this changes nothing about correctness, only which dtype the arithmetic runs in.

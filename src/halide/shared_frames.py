@@ -21,8 +21,8 @@ Two roles, two functions, deliberately not symmetric:
   defeating the "let the resource tracker clean it up when its creator dies" guarantee above.
   `track=False` is a Python 3.13 addition (gh-82300); this project's floor is 3.11
   (pyproject.toml). Below 3.13 `attach_frame` raises `SharedMemoryUnavailable` and `sweep` does
-  nothing (see `_UNTRACKED_ATTACH_SUPPORTED`). An earlier version attached the old, tracked way and
-  unregistered by hand, but a batch's processes share one resource tracker, so that unregister also
+  nothing (see `_UNTRACKED_ATTACH_SUPPORTED`). Attaching the old, tracked way and
+  unregistering by hand doesn't work: a batch's processes share one resource tracker, so that unregister also
   dropped the *creator's* registration (and made the tracker print KeyError tracebacks). The batch
   orchestrator never starts the shared GPU service below 3.13 either
   (`batch/orchestrator.py::_service_python_supported`): those interpreters use per-worker GPU mode.

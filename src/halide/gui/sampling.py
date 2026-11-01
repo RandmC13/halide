@@ -108,9 +108,8 @@ def full_res_to_display_coords(full_x: int, full_y: int, stride: int) -> tuple[i
 
 def extract_magnifier_patch(image: np.ndarray, x: int, y: int, radius: int = 12) -> np.ndarray:
     """Crop a fixed-size (2*radius+1, 2*radius+1, 3) patch from `image` centered at (x, y),
-    edge-padding near the image border rather than shrinking — the caller uploads this into a
-    FIXED-SIZE dpg dynamic texture on every hover event, so the output shape must never change or
-    the update degrades into a full texture recreate."""
+    edge-padding near the image border rather than shrinking — the caller shows this in a
+    fixed-size magnifier widget on every hover event, so the output shape must never change."""
     h, w = image.shape[:2]
     y0, y1 = y - radius, y + radius + 1
     x0, x1 = x - radius, x + radius + 1

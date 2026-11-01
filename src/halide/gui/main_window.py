@@ -277,7 +277,7 @@ class ImageView(QWidget):
 
 class Magnifier(QWidget):
     """A frameless, always-on-top zoomed patch following the cursor over the image. Needs a real
-    parent: Wayland refuses to place a parentless popup-type window (see the Qt rewrite's notes)."""
+    parent: Wayland refuses to place a parentless popup-type window."""
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(
@@ -307,11 +307,10 @@ class Magnifier(QWidget):
 
 class SaveProfileDialog(QDialog):
     """Name the calibration and save it. On a name collision (checked via find_profile, so a name
-    differing only by case counts too - 2.2-12) the same dialog asks again, with its button
+    differing only by case counts too) the same dialog asks again, with its button
     relabelled "Overwrite", rather than stacking a second dialog. The name is validated live as it's
-    typed (2.6-1): an invalid name disables Save and shows why, rather than only failing once
-    clicked, or - the previous behaviour - not even that: any disk error or bad name used to escape
-    this dialog as an unhandled exception with no on-screen sign the save had failed at all."""
+    typed: an invalid name disables Save and shows why, rather than only failing once
+    clicked, and any disk error is shown in the dialog rather than escaping it."""
 
     saved = Signal(str, str)  # (name, message)
 

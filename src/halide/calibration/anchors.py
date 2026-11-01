@@ -4,7 +4,7 @@ of a roll, and everything the picker says about them - pure, no Qt (gui/ only di
 A point stores the frame it came from, where, its raw (working-space) RGB, and that frame's scan
 exposure. The RGB is kept as sampled; each point is normalised to the roll's *reference* scan
 exposure only when fitting (`normalised_rgb`), because frames of one roll are often digitized at
-different camera exposures (Roll 16: 1/25-1/60) and density balance is a power function - a scan
+different camera exposures (1/25-1/60 on a real roll) and density balance is a power function - a scan
 brighter by k shifts a pixel's colour, not just its brightness (see calibration/scan_consistency.py).
 That's the same one global multiply --match-scan-exposure makes, against the same reference the
 saved profile records, so a profile fitted here develops the roll correctly with that flag.
@@ -40,7 +40,7 @@ from halide.core.types import DensityProfile
 from halide.io.scan_metadata import ScanSettings
 
 # Agreement bands, in CC (density x 100) from what the other points agree neutral is. Calibrated on
-# Roll 16: trusted whites (trike, car, T-shirt, clouds) read CC 0.8-4.8 against each other; the two
+# a real 37-frame roll: trusted whites (trike, car, T-shirt, clouds) read CC 0.8-4.8 against each other; the two
 # objects already known to be suspect - a warm-lit cloud edge (0147) and the cream
 # Alhambra wall (0159) - read CC 9.6 Y and CC 7.9 R. So "amber" is where a point deserves a second
 # look, and "red" is a point that almost certainly isn't neutral.
@@ -60,7 +60,7 @@ WEDGE_HIGH_PERCENTILE = 99.5
 
 # The error assumed in each picked point's density, per channel, when predicting how far the fit
 # can be trusted (fit_reliability): CC 0.5 - well below the CC 1-5 real "trusted" whites were
-# measured off neutral on Roll 16, so this sigma is optimistic. The prediction then sums the red and
+# measured off neutral on a real roll, so this sigma is optimistic. The prediction then sums the red and
 # blue layers' errors as if they always opposed (core.density.predicted_cast_error), which is
 # pessimistic; the two partly offset, so treat the result as a guide to where the fit is thin, not a bound.
 ASSUMED_PICK_ERROR = 0.005
@@ -159,7 +159,7 @@ def agreement(points: Sequence[NeutralPoint], reference: ScanSettings | None) ->
     below MIN_POINTS_FOR_AGREEMENT, and for any point whose others can't support a fit of their own:
     fewer than two of them, or spanning less than MIN_DENSITY_SEPARATION (the Save gate's minimum).
     Without that, a line through two nearly-equal-density points extrapolated to judge a third far
-    away - found on Roll 16, where the trike (D 1.22) read "CC 8 M" against a car and T-shirt only
+    away - seen on a real roll, where the trike (D 1.22) read "CC 8 M" against a car and T-shirt only
     0.06 D apart, an artefact of the extrapolation, not a real disagreement."""
     if len(points) < MIN_POINTS_FOR_AGREEMENT:
         return [None] * len(points)

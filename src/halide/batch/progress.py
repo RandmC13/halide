@@ -136,7 +136,7 @@ class GridProgressRenderer(_Renderer):
     proofed roll reads. The last strip is only as long as the frames left over, like a real roll's
     short end strip.
 
-    Nothing moves between strips — an earlier version showed one strip-sized window at a time and
+    Nothing moves between strips — an alternative that showed one strip-sized window at a time would have
     wiped across to the next slice when it finished, which read as busy rather than as film. Here the
     only motion is per-frame: an active frame pulses, a finished one briefly fades before settling
     to near-black. The sheet itself develops in place.
@@ -159,8 +159,7 @@ class GridProgressRenderer(_Renderer):
     Sprocket rows are sized from the strip's *visible* width (computed from the per-cell layout, not
     from `len()` of a string containing invisible ANSI color codes), which keeps them aligned with
     the frame row. Each redraw builds the whole frame as one string and derives the next cursor-up
-    distance from that string's own line count — hand-maintained line counting drifted in an
-    earlier version.
+    distance from that string's own line count — hand-maintained line counting drifts.
 
     The per-frame finishing fade is a small synchronous `time.sleep()` (~80ms per completed job) on
     whatever thread calls `report()` — no background thread, deliberately — which is negligible

@@ -48,7 +48,7 @@ def quiet_auto_estimate(image: np.ndarray) -> DensityProfile | None:
     """calibration/auto.py's estimate for the Positive view before any points exist, or None. Its
     "candidates unusually close in density" warning is meant for `--auto-density` users on the
     command line; here the estimate is already labelled a rough estimate in the window, so the
-    warning would only be terminal noise (it printed on launch for some Roll 16 frames)."""
+    warning would only be terminal noise (it would print on launch for some frames)."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         try:
@@ -236,8 +236,8 @@ class CalibrationSession:
                 frame_number=numbers.get(p.frame),
                 green_density=anchors.green_density(anchors.normalised_rgb(p, reference)),
                 agreement=agreements[i],
-                # A point from a frame with no scan EXIF can't be matched to the roll's exposure
-                # (2.1-10): it counts as it was sampled. Only worth saying when the roll has one.
+                # A point from a frame with no scan EXIF can't be matched to the roll's exposure,
+                # so it counts as it was sampled. Only worth saying when the roll has one.
                 note=(f"point {i + 1}: frame has no scan exposure data, used unnormalised"
                       if p.scan is None and reference is not None else None),
             )

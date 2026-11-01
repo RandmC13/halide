@@ -1,6 +1,6 @@
 """Shared help text and argparse `type=` checks for the CLI: the examples epilog every subcommand
 ends with, the one `--workers` definition, and the range checks on print and calibration numbers
-(a paper grade of -1 or a red multiplier of 0 used to be accepted and 'developed' happily).
+(a paper grade of -1 or a red multiplier of 0 is refused up front, not 'developed' happily).
 
 Deliberately free of numpy and the pipeline: building the parser must stay cheap."""
 

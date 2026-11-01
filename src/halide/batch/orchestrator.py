@@ -58,7 +58,7 @@ from halide.io.roll import TIFF_SUFFIXES, list_scans  # noqa: F401 -- TIFF_SUFFI
 # per-line temporaries in core/ (see git history), then 3 after moving every full-resolution path
 # to band-by-band processing into one owned buffer (halide/banding.py) — the frame itself, the
 # print fit's 1/3-frame luminance, and at most one extra frame for flat output's percentile or auto
-# calibration's statistics, where it used to be ~9 frames of scratch.
+# calibration's statistics, against ~9 frames of scratch without banding.
 _PEAK_RSS_MULTIPLIER = 3
 _BASELINE_PROCESS_OVERHEAD_BYTES = 150 * 1024 * 1024
 _FALLBACK_PER_WORKER_BYTES = 5 * 1024**3  # used only if a file's header can't be read at all
@@ -72,7 +72,7 @@ _EXPORT_PEAK_RSS_MULTIPLIER = 2
 _EXPORT_BASELINE_PROCESS_OVERHEAD_BYTES = 100 * 1024 * 1024
 
 # GPU workers: peak *device* memory per worker, modelled
-# like RAM as `context + K * decoded_pixel_bytes`. Fitted from the user's RTX 3070 benchmark
+# like RAM as `context + K * decoded_pixel_bytes`. Fitted from an RTX 3070 benchmark
 # (benchmarks/gpu_bench.py, 2026-09-27), one 181 MiB frame developed on the GPU:
 #   - CuPy's pool peaked at 821 MiB with a given profile and 878 MiB with --auto-density (4.54 and
 #     4.86 x the frame) — the resident frame, the 64 MiB device bands' temporaries (banding.
@@ -91,7 +91,7 @@ _FALLBACK_FRAME_BYTES = 200 * 1024 * 1024
 # largest GPU worker at 1212-1235 MiB RSS against 392-403 MiB for a CPU worker on the same frames
 # (and a single GPU `invert` 1209 vs 369 MiB) — CUDA's and CuPy's own host-side libraries, ~840 MiB.
 # Added to the RAM estimate for GPU pools (rounded up to 1 GiB), so a machine with a big card and
-# little RAM isn't given more workers than its RAM holds. On the user's machine (7.6 GiB free) this,
+# little RAM isn't given more workers than its RAM holds. On a machine with 7.6 GiB free this,
 # not the card, is what limits per-worker GPU mode (the fallback when the shared service below
 # can't be used) to 4 workers.
 _GPU_HOST_OVERHEAD_BYTES = 1024 * 1024 * 1024
@@ -102,7 +102,7 @@ _GPU_HOST_OVERHEAD_BYTES = 1024 * 1024 * 1024
 # The service's own host memory is taken off the RAM budget before sizing the workers:
 # `_GPU_SERVICE_HOST_BYTES` (CUDA's and CuPy's host-side libraries — the measured GPU worker overhead
 # above) plus one frame's working memory, per batch (estimate_service_host_bytes): 1205 MiB for a
-# real 181 MiB frame. Measured on the user's RTX 3070: the service peaked at ~1178 MiB RSS
+# real 181 MiB frame. Measured on an RTX 3070: the service peaked at ~1178 MiB RSS
 # (~933 MiB PSS), so this stands as it is.
 _GPU_SERVICE_HOST_BYTES = _GPU_HOST_OVERHEAD_BYTES
 
@@ -847,7 +847,7 @@ def _thumbnail_worker(job: BatchJob, thumbnail_long_edge: int) -> BatchResult:
 # worker code. Workers then share those pages copy-on-write instead of each importing numpy,
 # colour-science and scipy afresh — measured: 4 idle workers' proportional memory 294 -> 73 MiB.
 # colour is listed explicitly because halide imports it lazily (only where it's used), so
-# preloading halide.processing alone no longer loads it.
+# preloading halide.processing alone doesn't load it.
 # Never cupy: importing it is harmless, but anything that touched CUDA here would leave every forked
 # worker with an unusable CUDA context. Each GPU worker imports it and makes its own context on its
 # first job (_worker_device); a test pins that a fresh worker hasn't imported it.
@@ -856,7 +856,7 @@ _FORKSERVER_PRELOAD = ["__main__", "halide.processing", "colour"]
 
 def _start_forkserver(context) -> None:
     """Start the pool's forkserver (if it isn't already running) with Ctrl-C and SIGHUP ignored
-    from its first instruction (2.4-9): Ctrl-C in the first second of a batch otherwise interrupted
+    from its first instruction: Ctrl-C in the first second of a batch otherwise interrupted
     its preload of colour/scipy and printed pages of tracebacks. It passes the ignored signals on
     to every worker it forks, and the pool's worker initializer ignores them again anyway. Main
     thread only, like any signal handling; the picker's background pools start it as before."""
@@ -949,7 +949,7 @@ def _run_pool(
             try:
                 context = _pool_context()
                 _start_forkserver(context)
-                # Workers ignore Ctrl-C and SIGHUP (2.4-9): the parent owns cancelling, below.
+                # Workers ignore Ctrl-C and SIGHUP: the parent owns cancelling, below.
                 with ProcessPoolExecutor(max_workers=max_workers, mp_context=context,
                                          initializer=pool_worker_init) as executor:
                     try:
@@ -982,7 +982,7 @@ def _run_pool(
                                 submit_next()
                     except KeyboardInterrupt:
                         # Ctrl+C (or SIGHUP/SIGTERM, above) can land on any bytecode boundary, from
-                        # the first submit (starting the workers — 2.4-9, the first second of a
+                        # the first submit (starting the workers, in the first second of a
                         # batch) to the last result. Return whatever completed rather than
                         # propagating, so the caller can report "X/N completed, cancelled" (see
                         # batch_cmd.py/export_cmd.py) instead of every already-finished result being

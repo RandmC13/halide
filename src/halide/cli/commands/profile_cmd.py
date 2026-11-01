@@ -168,7 +168,7 @@ def _show_roll(path: Path) -> None:
 
 def _reject_path_like(value: str, command: str) -> None:
     """`profile rename`/`delete`/`edit` take a bare saved-profile name, never a file path - unlike
-    `profile show` and `--profile`, which accept both (2.5-12). Caught here with a message that
+    `profile show` and `--profile`, which accept both. Caught here with a message that
     says so, rather than a confusing "no saved profile named '/long/path/to/it.json'" from the
     name-only lookup these three subcommands use."""
     if "/" in value or "\\" in value or value.lower().endswith(".json"):
