@@ -15,7 +15,7 @@ _STDERR_TAIL = 20
 class DevelopRunner(QObject):
     frameStarted = Signal(int, str)  # index, scan name
     frameDone = Signal(int, bool, str)  # index, ok, detail or error
-    summaryRow = Signal(str, str)  # label, value
+    summaryRow = Signal(str, str, str)  # "row" or "warn", label, value
     finished = Signal(int, int, bool)  # developed, total, cancelled
     failed = Signal(str)  # a child that stopped without an end line: its last stderr lines
 
@@ -79,8 +79,8 @@ class DevelopRunner(QObject):
                 self.frameStarted.emit(int(f[1]), f[2])
             elif f[0] == "done" and len(f) == 4 and f[2] in ("ok", "failed"):
                 self.frameDone.emit(int(f[1]), f[2] == "ok", f[3])
-            elif f[0] == "summary" and len(f) == 3:
-                self.summaryRow.emit(f[1], f[2])
+            elif f[0] == "summary" and len(f) == 4 and f[1] in ("row", "warn"):
+                self.summaryRow.emit(f[1], f[2], f[3])
             elif f[0] == "end" and len(f) == 4:
                 self._ended = True
                 self._last_end = (int(f[1]), int(f[2]), f[3] == "1")

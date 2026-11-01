@@ -61,8 +61,11 @@ class RunRecord:
         self.log = RunLog(path, kind) if path is not None else None
         self.results: list = []
         self._closed = False  # finish and abort each close the log block, once between them
+        self._compute: list = []
 
     def start(self, sheet: console.RunSheet, jobs, kept: list[str]) -> None:
+        # The window shows no run sheet, so its summary repeats which device did the work.
+        self._compute = [r for r in sheet.plain_rows if r[1] == "Compute"]
         if self.log is not None:
             from halide.processing import _halide_version
 
@@ -88,7 +91,8 @@ class RunRecord:
             else:
                 rows.append(("row", "Log", str(self.log.path)))
         console.print_rows(rows, quiet=self.quiet)
-        renderer.summary(rows)
+        log_at = next((i for i, r in enumerate(rows) if r[1] == "Log"), len(rows))
+        renderer.summary(rows[:log_at] + self._compute + rows[log_at:])  # the machine renderer only
 
     def _sweep(self) -> None:
         """The pool is done, so any partial file left in the output folder belongs to a dead worker."""

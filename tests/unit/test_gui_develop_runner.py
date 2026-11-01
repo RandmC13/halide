@@ -10,7 +10,7 @@ import sys
 import time
 
 import pytest
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtWidgets import QApplication
 
 from halide.gui.develop_runner import DevelopRunner
 
@@ -39,7 +39,8 @@ if mode == "slow":
     print("end\t1\t2\t1", flush=True)
     sys.exit(130)
 print("start\t1\tframe_01.tif\ndone\t1\tfailed\tbad scan", flush=True)
-print("summary\tPrints\tgrade 0.88", flush=True)
+print("summary\trow\tPrints\tgrade 0.88", flush=True)
+print("summary\tPrints\tthe old three-field form", flush=True)
 print("end\t1\t2\t0", flush=True)
 sys.exit(1 if mode == "fail" else 0)
 '''
@@ -47,7 +48,7 @@ sys.exit(1 if mode == "fail" else 0)
 
 @pytest.fixture(scope="module")
 def app():
-    return QCoreApplication.instance() or QCoreApplication([])
+    return QApplication.instance() or QApplication([])  # a bare QCoreApplication would break later window tests
 
 
 @pytest.fixture
@@ -61,7 +62,7 @@ def _record(runner):
     events = []
     runner.frameStarted.connect(lambda i, n: events.append(("start", i, n)))
     runner.frameDone.connect(lambda i, ok, d: events.append(("done", i, ok, d)))
-    runner.summaryRow.connect(lambda k, v: events.append(("summary", k, v)))
+    runner.summaryRow.connect(lambda kind, k, v: events.append(("summary", kind, k, v)))
     runner.finished.connect(lambda a, b, c: events.append(("finished", a, b, c, runner.step)))
     runner.failed.connect(lambda t: events.append(("failed", t)))
     return events
@@ -83,7 +84,7 @@ def test_signals_in_order_and_other_lines_ignored(app, fake):
     assert events == [
         ("start", 0, "frame_00.tif"), ("done", 0, True, "grade 0.88"),
         ("start", 1, "frame_01.tif"), ("done", 1, False, "bad scan"),
-        ("summary", "Prints", "grade 0.88"), ("finished", 1, 2, False, 0),
+        ("summary", "row", "Prints", "grade 0.88"), ("finished", 1, 2, False, 0),
     ]
 
 

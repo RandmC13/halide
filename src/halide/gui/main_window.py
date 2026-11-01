@@ -1553,9 +1553,9 @@ class MainWindow(QWidget):
             self.filmstrip.strip.print_done(frame_index, ok, detail)
         self._show_develop_progress()
 
-    def _on_summary_row(self, label: str, value: str) -> None:
+    def _on_summary_row(self, kind: str, label: str, value: str) -> None:
         if self._dev["phase"] == "develop":
-            self._dev["rows"].append((label, value))
+            self._dev["rows"].append((kind, label, value))
 
     def _on_develop_finished(self, developed: int, total: int, cancelled: bool) -> None:
         dev = self._dev
@@ -1596,7 +1596,7 @@ class MainWindow(QWidget):
         self.summary_panel.setEnabled(True)
         rows = list(dev["rows"])
         if dev["sharing"]:
-            rows.append(("Sharing", dev["sharing"]))
+            rows.append(("warn" if dev["sharing"].startswith("not saved") else "row", "Sharing", dev["sharing"]))
         self.summary_panel.show_result(dev["end"], rows, dev["cancelled"])
         self.notice_bar.show_activity(dev["end"])
         self._turn_to(2)
