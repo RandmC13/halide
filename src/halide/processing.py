@@ -310,7 +310,8 @@ def _report_nonfinite(name: str, count: int, total_pixels: int, on_warning: Call
 
 def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes: int | None = None,
                       *, name: str | None = None, on_warning: Callable[[str], None] | None = None):
-    """Convert `image` (host or device array) in place, band by band; a no-op for None.
+    """Convert `image` (host or device array) in place, band by band. With no `source_profile`
+    (already in the working space, e.g. halide's own output) only the non-finite clean-up runs.
 
     Also where non-finite (NaN/inf) pixels are handled: a raw converter's export can contain
     a few, e.g. from a highlight-recovery artifact. Counted and zeroed per band — only on a band
@@ -318,12 +319,13 @@ def _to_working_space(image, source_profile: LinearRGBProfile | None, band_bytes
     can poison invert()'s reciprocal, the print fit's percentiles, or the JSON provenance with NaN.
     `name`/`on_warning` are None for callers with no live warning channel (thumbnails, previews,
     the roll density pre-pass): cleaning still happens, just without a message naming the file."""
-    if source_profile is None:
-        return image
     xp = array_namespace(image)
     counts: list[int] = []
 
     def convert(band):
+        if source_profile is None:
+            counts.append(_clean_nonfinite_band(band, xp))
+            return band
         # A NaN/inf input propagates through the profile matmul (e.g. inf * -coef + inf = NaN) and
         # numpy warns about it ("invalid value encountered in matmul") every time — noise once this
         # is an intentionally handled case, not a bug, so it's suppressed here rather than left to
@@ -906,14 +908,13 @@ def export_delivery_image(
     on_warning: Callable[[str], None] | None = None,
     service=None,
     shm_prefix: str | None = None,
-) -> str | None:
+) -> None:
     """Convert one processed ACEScg TIFF into a delivery-ready sRGB PNG/JPEG. The single place this
     logic lives, so `halide export`'s single-file and bulk-directory modes, and the export worker
     pool, don't duplicate it — same reasoning as process_scan above.
 
-    Returns a warning message if the input's embedded ICC profile doesn't look like ACEScg (or is
-    missing/unusable), or None if it looks fine. Unlike ScanColorError elsewhere in this module,
-    this is not fatal — export can still proceed by assuming ACEScg, it just may be wrong.
+    A linear profile that isn't ACEScg is converted to ACEScg first (as `invert` does); a missing
+    or unusable profile raises ScanColorError, since the colours can't be verified.
 
     `device`: None or a CPU device runs the sRGB conversion on the CPU exactly as before. A GPU
     device converts there instead (see `_export_srgb_on_device`); on any GPU problem the conversion
@@ -928,35 +929,30 @@ def export_delivery_image(
     output_path = Path(output_path)
     with contextlib.ExitStack() as shared:
         frames = _shared_frame(input_path, service, shm_prefix, shared, on_warning, extra_uint8=True)
-        scan = _decode_tiff(input_path, None if frames is None else frames[0].array)
-        warning = None
-        if scan.icc_profile is None:
-            warning = f"{input_path} has no embedded ICC profile; assuming it is ACEScg"
-        else:
-            try:
-                profile = parse_linear_rgb_profile(scan.icc_profile)
-                if not np.allclose(profile.rgb_to_pcs_xyz, _acescg_matrix(), atol=1e-3):
-                    warning = (
-                        f"{input_path}'s embedded profile does not look like ACEScg — `halide export` "
-                        f"expects the output of `halide invert`/`halide batch`. Proceeding anyway, but "
-                        f"colours may be wrong"
-                    )
-            except UnsupportedICCProfileError as exc:
-                warning = f"{input_path}'s embedded profile is unusable ({exc}); assuming ACEScg anyway"
+        try:
+            image, source_profile = _read_scan(input_path, out=None if frames is None else frames[0].array)
+        except ScanInputError:
+            raise
+        except ScanColorError as exc:
+            raise ScanColorError(f"{exc}. Export the positive again from halide, or embed its "
+                                 f"linear profile") from None
+        if source_profile is not None and np.allclose(source_profile.rgb_to_pcs_xyz, _acescg_matrix(), atol=1e-3):
+            source_profile = None  # already ACEScg
+        # In place, so the GPU service's shared buffer is converted too
+        _to_working_space(image, source_profile, name=Path(input_path).name, on_warning=on_warning)
 
         if frames is not None:
             srgb_8bit = _export_on_service(input_path, frames, service, on_warning)
         else:
-            srgb_8bit = _export_srgb_on_device(input_path, scan.image, device, on_warning)
+            srgb_8bit = _export_srgb_on_device(input_path, image, device, on_warning)
         # Written under a hidden temp name beside the real one, moved into place only once the
         # PNG/JPEG is fully encoded — see process_scan's own atomic_output for why.
         with atomic_output(output_path) as tmp_path:
             if srgb_8bit is not None:
                 write_srgb_8bit_image(tmp_path, srgb_8bit, quality=quality)
             else:
-                write_delivery_image(tmp_path, scan.image, quality=quality)
-        del scan, frames, srgb_8bit
-    return warning
+                write_delivery_image(tmp_path, image, quality=quality)
+        del image, frames, srgb_8bit
 
 
 def _export_on_service(input_path, frames, service, on_warning) -> np.ndarray:

@@ -36,6 +36,7 @@ from halide.cli._calibration_args import (
     resolve_density_profile,
     resolve_scan_reference,
     resolve_stage,
+    check_no_ignored_flags,
     resolve_tone_params,
 )
 from halide.calibration.scan_consistency import scan_gain as compute_scan_gain
@@ -133,6 +134,7 @@ def run(args: argparse.Namespace) -> int:
     from halide import device as halide_device
     from halide.processing import ScanColorError, process_scan
 
+    check_no_ignored_flags(args)
     input_path = Path(args.input)
     check_input_file(input_path)
     output_path = Path(args.output)

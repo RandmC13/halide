@@ -113,16 +113,13 @@ def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
             console.ENLARGER_FRAMES, label, min_width=console.ENLARGER_MIN_SIZE[0],
             min_height=console.ENLARGER_MIN_SIZE[1], interval=0.45,
         ):
-            warning = export_delivery_image(
+            export_delivery_image(
                 input_path, args.output, quality=args.quality,
                 device=device, on_warning=lambda msg: print(console.warning(msg)),
             )
     except ScanColorError as exc:  # includes ScanInputError: not a TIFF, not RGB, ...
         raise SystemExit(str(exc))
     halide_device.release_memory()
-    if warning:
-        print(console.warning(warning))
-
     elapsed = time.monotonic() - start
     size = output_path.stat().st_size
     print(

@@ -23,7 +23,7 @@ from halide.batch.orchestrator import (
     run_print_batch,
 )
 from halide.batch.progress import cancel_notice, make_renderer
-from halide.calibration.profile_store import load_tone_override, resolve_profile_path
+from halide.calibration.profile_store import damaged_profile_message, load_tone_override, resolve_profile_path
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 from halide.cli._help import add_workers_argument
@@ -94,6 +94,8 @@ def _resolve_tone(args: argparse.Namespace) -> ToneCurveParams:
             saved_tone = load_tone_override(resolve_profile_path(args.profile))
         except FileNotFoundError as exc:
             raise SystemExit(str(exc)) from exc
+        except ValueError as exc:
+            raise SystemExit(damaged_profile_message(args.profile, exc)) from exc
     return resolve_tone_params(args, saved_tone=saved_tone)
 
 

@@ -130,6 +130,37 @@ def test_print_scan_also_cleans_nonfinite_pixels_and_warns(tmp_path):
     assert "1 pixel wasn't a valid number (NaN/inf)" in warnings[0]  # see test_one_nan_pixel... above
 
 
+def _write_own_flat(path, bad_slice=None, bad_fraction=None):
+    from halide.io.icc import output_profile_bytes
+
+    img = np.full((16, 16, 3), 0.2, dtype=np.float32)
+    if bad_slice is not None:
+        img[bad_slice] = np.nan
+    if bad_fraction is not None:
+        img.reshape(-1)[: int(img.size * bad_fraction)] = np.inf
+    write_tiff(path, img, icc_profile=output_profile_bytes())
+
+
+def test_print_scan_cleans_nonfinite_pixels_in_halides_own_files(tmp_path):
+    flat = tmp_path / "flat.tif"
+    _write_own_flat(flat, bad_slice=(1, 1, 1))
+    out = tmp_path / "print.tif"
+    warnings = []
+
+    print_scan(flat, out, ToneCurveParams(), on_warning=warnings.append)
+
+    assert np.isfinite(read_tiff(out).image).all()
+    assert len(warnings) == 1 and "1 pixel wasn't a valid number (NaN/inf)" in warnings[0]
+
+
+def test_print_scan_fails_a_halide_file_with_over_one_percent_nonfinite(tmp_path):
+    flat = tmp_path / "flat.tif"
+    _write_own_flat(flat, bad_fraction=0.05)
+    with pytest.raises(ScanColorError, match="aren't valid numbers - this export looks broken"):
+        print_scan(flat, tmp_path / "print.tif", ToneCurveParams())
+    assert not (tmp_path / "print.tif").exists()
+
+
 # --- Device / GPU service (bad input isn't a device failure; warnings must travel back
 # through the service without printing) --------------------------------------------------------
 

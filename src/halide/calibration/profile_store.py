@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import math
 import os
 import sys
 from dataclasses import asdict, replace
@@ -134,13 +135,33 @@ def save_profile(
             f.write("\n")
 
 
+def _damaged(path: Path, problem: str) -> ValueError:
+    return ValueError(f"{path}: damaged profile — {problem}")
+
+
+def _read_object(path: Path) -> dict:
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise _damaged(path, "it isn't a JSON object")
+    return data
+
+
+def _three_positive(path: Path, data: dict, key: str) -> tuple[float, ...]:
+    value = data[key]
+    if (not isinstance(value, list) or len(value) != 3
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
+                       for v in value)):
+        raise _damaged(path, f"{key} must be three positive numbers")
+    return tuple(value)
+
+
 def load_profile(path: str | Path) -> DensityProfile:
     path = Path(path)
-    data = json.loads(path.read_text())
+    data = _read_object(path)
     try:
         return DensityProfile(
-            white_balance=tuple(data["white_balance"]),
-            density_scale=tuple(data["density_scale"]),
+            white_balance=_three_positive(path, data, "white_balance"),
+            density_scale=_three_positive(path, data, "density_scale"),
             name=data.get("name"),
             film_stock=data.get("film_stock"),
             process=data.get("process"),
@@ -212,20 +233,32 @@ def load_tone_override(path: str | Path) -> ToneCurveParams | None:
     restores flat output (`--output flat`) - that stays a CLI-flag/preview-only choice, not
     something a saved
     profile silently changes about a future run's output format."""
-    data = json.loads(Path(path).read_text())
-    tone_data = data.get("tone")
+    path = Path(path)
+    tone_data = _read_object(path).get("tone")
     if tone_data is None:
         return None
-    return ToneCurveParams(mode="paper", exposure=tone_data["exposure"], contrast=tone_data["contrast"])
+    try:
+        exposure, contrast = tone_data["exposure"], tone_data["contrast"]
+        if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in (exposure, contrast)):
+            raise TypeError
+        if not 0 < contrast <= 2:
+            raise _damaged(path, "tone contrast must be above 0 and at most 2")
+    except (KeyError, TypeError):
+        raise _damaged(path, "tone needs a finite exposure and a contrast") from None
+    return ToneCurveParams(mode="paper", exposure=exposure, contrast=contrast)
 
 
 def load_scan_reference(path: str | Path) -> ScanSettings | None:
     """The scan exposure a profile was calibrated at, if recorded (profiles saved before this
     existed have none — pass --scan-reference FRAME for those)."""
-    scan = json.loads(Path(path).read_text()).get("scan")
+    path = Path(path)
+    scan = _read_object(path).get("scan")
     if not scan:
         return None
-    return ScanSettings(exposure_time=scan["exposure_time"], f_number=scan["f_number"], iso=scan["iso"])
+    try:
+        return ScanSettings(exposure_time=scan["exposure_time"], f_number=scan["f_number"], iso=scan["iso"])
+    except (KeyError, TypeError):
+        raise _damaged(path, "scan needs exposure_time, f_number and iso") from None
 
 
 def load_anchors(path: str | Path) -> tuple[list[dict], str | None]:

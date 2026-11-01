@@ -472,3 +472,51 @@ def test_hidden_leftover_temp_files_are_not_listed_or_found(tmp_path):
     (tmp_path / ".Other.halide-case-rename-9.json").write_text("{}")
     assert [name for name, _, _ in list_profiles(tmp_path)] == ["Roll16"]
     assert find_profile(".Other.halide-case-rename-9", tmp_path) is None
+
+
+@pytest.mark.parametrize("text", [
+    '[1, 2, 3]',
+    '{"white_balance": [1.0, 1.0], "density_scale": [1.0, 1.0, 1.0]}',
+    '{"white_balance": [1.0, 0, 1.0], "density_scale": [1.0, 1.0, 1.0]}',
+    '{"white_balance": [1.0, 1.0, 1.0], "density_scale": [1.0, -1.0, 1.0]}',
+    '{"white_balance": [1.0, NaN, 1.0], "density_scale": [1.0, 1.0, 1.0]}',
+    '{"white_balance": "abc", "density_scale": [1.0, 1.0, 1.0]}',
+])
+def test_load_profile_refuses_damaged_values(tmp_path, text):
+    path = tmp_path / "bad.json"
+    path.write_text(text)
+    with pytest.raises(ValueError, match="damaged profile"):
+        load_profile(path)
+
+
+def test_list_profiles_lists_a_non_object_file_with_its_problem(tmp_path):
+    save_named_profile(PROFILE, "good", profiles_dir=tmp_path)
+    (tmp_path / "list.json").write_text("[1, 2]")
+    by_name = {name: (profile, problem) for name, profile, problem in list_profiles(profiles_dir=tmp_path)}
+    assert by_name["good"][0] is not None
+    assert by_name["list"][0] is None and "damaged profile" in by_name["list"][1]
+
+
+@pytest.mark.parametrize("tone", [
+    '{"exposure": 0.0, "contrast": 0}', '{"exposure": 0.0, "contrast": 2.5}',
+    '{"exposure": NaN, "contrast": 1.0}', '{"contrast": 1.0}', '"x"',
+])
+def test_load_tone_override_refuses_bad_values(tmp_path, tone):
+    path = tmp_path / "p.json"
+    path.write_text('{"white_balance": [1,1,1], "density_scale": [1,1,1], "tone": ' + tone + '}')
+    with pytest.raises(ValueError, match="damaged profile"):
+        load_tone_override(path)
+
+
+def test_load_scan_reference_refuses_malformed_scan(tmp_path):
+    path = tmp_path / "p.json"
+    path.write_text('{"white_balance": [1,1,1], "density_scale": [1,1,1], "scan": {"iso": 100}}')
+    with pytest.raises(ValueError, match="damaged profile"):
+        load_scan_reference(path)
+
+
+def test_old_profile_without_sidecars_still_loads(tmp_path):
+    path = tmp_path / "old.json"
+    path.write_text('{"white_balance": [1.1, 1.0, 0.9], "density_scale": [0.1, 7.0, 1.0]}')
+    assert load_profile(path).density_scale == (0.1, 7.0, 1.0)
+    assert load_tone_override(path) is None and load_scan_reference(path) is None

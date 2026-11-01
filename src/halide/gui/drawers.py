@@ -26,7 +26,7 @@ from halide.core.types import ToneCurveParams
 from halide.gui.roll import DETAIL_FIELDS
 
 _EXPOSURE_RANGE = (-200, 200)  # hundredths, i.e. -2.00..2.00
-_GRADE_RANGE = (0, 100)  # hundredths, i.e. 0.00..1.00
+_GRADE_RANGE = (1, 100)  # hundredths, i.e. 0.01..1.00; a grade of 0 has no print to render
 
 
 class Drawer(QWidget):
@@ -186,7 +186,7 @@ class PrintControls(QWidget):
             slider.setValue(round(value * 100))
             slider.blockSignals(False)
         self.exposure_value.setText(f"{exposure:+.2f}")
-        self.grade_value.setText(f"{grade:.2f}")
+        self.grade_value.setText(f"{self.grade.value() / 100:.2f}")
 
     def show_fitted(self, exposure: float, grade: float) -> None:
         """The current frame's own fit - shown on the sliders unless the user has pinned values."""

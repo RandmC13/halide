@@ -51,6 +51,7 @@ from halide.cli._calibration_args import (
     resolve_density_profile,
     resolve_scan_reference,
     resolve_stage,
+    check_no_ignored_flags,
     resolve_tone_params,
 )
 from halide.cli._run_log import RunRecord, add_log_arguments, check_log_path
@@ -268,6 +269,7 @@ def _output_text(stage: Stage, tone_params) -> str:
 
 
 def run(args: argparse.Namespace) -> int:
+    check_no_ignored_flags(args)
     stage = resolve_stage(args)
 
     input_dir = Path(args.input_dir)
