@@ -19,9 +19,10 @@ from halide.batch.progress import cancel_notice, make_renderer
 from halide.cli import console
 from halide.cli._device_args import add_device_argument, device_fallback_warning, device_row, resolve_device_arg
 from halide.cli._naming import CLASH_FIX, add_name_argument, naming_for, stock_for_print_or_export
-from halide.cli._help import add_workers_argument
+from halide.cli._help import add_workers_argument, jpeg_quality
 from halide.cli._output_policy import (
     add_dry_run_argument,
+    RESUME_NOTE,
     add_output_policy_arguments,
     check_output_folder,
     plan_bulk_jobs,
@@ -36,7 +37,7 @@ from halide.cli._output_policy import (
     resolve_existing,
 )
 from halide.io.roll import list_scans
-from halide.cli._run_log import RunRecord, add_log_arguments
+from halide.cli._run_log import RunRecord, add_log_arguments, check_log_path
 from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
@@ -65,11 +66,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Output image path (.png, .jpg, or .jpeg) for a single file, or an output folder "
         "when `input` is a folder",
     )
-    add_output_policy_arguments(parser)
+    add_output_policy_arguments(
+        parser, skip_help=f"Export only the files whose output doesn't exist yet{RESUME_NOTE}"
+    )
     add_dry_run_argument(parser)
     add_log_arguments(parser)
     parser.add_argument(
-        "--quality", type=int, default=95, help="JPEG quality, 1-100 (default: 95, ignored for PNG)"
+        "--quality", type=jpeg_quality, default=None, metavar="N",
+        help="JPEG quality, 1-100 (default: 95); only for JPEG output"
     )
     parser.add_argument(
         "--format",
@@ -97,7 +101,7 @@ def _run_single(args: argparse.Namespace, input_path: Path, device) -> int:
         [(input_path, output_path)], policy_from_args(args), interactive=is_interactive()
     )
     if not resolved:
-        print(console.success(f"{output_path} already exists — skipped (--skip-existing)."))
+        print(console.success(f"{output_path} already exists — skipped (--skip-existing)"))
         return 0
 
     fallback_warning = device_fallback_warning(device)
@@ -131,16 +135,16 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
     dry = args.dry_run
     files, left_out = list_scans(input_dir)
     if not files:
-        print(f"No TIFF files found in {input_dir}")
-        return 1
+        raise SystemExit(f"No TIFF files found in {input_dir} — is this the right folder?")
 
     name = naming_for(args, input_dir.resolve().name, stock_for_print_or_export(args, files))
+    jobs = jobs_for_files(files, output_dir, name=name, extension=f".{args.format}")
+    fix = CLASH_FIX if args.name else "rename one of them"
+    check_log_path(args.log, [(j.input_path, j.output_path) for j in jobs])  # before any folder is made
     if dry:
         check_output_folder(output_dir)  # a dry run creates nothing
     else:
         prepare_output_folder(output_dir)
-    jobs = jobs_for_files(files, output_dir, name=name, extension=f".{args.format}")
-    fix = CLASH_FIX if args.name else "rename one of them"
 
     all_jobs = jobs
     existing = 0
@@ -152,9 +156,9 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
     kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
     if not jobs:
         if dry:
-            print(console.success(f"Dry run — nothing {console.VERB_PAST['export'].lower()}. Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
+            print(console.success(f"Dry run — nothing to do, every output in {output_dir} already exists (--skip-existing)"))
             return 0
-        print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)."))
+        print(console.success(f"Nothing to do — every output in {output_dir} already exists (--skip-existing)"))
         return 0
 
     # The GPU service (if any) starts while the run sheet is open and stops once the pool is done.
@@ -165,7 +169,7 @@ def _run_bulk(args: argparse.Namespace, input_dir: Path, device) -> int:
             skipped_row(sheet, left_out)
             cleanup_row(sheet, output_dir, dry)
             if skipped:
-                sheet.row("Skipping", f"{frame_count(skipped)} already developed")
+                sheet.row("Skipping", f"{frame_count(skipped)} already {console.VERB_PAST['export'].lower()}")
             if dry:
                 outputs_row(sheet, policy_from_args(args), existing)
             # A dry run only plans: the GPU service is never started.
@@ -227,6 +231,11 @@ def run(args: argparse.Namespace) -> int:
     # CuPy/a driver and every command's Compute row behaves the same way. Both modes
     # export on it: the single file in this process, a directory in the worker pool.
     input_path = Path(args.input)
+    is_jpeg = (args.format if input_path.is_dir() else Path(args.output).suffix.lower().lstrip(".")) in ("jpg", "jpeg")
+    if args.quality is not None and not is_jpeg:
+        raise SystemExit("--quality only applies to JPEG output — drop it, or export to .jpg")
+    if args.quality is None:
+        args.quality = 95
     if not input_path.is_dir():
         refuse_dry_run_for_single_file(args)  # before the device is resolved
     device = resolve_device_arg(args, isolated=input_path.is_dir())  # a bulk run's parent never computes

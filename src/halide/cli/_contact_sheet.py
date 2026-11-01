@@ -8,6 +8,7 @@ from pathlib import Path
 
 from halide.batch.orchestrator import BatchJob, BatchResult
 from halide.cli import console
+from halide.cli._help import positive_int
 from halide.io.contact_sheet_defaults import DEFAULT_COLUMNS, DEFAULT_FRAME_WIDTH
 from halide.io.roll import Skipped
 
@@ -17,12 +18,12 @@ from halide.io.roll import Skipped
 
 def add_contact_layout_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--columns", type=int, default=DEFAULT_COLUMNS, metavar="N",
+        "--columns", type=positive_int, default=DEFAULT_COLUMNS, metavar="N",
         help=f"Frames per strip (default: {DEFAULT_COLUMNS})"
     )
     parser.add_argument(
         "--frame-width",
-        type=int,
+        type=positive_int,
         default=DEFAULT_FRAME_WIDTH,
         metavar="PX",
         help=f"Width of each frame on the sheet, in pixels (default: {DEFAULT_FRAME_WIDTH}; a "
@@ -139,20 +140,18 @@ def write_sheet_from_folder(
 
         renderer = make_renderer(len(jobs), "proof", quiet=quiet)
         job_index = {job: i for i, job in enumerate(jobs)}
-        if renderer:
-            renderer.start()
+        renderer.start()
         results = run_thumbnail_batch(
             jobs, thumbnail_long_edge=args.frame_width, max_workers=workers,
-            on_start=(lambda job: renderer.mark_processing(job_index[job])) if renderer else None,
-            on_result=(lambda r: renderer.report(job_index[r.job], r)) if renderer else None,
+            on_start=lambda job: renderer.mark_processing(job_index[job]),
+            on_result=lambda r: renderer.report(job_index[r.job], r),
             on_cancel=cancel_notice(renderer),
         )
         cancelled = len(results) < len(jobs)
-        if renderer:
-            if cancelled:
-                done = {job_index[r.job] for r in results}
-                renderer.cancel([i for i in range(len(jobs)) if i not in done])
-            renderer.finish(cancelled=cancelled)
+        if cancelled:
+            done = {job_index[r.job] for r in results}
+            renderer.cancel([i for i in range(len(jobs)) if i not in done])
+        renderer.finish(cancelled=cancelled)
         if cancelled:
             return 130
         failures = [r for r in results if r.error]

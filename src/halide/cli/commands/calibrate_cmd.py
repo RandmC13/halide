@@ -24,6 +24,20 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.profile and args.inputs:
+        raise SystemExit(
+            "--profile reopens a saved profile together with its own roll, so a roll or scan "
+            "can't be given as well — drop one of them"
+        )
+    if args.profile:  # fail on an unknown name now, not after the window has opened
+        from halide.calibration.profile_store import resolve_profile_path
+        from halide.cli._calibration_args import missing_profile_message
+
+        try:
+            resolve_profile_path(args.profile)
+        except FileNotFoundError as exc:
+            raise SystemExit(missing_profile_message(args.profile, exc)) from exc
+
     # A missing display isn't a catchable Python exception here — Qt's xcb platform plugin hits a
     # native assertion and aborts the whole process outright (SIGABRT) rather than raising, so this
     # needs to be ruled out *before* ever calling into the GUI toolkit, not caught afterward (verified
@@ -45,19 +59,16 @@ def run(args: argparse.Namespace) -> int:
     # own previews and picking stay on the CPU.
     device = resolve_device_arg(args)
 
-    from halide.gui.app import (
-        main as run_gui,
-    )  # deferred: don't require Qt/a display for the rest of the CLI
+    try:
+        from halide.gui.app import main as run_gui  # deferred: don't require Qt/a display for the rest of the CLI
+    except ImportError as exc:
+        raise SystemExit(f"couldn't launch the calibration picker window ({exc})") from exc
 
     print(console.framed([f"{console.Style.BOLD}halide{console.Style.RESET} · calibration picker"]))
     print(f"Compute: {device_row(device)}")
     fallback_warning = device_fallback_warning(device)
     if fallback_warning:
         print(console.warning(fallback_warning))
-    try:
-        run_gui(inputs=args.inputs, profile=args.profile, device=device)
-    except Exception as exc:  # noqa: BLE001 -- a GUI-toolkit failure, not a domain error
-        raise SystemExit(
-            f"couldn't launch the calibration picker window ({exc})"
-        ) from exc
+    # Any error from here on is the picker's own and keeps its real message (--debug shows the traceback).
+    run_gui(inputs=args.inputs, profile=args.profile, device=device)
     return 0

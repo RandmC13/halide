@@ -38,6 +38,8 @@ _HEADER = (
 _KINDS = {
     "input": "tiff",
     "inputs": "tiff",
+    "frames": "file",  # contact: processed TIFFs or exported PNG/JPEGs
+    "sheet": "file",
     "scan_reference": "tiff",
     "output": "file",
     "contact_sheet": "file",
@@ -51,7 +53,6 @@ _KINDS = {
 }
 # (subcommand, dest) exceptions to the table above.
 _KIND_OVERRIDES = {
-    ("contact", "inputs"): "file",  # processed TIFFs or exported PNG/JPEGs, then the sheet to write
     # --name is a naming template on the developing commands, not a profile
     ("batch", "name"): None,
     ("print", "name"): None,

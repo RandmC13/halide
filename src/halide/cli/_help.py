@@ -12,7 +12,16 @@ import textwrap
 
 # Kept out of the top-level parser's own kwargs so every subcommand (and `profile`'s own
 # subcommands) gets the same wrapped-paragraph-preserving formatter.
-HELP_FORMATTER = argparse.RawDescriptionHelpFormatter
+class _Formatter(argparse.RawDescriptionHelpFormatter):
+    def _format_args(self, action, default_metavar):
+        # A "one or more" positional whose metavar already ends in "..." reads "FRAMES... SHEET",
+        # not argparse's "FRAMES... [FRAMES... ...] SHEET".
+        if action.nargs == argparse.ONE_OR_MORE and isinstance(action.metavar, str) and action.metavar.endswith("..."):
+            return action.metavar
+        return super()._format_args(action, default_metavar)
+
+
+HELP_FORMATTER = _Formatter
 
 MAX_CONTRAST = 2.0
 
@@ -73,6 +82,28 @@ def worker_count(value: str) -> int:
         raise argparse.ArgumentTypeError(f"{value!r} isn't a number of workers (use a whole number, 1 or more)") from None
     if number < 1:
         raise argparse.ArgumentTypeError(f"{value} workers isn't possible: use 1 or more")
+    return number
+
+
+def positive_int(value: str) -> int:
+    """--columns / --frame-width: a whole number of 1 or more."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} isn't a whole number (use 1 or more)") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"{value} isn't usable: use 1 or more")
+    return number
+
+
+def jpeg_quality(value: str) -> int:
+    """--quality: a JPEG quality from 1 to 100."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} isn't a JPEG quality (use a whole number, 1 to 100)") from None
+    if not 1 <= number <= 100:
+        raise argparse.ArgumentTypeError(f"a JPEG quality of {value} isn't usable: pick from 1 to 100")
     return number
 
 

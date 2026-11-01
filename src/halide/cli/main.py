@@ -51,8 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="halide", description="Develop scanned colour negative film into a positive image.",
         formatter_class=HELP_FORMATTER,
         epilog=examples(
-            "halide calibrate roll16/",
-            "halide batch roll16/ roll16-developed/ --profile \"Portra 400\"",
+            "halide calibrate portra-roll-03/",
+            "halide batch portra-roll-03/ portra-roll-03-developed/ --profile \"Portra 400\"",
             "halide invert negative.tif positive.tif --pick",
         ),
     )
@@ -76,9 +76,9 @@ def build_parser() -> argparse.ArgumentParser:
         "halide invert negative.tif positive.tif --pick",
         'halide invert negative.tif positive.tif --profile "Portra 400"',
         "halide invert negative.tif flat.tif --auto-density --output flat")
-    add("batch", "Invert a folder of negative scans in parallel", batch_cmd,
-        'halide batch roll16/ roll16-developed/ --profile "Portra 400"',
-        "halide batch roll16/ --contact-sheet preview.jpg",
+    add("batch", "Develop a folder of negative scans", batch_cmd,
+        'halide batch portra-roll-03/ portra-roll-03-developed/ --profile "Portra 400"',
+        "halide batch portra-roll-03/ --contact-sheet preview.jpg",
         'halide batch Holiday/ --recursive --into ../inversion --profile "Portra 400"')
     add("print", "Print a flat positive (from `invert --output flat`, optionally edited in "
         "darktable) onto the paper curve", print_cmd,
@@ -86,14 +86,14 @@ def build_parser() -> argparse.ArgumentParser:
         "halide print flat-edited/ prints/ --contrast 0.8")
     add("export", "Convert developed ACEScg TIFFs into delivery-ready sRGB PNG/JPEG", export_cmd,
         "halide export positive.tif positive.png",
-        "halide export roll16-developed/ roll16-jpeg/ --format jpg --quality 92")
+        "halide export portra-roll-03-developed/ portra-roll-03-jpeg/ --format jpg --quality 92")
     add("contact", "Make a high-resolution contact sheet of developed frames (TIFF, or "
         "PNG/JPEG from export)", contact_cmd,
-        "halide contact roll16-developed/ roll16-sheet.jpg",
-        "halide contact roll16-jpeg/ sheet.png --columns 4 --title \"Roll 16\"")
+        "halide contact portra-roll-03-developed/ portra-roll-03-sheet.jpg",
+        "halide contact portra-roll-03-jpeg/ sheet.png --columns 4 --title \"Portra roll 03\"")
     add("check", "Check that a roll's scans were made consistently (camera settings, white "
         "balance, edits)", check_cmd,
-        "halide check roll16/")
+        "halide check portra-roll-03/")
 
     profile_parser = subparsers.add_parser(
         "profile", help="Manage saved calibration profiles",
@@ -106,7 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("calibrate", "Open the picker: click neutral points on a roll and save a calibration "
         "profile", calibrate_cmd,
-        "halide calibrate roll16/",
+        "halide calibrate portra-roll-03/",
         'halide calibrate --profile "Portra 400"')
     add("gpu", "Find an NVIDIA GPU and report or add optional GPU support", gpu_cmd,
         "halide gpu",

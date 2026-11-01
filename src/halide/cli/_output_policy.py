@@ -23,9 +23,13 @@ class OutputPolicy(enum.Enum):
     SKIP_EXISTING = "skip-existing"
 
 
-def add_output_policy_arguments(parser, *, saves_profile: bool = False) -> None:
+RESUME_NOTE = " (resumes an interrupted roll)"
+
+
+def add_output_policy_arguments(parser, *, saves_profile: bool = False, skip_help: str | None = None) -> None:
     """A mutually exclusive `--overwrite` / `--skip-existing` group, shared by every command that
-    writes files (and, later, by `--save-profile-as`'s own overwrite check)."""
+    writes files (and, later, by `--save-profile-as`'s own overwrite check). `skip_help` words
+    --skip-existing in the command's own verb; the default suits the folder commands."""
     overwrite_help = "Replace output files that already exist"
     if saves_profile:
         overwrite_help += " (and a saved profile of the same name)"
@@ -38,7 +42,7 @@ def add_output_policy_arguments(parser, *, saves_profile: bool = False) -> None:
     group.add_argument(
         "--skip-existing",
         action="store_true",
-        help="Develop only the frames whose output doesn't exist yet (resumes an interrupted roll)",
+        help=skip_help or f"Develop only the frames whose output doesn't exist yet{RESUME_NOTE}",
     )
 
 

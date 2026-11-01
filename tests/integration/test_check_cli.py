@@ -101,7 +101,7 @@ def test_mixed_exposure_is_reported_in_stops_with_the_way_to_correct_it(tmp_path
                             dict(exposure=(1, 60), white_balance=WB)])
     code, out = _check(roll, capsys)
     assert code == 1
-    assert "1/30 f/8 ISO100 2 frames" in out and "1/60 f/8 ISO100 1 frames" in out
+    assert "1/30 f/8 ISO100 2 frames" in out and "1/60 f/8 ISO100 1 frame" in out
     assert "1.0 stops between the brightest and darkest scan" in out
     assert "--match-scan-exposure" in out
 

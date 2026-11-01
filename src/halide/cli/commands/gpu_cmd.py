@@ -40,6 +40,8 @@ def _cuda_version_str(cuda_version: int) -> str:
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.yes and not args.install:
+        raise SystemExit("--yes only goes with --install — add --install, or drop --yes")
     if args.install:
         return _install(args)
     return _status()
