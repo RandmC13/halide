@@ -482,7 +482,8 @@ class MainWindow(QWidget):
         flags: dict[str, str] = {}
         for _, roll_paths in rolls:
             flags.update(frame_flags(assess_roll({str(p): metadata[str(p)] for p in roll_paths})))
-        self.filmstrip.strip.set_flags({i: flags[str(f.path)] for i, f in enumerate(self.session.frames) if str(f.path) in flags})
+        # Keyed by the paths as given (relative when typed so on the command line), in frame order.
+        self.filmstrip.strip.set_flags({i: flags[str(p)] for i, p in enumerate(paths) if str(p) in flags})
         self._current = None
         self.full_image = None
         self.display = None
