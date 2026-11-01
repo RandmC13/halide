@@ -26,15 +26,17 @@ class Skipped:
     contact_sheets: int = 0
     other: dict[str, int] = field(default_factory=dict)  # not a TIFF, by what it looks like
     folders: int = 0
+    positives: int = 0  # halide's own output, when the listing was asked to leave it out
 
     def __bool__(self) -> bool:
-        return bool(self.hidden or self.contact_sheets or self.other or self.folders)
+        return bool(self.hidden or self.contact_sheets or self.other or self.folders or self.positives)
 
     def __iadd__(self, more: "Skipped") -> "Skipped":
         self.hidden += more.hidden
         self.macos += more.macos
         self.contact_sheets += more.contact_sheets
         self.folders += more.folders
+        self.positives += more.positives
         for label, n in more.other.items():
             self.other[label] = self.other.get(label, 0) + n
         return self
@@ -51,6 +53,8 @@ class Skipped:
             parts.append(f"{n} {label if n == 1 else label + 's'}")
         if self.folders:
             parts.append(f"{self.folders} folder" + ("s" if self.folders > 1 else ""))
+        if self.positives:
+            parts.append(f"{self.positives} halide positive" + ("s" if self.positives > 1 else ""))
         return ", ".join(parts)
 
 
@@ -65,14 +69,16 @@ def _kind(suffix: str) -> str:
 
 
 def list_scans(
-    folder: Path | str, *, extra_suffixes: tuple[str, ...] = ()
+    folder: Path | str, *, extra_suffixes: tuple[str, ...] = (), skip_positives: bool = False
 ) -> tuple[list[Path], Skipped]:
     """The scans in `folder` (`.tif`/`.tiff`, any case), sorted by name, and what was skipped and why.
 
     Skipped: names starting with "." (which covers macOS's `._*` copies and halide's own
     partial-write files), halide's contact sheets, other files, and subfolders. `extra_suffixes`
     (e.g. `.png`, `.jpg`) admits more file types as frames — `halide contact` proofs exported
-    pictures too — while halide's own contact sheets stay excluded."""
+    pictures too — while halide's own contact sheets stay excluded. `skip_positives` also leaves out
+    TIFFs halide itself wrote (a developing run must not re-develop its own output); a header that
+    can't be read doesn't count as one, so the frame fails later with its real error."""
     folder = Path(folder)
     accepted = TIFF_SUFFIXES + tuple(extra_suffixes)
     scans: list[Path] = []
@@ -95,7 +101,10 @@ def list_scans(
         if suffix in _PICTURE_SUFFIXES and _is_contact_sheet(entry):
             skipped.contact_sheets += 1
         elif suffix in accepted:
-            scans.append(entry)
+            if skip_positives and suffix in TIFF_SUFFIXES and _is_halide_positive(entry):
+                skipped.positives += 1
+            else:
+                scans.append(entry)
         else:
             label = _kind(suffix)
             skipped.other[label] = skipped.other.get(label, 0) + 1
@@ -106,3 +115,13 @@ def _is_contact_sheet(path: Path) -> bool:
     from halide.io.contact_sheet import is_contact_sheet
 
     return is_contact_sheet(path)
+
+
+def _is_halide_positive(path: Path) -> bool:
+    from halide.io.tiff import read_tiff_description
+    from halide.processing import read_provenance
+
+    try:
+        return read_provenance(read_tiff_description(path)) is not None
+    except Exception:  # an unreadable header is a scan that will fail with its own error later
+        return False

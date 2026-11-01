@@ -53,7 +53,7 @@ from halide.cli._calibration_args import (
     resolve_stage,
     resolve_tone_params,
 )
-from halide.cli._run_log import RunRecord, add_log_arguments
+from halide.cli._run_log import RunRecord, add_log_arguments, check_log_path
 from halide.cli._run_sheet import (
     choose_workers,
     compute_row,
@@ -61,6 +61,7 @@ from halide.cli._run_sheet import (
     frame_count,
     outputs_row,
     roll_row,
+    cleanup_row,
     skipped_row,
     start_compute,
 )
@@ -288,18 +289,22 @@ def run(args: argparse.Namespace) -> int:
             check_output_folder(output_dir)  # a dry run creates nothing
         else:
             prepare_output_folder(output_dir)
-        files, left_out = list_scans(input_dir)
+        files, left_out = list_scans(input_dir, skip_positives=True)
         jobs = jobs_for_files(files, output_dir, suffix=args.suffix)
     else:
         output_dir = None
-        files, left_out = list_scans(input_dir)
+        files, left_out = list_scans(input_dir, skip_positives=True)
         jobs = [BatchJob(input_path=f, output_path=None) for f in files]
     # Roll-wide decisions (scan checks, the scan-exposure reference, the --auto-density-roll
     # estimate) are made from every frame of the roll, never from just the ones left to develop
     # when resuming — or the resumed frames would get a different profile from the rest of the roll.
     roll_jobs = jobs
     if not jobs:
-        print(f"No TIFF files found in {input_dir}")
+        if left_out.positives:
+            print(f"No scans to develop in {input_dir} — its TIFFs are halide positives. To re-print "
+                  f"them use `halide print`; to develop again, point halide at the original scans")
+        else:
+            print(f"No TIFF files found in {input_dir}")
         return 1
 
     # A preview run's jobs (output_dir is None) keep nothing but a temp thumbnail, so there's
@@ -320,6 +325,7 @@ def run(args: argparse.Namespace) -> int:
         kept = [j.input_path.name for j in all_jobs if j.output_path not in developing]
         build_sheet = sheet_path is None or sheet_path in kept_outputs
     else:
+        check_log_path(args.log, [(j.input_path, j.input_path) for j in jobs])
         skipped_frames = 0
         kept = []
         # output_dir is None only reaches here with a contact sheet requested (checked above) — no
@@ -390,6 +396,7 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     would_create = dry and args.output_dir is not None and not Path(args.output_dir).exists()
     roll_row(sheet, input_dir, len(jobs), _destination(args, would_create))
     skipped_row(sheet, left_out)
+    cleanup_row(sheet, Path(args.output_dir) if args.output_dir else None, dry)
     if skipped_frames:
         sheet.row("Skipping", f"{frame_count(skipped_frames)} already developed")
     if dry:

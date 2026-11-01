@@ -7,6 +7,7 @@ the real output name, indistinguishable by name from a complete one.
 from __future__ import annotations
 
 import os
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -25,3 +26,28 @@ def atomic_output(path: str | Path):
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+_PARTIAL = re.compile(r"^\..+\.halide-partial-(\d+)(?:\.\w+)?$")
+
+
+def sweep_partials(folder: str | Path) -> int:
+    """Remove the unfinished `.<name>.halide-partial-<pid>` files a killed run left in `folder` (not
+    recursive), skipping any whose process is still alive (another run writing there) and our own.
+    Returns how many were removed."""
+    import psutil
+
+    removed = 0
+    for entry in Path(folder).iterdir():
+        match = _PARTIAL.match(entry.name)
+        if not match or not entry.is_file():
+            continue
+        pid = int(match.group(1))
+        if pid == os.getpid() or psutil.pid_exists(pid):
+            continue
+        try:
+            entry.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed

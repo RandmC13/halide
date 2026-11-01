@@ -170,7 +170,7 @@ class BatchResult:
 
 def discover_jobs(input_dir: str | Path, output_dir: str | Path, suffix: str = "") -> list[BatchJob]:
     """One job per scan in `input_dir` (halide.io.roll.list_scans decides what is a scan)."""
-    files, _ = list_scans(input_dir)
+    files, _ = list_scans(input_dir, skip_positives=True)
     return jobs_for_files(files, output_dir, suffix)
 
 

@@ -184,3 +184,83 @@ def test_a_cancelled_batch_still_closes_its_log(roll, tmp_path, monkeypatch):
     assert _batch(roll, out) == 130
     text = (out / RUN_LOG_NAME).read_text(encoding="utf-8")
     assert "Cancelled" in text and "━━ finished" in text
+
+
+@pytest.mark.parametrize("command,ext", [("batch", "tif"), ("print", "tif"), ("export", "png")])
+@pytest.mark.parametrize("dry", [False, True])
+def test_log_never_names_a_scan_an_output_or_a_picture(roll, tmp_path, command, ext, dry):
+    out = tmp_path / "out"
+    extra = ["--dry-run"] if dry else []
+    base = ["batch", str(roll), str(out), *MANUAL] if command == "batch" else [command, str(roll), str(out)]
+    scan = roll / "frame_00.tif"
+    produced = out / f"frame_00.{ext}"
+    produced.parent.mkdir()
+    produced.write_bytes(b"precious")
+    picture = tmp_path / "x.png"
+    picture.write_bytes(b"png")
+    for log, expect in ((scan, scan.read_bytes()), (produced, b"precious"), (picture, b"png")):
+        with pytest.raises(SystemExit) as exc:
+            main([*base, "--log", str(log), "--overwrite", *extra])
+        assert "not a log" in str(exc.value.code)
+        assert log.read_bytes() == expect
+
+
+def test_a_preview_refuses_a_scan_as_its_log(roll, tmp_path):
+    with pytest.raises(SystemExit):
+        main(["batch", str(roll), "--contact-sheet", str(tmp_path / "s.jpg"), *MANUAL, "--log", str(roll / "frame_01.tif")])
+
+
+@pytest.mark.parametrize("command", ["print", "export"])
+@pytest.mark.parametrize("dry", [False, True])
+@pytest.mark.parametrize("second", ["a.tiff", "A.tif"])
+def test_two_scans_with_one_output_are_refused_before_anything_is_written(tmp_path, command, dry, second):
+    src = tmp_path / "in"
+    src.mkdir()
+    _negative(src / "a.tif", 0)
+    _negative(src / second, 1)
+    if len({p.name for p in src.iterdir()}) < 2:
+        pytest.skip("case-insensitive filesystem")
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit) as exc:
+        main([command, str(src), str(out), *(["--dry-run"] if dry else [])])
+    assert "would both be written to" in str(exc.value.code) and "rename one of them" in str(exc.value.code)
+    assert not any(out.glob("*.*")) if out.exists() else True
+
+
+def test_a_second_batch_into_the_same_folder_skips_the_positives(roll, capsys):
+    assert _batch(roll, roll, "--suffix", "_d") == 0
+    assert len(list(roll.glob("*_d.tif"))) == 3
+    _negative(roll / "frame_03.tif", 3)
+    capsys.readouterr()
+    assert _batch(roll, roll, "--suffix", "_d", "--skip-existing") == 0
+    assert (roll / "frame_03_d.tif").exists()
+    screen = _ANSI.sub("", capsys.readouterr().out)
+    assert "3 halide positives" in screen and "already a halide positive" not in screen
+    assert len(list(roll.glob("*.tif"))) == 8
+
+
+def test_a_folder_of_only_positives_says_so_instead_of_no_tiffs(roll, tmp_path, capsys):
+    out = tmp_path / "out"
+    assert _batch(roll, out) == 0
+    capsys.readouterr()
+    assert _batch(out, tmp_path / "again") == 1
+    screen = capsys.readouterr().out
+    assert "halide positives" in screen and "No TIFF files found" not in screen
+
+
+def test_a_batch_clears_a_dead_runs_partial_file_and_says_so(roll, tmp_path, capsys):
+    import subprocess
+    import sys
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    out = tmp_path / "out"
+    out.mkdir()
+    stale = out / f".frame_00.halide-partial-{child.pid}.tif"
+    stale.write_bytes(b"x")
+    assert _batch(roll, out) == 0
+    assert not stale.exists()
+    assert "1 unfinished file from an interrupted run" in _ANSI.sub("", capsys.readouterr().out)
+    stale.write_bytes(b"x")
+    assert _batch(roll, out, "--dry-run") == 0
+    assert stale.exists()

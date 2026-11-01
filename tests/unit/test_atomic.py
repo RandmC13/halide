@@ -48,3 +48,22 @@ def test_keyboardinterrupt_also_cleans_up(tmp_path):
 
     assert target.read_bytes() == b"old bytes"
     assert list(tmp_path.iterdir()) == [target]
+
+
+def test_sweep_partials_removes_only_dead_processes_partials(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    from halide.io.atomic import sweep_partials
+
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    dead = tmp_path / f".a.halide-partial-{child.pid}.tif"
+    live = tmp_path / f".b.halide-partial-{os.getppid()}.png"
+    ours = tmp_path / f".c.halide-partial-{os.getpid()}.tif"
+    keep = [tmp_path / "a.tif", tmp_path / ".DS_Store", tmp_path / ".d.halide-partial-x.tif"]
+    for p in (dead, live, ours, *keep):
+        p.write_bytes(b"x")
+    assert sweep_partials(tmp_path) == 1
+    assert not dead.exists() and all(p.exists() for p in (live, ours, *keep))

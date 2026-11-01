@@ -228,7 +228,7 @@ def test_reinverting_a_halide_output_is_refused(tmp_path):
 
 
 def test_a_batch_reports_a_positive_per_frame_and_develops_the_rest(tmp_path):
-    from halide.batch.orchestrator import discover_jobs, run_batch
+    from halide.batch.orchestrator import jobs_for_files, run_batch
 
     roll = tmp_path / "roll"
     roll.mkdir()
@@ -236,7 +236,7 @@ def test_a_batch_reports_a_positive_per_frame_and_develops_the_rest(tmp_path):
     process_scan(_negative(tmp_path / "n.tif"), roll / "b.tif", Stage.FULL, PROFILE, ToneCurveParams())
     out = tmp_path / "out"
     out.mkdir()
-    results = run_batch(discover_jobs(roll, out), Stage.FULL, density_profile=PROFILE,
+    results = run_batch(jobs_for_files(list_scans(roll)[0], out), Stage.FULL, density_profile=PROFILE,
                         tone_params=ToneCurveParams(), max_workers=1)
     by_name = {r.job.input_path.name: r for r in results}
     assert by_name["a.tif"].error is None
@@ -303,3 +303,33 @@ def test_missing_output_folder_for_a_single_file_is_named(tmp_path):
     scan = _negative(tmp_path / "a.tif")
     with pytest.raises(SystemExit, match="output folder .* doesn't exist"):
         main(["invert", str(scan), str(tmp_path / "nope" / "x.tif"), "--invert-only"])
+
+
+def _positive(path):
+
+    write_tiff(path, np.full((8, 8, 3), 0.2, np.float32), icc_profile=build_icc(LINEAR_TAGS))
+    tifffile.tiffcomment(path, '{"halide": {"output": "print"}}')
+
+
+def test_skip_positives_leaves_out_halide_output_and_counts_it(tmp_path):
+    _negative(tmp_path / "a.tif")
+    _positive(tmp_path / "a_d.tif")
+    files, skipped = list_scans(tmp_path, skip_positives=True)
+    assert [f.name for f in files] == ["a.tif"] and skipped.positives == 1 and skipped
+    assert skipped.describe() == "1 halide positive"
+    files, skipped = list_scans(tmp_path)
+    assert len(files) == 2 and not skipped
+
+
+def test_positives_wording_is_plural_and_merges():
+    from halide.io.roll import Skipped
+
+    total = Skipped(positives=2)
+    total += Skipped(folders=1, positives=1)
+    assert total.describe() == "1 folder, 3 halide positives"
+
+
+def test_an_unreadable_header_is_still_listed_as_a_scan(tmp_path):
+    (tmp_path / "broken.tif").write_bytes(b"not a tiff")
+    files, skipped = list_scans(tmp_path, skip_positives=True)
+    assert [f.name for f in files] == ["broken.tif"] and not skipped
