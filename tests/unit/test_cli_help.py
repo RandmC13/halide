@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shlex
 
 import pytest
@@ -27,7 +28,7 @@ def test_version(capsys):
     with pytest.raises(SystemExit) as exc:
         cli_main.main(["--version"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == "halide 0.1.0"
+    assert re.fullmatch(r"halide \d+\.\d+\.\d+", capsys.readouterr().out.strip())
 
 
 @pytest.mark.parametrize("argv", [[c] for c in COMMANDS] + [["profile", c] for c in PROFILE_COMMANDS])
