@@ -8,10 +8,13 @@ real photographic paper. The goal is colour that matches what the film actually 
 "look". Once a film stock is calibrated, a whole roll develops consistently, with no per-frame
 tweaking.
 
-- **Calibrate once, reuse everywhere.** Click neutral objects (a white wall, a grey road, a black
-  tyre) on any frames of a roll in a small GUI. halide fits them together, shows how well each point
-  agrees with the rest in CC filter values, and saves the result as a named profile for that film
-  stock, process and scanner.
+- **A whole roll in one window.** `halide open` loads a roll as a filmstrip. Click neutral objects
+  (a white wall, a grey road, a black tyre) on any frames; halide fits them together and shows how
+  well each point agrees with the rest in CC filter values. Then develop the whole roll from the
+  same window, with a contact sheet and JPEG or PNG copies for sharing. No command line needed.
+- **Calibrate once, reuse everywhere.** Save the calibration as a named profile for that film stock,
+  process and scanner, and later rolls of the same film develop with no picking at all, in the
+  window or from the command line.
 - **Real paper, fitted per frame.** The default output is printed through a Kodak Endura paper
   curve. Exposure and contrast grade are fitted to each negative, like a printer choosing exposure
   and paper grade on the enlarger. You can also pin them yourself.
@@ -164,23 +167,37 @@ Re-export using your raw processor's linear gamma/tone-curve option".
 
 ## Quick start
 
-A typical roll:
+**In the window**, a roll from start to finish:
+
+```bash
+halide open portra-roll-03/
+```
+
+1. Click neutral points on a few frames (see "The halide window" below for what to pick).
+2. *Save profile*, and name it after the film ("Portra 400").
+3. *Develop roll…*: choose where the prints go and whether to also save JPEG or PNG copies, then
+   *Develop*. halide checks the scans, develops every frame and shows how the roll came out;
+   *Contact sheet* then prints one beside the prints.
+
+On the next roll of the same film, open it, choose "Portra 400" in *Profiles*, *Use for this roll*,
+and develop straight away.
+
+**From the command line**, the same roll, useful for scripts and for rolls you already have a
+profile for:
 
 ```bash
 # 1. Check the scans were made consistently (reads file headers only, so it's fast)
 halide check portra-roll-03/
 
-# 2. Pick neutral points across the roll and save them as a profile named "Portra 400"
-#    (the window can also develop the roll for you: see "Calibrating a roll" below)
-halide open portra-roll-03/
-
-# 3. Develop the whole roll with that profile
+# 2. Develop the whole roll with a saved profile
 halide batch portra-roll-03/ portra-roll-03-developed/ --profile "Portra 400"
 
-# 4. Make sRGB copies for sharing, plus a contact sheet
+# 3. Make sRGB copies for sharing, plus a contact sheet
 halide export portra-roll-03-developed/ portra-roll-03-jpeg/ --format jpg
 halide contact portra-roll-03-developed/ portra-roll-03-sheet.jpg
 ```
+
+The window runs these same commands underneath, so its prints are identical to the terminal's.
 
 Run `invert` or `batch` without a calibration flag and halide offers your saved profiles, the
 picking in the halide window, or an automatic estimate. The automatic estimate (`--auto-density`
@@ -198,7 +215,7 @@ writes and asks nothing.
 Want to try settings before committing disk space? `halide batch portra-roll-03/ --contact-sheet
 preview.jpg` develops every frame at full quality but keeps only the contact sheet.
 
-## Calibrating a roll
+## The halide window
 
 `halide open portra-roll-03/` opens the roll in the halide window: a filmstrip of its frames along
 the top (a ⚠ marks a frame scanned differently from the rest), the frame you're on below it, and
@@ -229,10 +246,22 @@ range, the window says where ("Fit reliable over D 0.4-1.2 only") and suggests w
 scanner, saved with the profile), *Print* (exposure and grade sliders, previewed on this frame; *Use
 for the whole roll* pins them for every frame) and *Details* (the numbers behind the fit).
 
-**Save and develop.** *Save profile* names the calibration ("Portra 400"), so you can reuse it on
-every later roll of that film, process and scanner. *Develop roll…* then
-develops the whole roll from the window, exactly as `halide batch` would, with a contact sheet and,
-if you like, JPEG or PNG copies for sharing. You can also use a calibration once without saving it.
+**Save.** *Save profile* names the calibration ("Portra 400"), so you can reuse it on every later
+roll of that film, process and scanner. You can also use a calibration once without saving it.
+
+**Develop the roll.** *Develop roll…* turns the panel over to the darkroom side:
+- *Into*: the folder the prints go to;
+- *Output*: *Print* (through the paper) or *Flat* (the film's own contrast, for editing elsewhere);
+- *Names*: how the prints are named, from the scan's name, the roll, the frame number or the stock;
+- *Existing*: what to do with prints already in the folder (ask, replace, or skip them);
+- *Even out*: corrects scans digitized at different shutter speeds, when the roll has them;
+- *For sharing*: also save a JPEG or PNG of every print;
+- *The command*: the `halide batch` command the window will run, to copy into a terminal if you like.
+
+*Develop* starts it. Each frame on the filmstrip is printed as it's done, and you can cancel at any
+point (the frames in hand finish first). Afterwards the panel shows how the roll came out, with buttons for
+*Contact sheet* (printed beside the prints), *Open folder*, *Export JPEG or PNG…* and, after a cancel,
+*Carry on* to develop the frames still to do.
 
 **Later rolls.** Open the next roll, choose your profile in the *Profiles* window (top right) and
 *Use for this roll*. If its colour looks slightly off on the new roll, click a few more points to refine it, then
@@ -256,7 +285,7 @@ white balance (the darktable style does this for you).
 
 | Command | What it does |
 |---|---|
-| `halide open [roll]` | The halide window: load a roll, pick neutral points on any frames or use a saved profile, see a live positive, save a profile |
+| `halide open [roll]` | The halide window: load a roll, pick neutral points or use a saved profile, see a live positive, save a profile, and develop the whole roll |
 | `halide invert IN OUT` | Develop one negative (`--profile`, `--pick`, `--auto-density`, `--output flat`, …) |
 | `halide batch IN_DIR [OUT_DIR]` | Develop a folder in parallel; `--contact-sheet` for a preview or proof |
 | `halide print IN OUT` | Print a flat positive, for example after editing it in darktable |
