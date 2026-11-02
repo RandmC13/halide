@@ -6,10 +6,20 @@ from halide.calibration.auto import (
     _neutral_candidate_mask,
     _neutral_candidates,
     _saturation,
+    DIFFERS_CC,
+    MIN_ROLL_FRAMES,
+    at_scan_gain,
     auto_density_balance,
+    cast_word,
+    colour_difference,
+    differing_frames,
+    frame_estimates,
+    median_profile,
     roll_auto_density_balance,
 )
+from halide.calibration.anchors import AGREEMENT_RED_CC
 from halide.core.density import solve_density_balance
+from halide.core.types import DensityProfile
 
 SHADOW_RGB = (0.094, 0.131, 0.050)
 HIGHLIGHT_RGB = (0.048, 0.054, 0.016)
@@ -81,17 +91,150 @@ def test_auto_density_balance_raises_with_too_few_candidates():
         auto_density_balance(image, neutral_fraction=0.5)
 
 
-def test_roll_auto_density_balance_combines_multiple_frames():
-    # Split the same synthetic content across several "frames" — the roll-wide estimate should
-    # match the single-image estimate almost exactly.
-    single_image = _synthetic_image_with_decoys(n_neutral=1000, n_decoy=50)
-    flat = single_image.reshape(-1, 3)
-    frames = [flat[i::4].reshape(-1, 1, 3) for i in range(4)]
+def test_median_profile_takes_the_middle_of_each_channel():
+    estimates = [
+        DensityProfile(white_balance=(0.5, 1.0, 2.0), density_scale=(1.2, 1.0, 0.7)),
+        DensityProfile(white_balance=(0.8, 1.0, 1.0), density_scale=(1.0, 1.0, 0.9)),
+        DensityProfile(white_balance=(2.0, 1.0, 1.5), density_scale=(1.1, 1.0, 0.8)),
+    ]
+    result = median_profile(estimates)
+    assert result.white_balance == pytest.approx((0.8, 1.0, 1.5), rel=1e-12)
+    assert result.density_scale == pytest.approx((1.1, 1.0, 0.8), rel=1e-12)
+    assert result.source == "auto"
 
-    expected = auto_density_balance(single_image)
+
+def test_median_profile_takes_white_balance_in_log():
+    # With an even count the middle two are averaged, so the log matters: 0.5 and 2.0 meet at 1.0.
+    estimates = [
+        DensityProfile(white_balance=(0.5, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0)),
+        DensityProfile(white_balance=(2.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0)),
+    ]
+    assert median_profile(estimates).white_balance == pytest.approx((1.0, 1.0, 1.0), rel=1e-12)
+
+
+def _warm_frame():
+    """The decoy frame with its neutral patches shifted short of blue (a warm-lit scene's greys)."""
+    image = _synthetic_image_with_decoys().copy()
+    image[..., 2] *= 1.6
+    return image
+
+
+def test_one_wild_frame_does_not_move_the_roll():
+    frames = [_synthetic_image_with_decoys() for _ in range(5)] + [_warm_frame()]
+    assert auto_density_balance(_warm_frame()) != auto_density_balance(frames[0])
+    expected = auto_density_balance(frames[0])
     result = roll_auto_density_balance(frames)
+    assert result.white_balance == pytest.approx(expected.white_balance, abs=1e-9)
+    assert result.density_scale == pytest.approx(expected.density_scale, abs=1e-9)
+
+
+def test_a_frame_that_cannot_be_estimated_does_not_vote():
+    one_pixel = np.array([[[0.05, 0.05, 0.05]]])
+    estimates = frame_estimates([_synthetic_image_with_decoys(), one_pixel])
+    assert estimates[1] is None
+    assert median_profile(estimates) == median_profile(estimates[:1])
+
+
+def test_nothing_to_vote_raises():
+    with pytest.raises(ValueError, match="not enough near-neutral pixels"):
+        roll_auto_density_balance([np.array([[[0.05, 0.05, 0.05]]])])
+    with pytest.raises(ValueError, match="not enough near-neutral pixels"):
+        median_profile([])
+
+
+def test_frame_estimates_keep_a_weak_frames_warning_quiet(recwarn):
+    image = np.concatenate(
+        [np.tile(SHADOW_RGB, (100, 1)), np.tile(np.asarray(SHADOW_RGB) * 0.95, (100, 1))]
+    ).reshape(-1, 1, 3)
+    frame_estimates([image])
+    assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
+
+
+def test_at_scan_gain_matches_estimating_the_brighter_frame():
+    image = _warm_frame()
+    brighter = auto_density_balance(image * 1.7)
+    shifted = at_scan_gain(auto_density_balance(image), 1.7)
+    assert shifted.white_balance == pytest.approx(brighter.white_balance, rel=1e-6)
+    assert shifted.density_scale == pytest.approx(brighter.density_scale, rel=1e-12)
+
+
+def test_roll_estimate_is_right_for_two_different_scenes():
+    # Two scenes of different overall colour, both with the same real greys: each frame judges its
+    # own pixels, so neither scene's colour leaks into the other's choice of greys.
+    expected = solve_density_balance(SHADOW_RGB, HIGHLIGHT_RGB)
+    warm_scene = np.concatenate(
+        [_synthetic_image_with_decoys().reshape(-1, 3), np.tile([0.5, 0.5, 0.001], (50, 1))]
+    ).reshape(-1, 1, 3)
+    cool_scene = np.concatenate(
+        [_synthetic_image_with_decoys().reshape(-1, 3), np.tile([0.001, 0.5, 0.5], (50, 1))]
+    ).reshape(-1, 1, 3)
+    result = roll_auto_density_balance([warm_scene, cool_scene])
     assert result.white_balance == pytest.approx(expected.white_balance, rel=1e-6)
     assert result.density_scale == pytest.approx(expected.density_scale, rel=1e-6)
+
+
+def test_a_warm_lit_frame_is_named_warm_with_its_pack():
+    roll = auto_density_balance(_synthetic_image_with_decoys())
+    cc, pack, word = colour_difference(roll, auto_density_balance(_warm_frame()))
+    assert word == "warm"
+    assert "Y" in pack
+    assert cc > DIFFERS_CC
+    assert colour_difference(roll, roll)[0] == pytest.approx(0.0, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("deviation", "word"),
+    [
+        ((2, -1, -1), "warm"),  # red
+        ((1, 1, -2), "warm"),  # yellow
+        ((2, 0.5, -2.5), "warm"),  # orange
+        ((-1, 2, -1), "green"),
+        ((-2, 1, 1), "cool"),  # cyan
+        ((-1, -1, 2), "cool"),  # blue
+        ((1, -2, 1), "magenta"),
+    ],
+)
+def test_cast_word(deviation, word):
+    assert cast_word(deviation) == word
+
+
+@pytest.mark.parametrize(
+    ("angle", "word"),
+    [(-0.5, "magenta"), (0.5, "warm"), (119.5, "warm"), (120.5, "green"), (179.5, "green"),
+     (180.5, "cool"), (299.5, "cool"), (300.5, "magenta")],
+)
+def test_cast_word_sector_edges(angle, word):
+    # a = d_R - d_G, b = (d_R + d_G) / 2 - d_B; a zero-mean row with that a and b.
+    a, b = np.cos(np.radians(angle)), np.sin(np.radians(angle))
+    d_b = -2 * b / 3
+    d_r = (a - d_b) / 2
+    assert cast_word((d_r, d_r - a, d_b)) == word
+
+
+def _profile_off_by(cc_blue):
+    """A profile whose greys print `cc_blue` CC short of blue against a neutral roll."""
+    return DensityProfile(white_balance=(1.0, 1.0, 10 ** (-cc_blue / 100)), density_scale=(1.0, 1.0, 1.0))
+
+
+NEUTRAL_ROLL = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0))
+
+
+def test_differs_threshold_is_the_picker_red_band():
+    assert DIFFERS_CC == AGREEMENT_RED_CC
+    estimates = [NEUTRAL_ROLL] * 5 + [_profile_off_by(9.9), _profile_off_by(10.1)]
+    named = differing_frames(NEUTRAL_ROLL, estimates)
+    assert [index for index, *_ in named] == [6]
+    assert named[0][1] == pytest.approx(10.1)
+
+
+def test_differing_frames_largest_first_and_skips_frames_that_did_not_vote():
+    estimates = [NEUTRAL_ROLL] * 5 + [_profile_off_by(12), None, _profile_off_by(30)]
+    assert [index for index, *_ in differing_frames(NEUTRAL_ROLL, estimates)] == [7, 5]
+
+
+def test_no_frame_is_named_on_a_short_roll():
+    estimates = [NEUTRAL_ROLL] * (MIN_ROLL_FRAMES - 2) + [_profile_off_by(40), None]
+    assert differing_frames(NEUTRAL_ROLL, estimates) == []
 
 
 def test_neutral_candidate_mask_is_not_fooled_by_film_toe_compression():
@@ -147,40 +290,6 @@ def test_check_density_separation_does_not_warn_on_the_reference_patches():
     with warnings_module.catch_warnings():
         warnings_module.simplefilter("error")
         _check_density_separation(np.array(SHADOW_RGB), np.array(HIGHLIGHT_RGB))
-
-
-def test_roll_auto_density_balance_selects_neutral_candidates_per_frame_not_from_pooled_pixels(
-    monkeypatch,
-):
-    # Real bug found via testing on two real scans (a warm-toned portrait and a daylight street
-    # scene, --auto-density-roll): the original implementation concatenated raw pixels from every
-    # frame *before* computing the per-channel median used to judge "how neutral is this pixel"
-    # (see `_saturation`) — that median is only a valid proxy for the film's own systematic
-    # per-channel imbalance when it's computed from one frame's own pixels; pooled across frames
-    # with different scene content, it instead blends in each frame's *scene-color average*, which
-    # is not shared across a roll the way the film base is. That skewed which pixels were selected
-    # as "neutral" for whichever frame differed most from the blend — confirmed on the real photos
-    # as a visible blue cast on a frame whose own calibration (per-frame --auto-density) was
-    # correct. This pins the actual mechanism of the fix: candidate selection must happen once per
-    # input image, on that image's own pixels, never on pixels pooled across images.
-    calls = []
-    from halide.calibration import auto as auto_module
-
-    real_neutral_candidates = auto_module._neutral_candidates
-
-    def spy(image, neutral_fraction):
-        calls.append(image)
-        return real_neutral_candidates(image, neutral_fraction)
-
-    monkeypatch.setattr(auto_module, "_neutral_candidates", spy)
-
-    frame_a = np.tile(SHADOW_RGB, (100, 1)).reshape(-1, 1, 3)
-    frame_b = np.tile(HIGHLIGHT_RGB, (100, 1)).reshape(-1, 1, 3)
-    auto_module.roll_auto_density_balance([frame_a, frame_b])
-
-    assert len(calls) == 2  # called once per frame, never once on pooled/concatenated pixels
-    assert calls[0] is frame_a
-    assert calls[1] is frame_b
 
 
 def _old_density_reference(pixels, target_bins=20, min_pixels_per_bin=200):

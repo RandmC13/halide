@@ -40,8 +40,10 @@ def test_estimate_roll_density_profile_skips_unreadable_files(tmp_path, capsys):
     write_tiff(bad_path, np.zeros((16, 16, 3), dtype=np.float32))  # no ICC profile
 
     # Must not raise, despite the unreadable file among otherwise-good ones.
-    profile = estimate_roll_density_profile(good_paths + [bad_path])
-    assert profile.source == "auto"
+    estimate = estimate_roll_density_profile(good_paths + [bad_path])
+    assert estimate.profile.source == "auto"
+    assert estimate.used == 3
+    assert estimate.differing == []
     assert "skipping" in capsys.readouterr().out
 
 
@@ -59,8 +61,8 @@ def test_estimate_roll_density_profile_skips_a_genuinely_corrupt_file(tmp_path, 
     corrupt_path = tmp_path / "corrupt.tiff"
     corrupt_path.write_bytes(b"not a tiff file")
 
-    profile = estimate_roll_density_profile(good_paths + [corrupt_path])
-    assert profile.source == "auto"
+    estimate = estimate_roll_density_profile(good_paths + [corrupt_path])
+    assert estimate.profile.source == "auto"
     assert "skipping" in capsys.readouterr().out
 
 

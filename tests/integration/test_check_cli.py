@@ -64,7 +64,7 @@ def _frame(path, exposure=None, white_balance=None, seed=0):
         xmp = _xmp(white_balance).encode()
         extratags.append((_XMP_TAG, "B", len(xmp), xmp))
     rng = np.random.default_rng(seed)
-    image = rng.uniform(0.02, 0.2, size=(8, 8, 3)).astype(np.float32)
+    image = rng.uniform(0.02, 0.2, size=(64, 64, 3)).astype(np.float32)
     tifffile.imwrite(path, image, photometric="rgb", extratags=extratags, byteorder="<")
     if exposure is not None:
         _add_exif(path, exposure, (8, 1), 100)

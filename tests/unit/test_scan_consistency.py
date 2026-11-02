@@ -191,7 +191,7 @@ def test_roll_estimate_keeps_small_copies_not_views_of_full_frames(tmp_path, mon
     import halide.processing as processing
 
     captured = []
-    monkeypatch.setattr(processing, "roll_auto_density_balance", lambda images: captured.extend(images) or PROFILE)
+    monkeypatch.setattr(processing, "frame_estimates", lambda images: captured.extend(images) or [PROFILE] * len(images))
     paths = [_negative(tmp_path, f"f{i}.tif", 1.0) for i in range(2)]
     processing.estimate_roll_density_profile(paths, stride=4)
     assert len(captured) == 2

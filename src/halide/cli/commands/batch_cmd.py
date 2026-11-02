@@ -671,15 +671,15 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
             ignore_colour_matplotlib_warning()  # "always" would bring back colour's plotting notice
             with sheet.working("Calibration", f"estimating one profile from all {frame_count(len(roll_jobs))}…"):
                 try:
-                    density_profile = estimate_roll_density_profile(
+                    roll_estimate = estimate_roll_density_profile(
                         [job.input_path for job in roll_jobs],
                         scan_gains={str(job.input_path): job.scan_gain for job in roll_jobs},
                         on_skip=lambda path, exc: skipped.append(f"{path.name} ({exc})"),
                     )
-                except ScanColorError as exc:
+                except (ScanColorError, ValueError) as exc:  # ValueError: no frame could vote
                     raise SystemExit(str(exc))
-        saved_tone = None
-        used = len(roll_jobs) - len(skipped)
+        density_profile, saved_tone = roll_estimate.profile, None
+        used = roll_estimate.used
         sheet.row("Calibration", f"auto{_SEP}one profile for the whole roll, from {frame_count(used)}")
         for name in skipped:
             sheet.warn("Calibration", f"skipped unreadable {name}")
