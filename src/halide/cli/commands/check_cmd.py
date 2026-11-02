@@ -78,7 +78,8 @@ def run(args: argparse.Namespace) -> int:
     if not report.white_balance_groups:
         print("  (no darktable history found — can't check)")
     for wb, names in sorted(report.white_balance_groups.items(), key=lambda kv: -len(kv[1])):
-        print(f"  R {wb[0]:.3f} G {wb[1]:.3f} B {wb[2]:.3f}  {console.plural(len(names), 'frame'):>9s}  {_names(names)}")
+        label = wb if isinstance(wb, str) else f"R {wb[0]:.3f} G {wb[1]:.3f} B {wb[2]:.3f}"
+        print(f"  {label}  {console.plural(len(names), 'frame'):>9s}  {_names(names)}")
     if report.white_balance_inconsistent:
         print(console.warning(
             "white balance differs between frames — not correctable after export (it's applied in "

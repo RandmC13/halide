@@ -57,8 +57,16 @@ class ScanSettings:
 class DarktableState:
     """The final (history_end) state of a darktable export's processing history."""
 
-    white_balance: tuple[float, float, float] | None  # raw R/G/B multipliers of the temperature module
+    # raw R/G/B multipliers of the temperature module, or CAMERA_REFERENCE
+    white_balance: tuple[float, float, float] | str | None
     tonal_modules: tuple[str, ...]  # enabled modules that reshape tone/colour (should be empty)
+
+
+# darktable's "camera reference" white balance (preset 4 of the temperature module, version 4): darktable
+# then renders the camera's own D65 multipliers, not the ones stored beside the preset, which are left
+# over from whatever the module showed before.
+CAMERA_REFERENCE = "camera reference (D65)"
+_CAMERA_REFERENCE_PRESET = 4
 
 
 def _rational(value) -> float | None:
@@ -98,7 +106,11 @@ def darktable_state_from_xmp(xmp: str) -> DarktableState | None:
     if temperature and temperature.get("enabled") == "1":
         params = temperature.get("params", "")
         if re.fullmatch(r"[0-9a-f]{24,}", params):
-            white_balance = struct.unpack("<3f", bytes.fromhex(params)[:12])
+            raw = bytes.fromhex(params)
+            white_balance = struct.unpack("<3f", raw[:12])
+            if (temperature.get("modversion") == "4" and len(raw) >= 20
+                    and struct.unpack("<i", raw[16:20])[0] == _CAMERA_REFERENCE_PRESET):
+                white_balance = CAMERA_REFERENCE
     tonal = sorted({op for (op, _), item in final.items()
                     if item.get("enabled") == "1" and op not in _NON_TONAL_DARKTABLE_MODULES})
     return DarktableState(white_balance=white_balance, tonal_modules=tuple(tonal))

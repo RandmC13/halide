@@ -111,30 +111,34 @@ Every frame needs the same treatment, in whichever raw developer you use.
 
 ### Exporting your scans
 
-The menu names below are from memory of recent darktable and RawTherapee releases. I couldn't check
-them against the current manuals, so where a name differs in your version, follow the intent: a
-**TIFF**, **32-bit float** (or 16-bit), in a **linear** profile (gamma 1.0), with the profile
-embedded and no tone or colour edits applied.
+Export a **TIFF**, **32-bit float** (or 16-bit), in a **linear** profile (gamma 1.0), with the profile
+embedded and no tone or colour edits applied. Before exporting, crop to the image, leaving out the
+film holder and rebate: an opaque edge left in the crop throws off the print fit. Every frame of a
+roll needs the same treatment, and the same white balance. `halide check` tells you afterwards
+whether that's what you got.
 
-**Before exporting, for both programs:** crop to the image, leaving out the film holder and rebate
-(an opaque edge left in the crop throws off the print fit), and turn tone and colour modules
-**off**: filmic, sigmoid, curves, levels, local contrast and so on. Keep the same
-white balance and camera settings across the roll if you can. `halide check` tells you afterwards
-whether you did.
+**darktable**
 
-**darktable** (check your version for exact names)
+halide comes with a darktable style that sets all of this up:
+[`darktable/halide-linear-scan.dtstyle`](darktable/halide-linear-scan.dtstyle). It switches off every
+tone and colour module (exposure, filmic, sigmoid, color calibration, curves, levels, color balance,
+local contrast, negadoctor, monochrome, sharpen, framing and so on), sets white balance to *camera
+reference* so it's the same for every frame, and sets the output profile to linear Rec2020. Crop,
+rotation, perspective, lens correction and denoise are left to you.
 
-1. In the darkroom, look at the history stack. The scene-referred workflow applies exposure and
-   filmic rgb or sigmoid automatically to raw files, so turn those off for the export (check your
-   version). Also filmic rgb, sigmoid, base curve, tone curve,
-   rgb curve, local contrast, and colour balance should not be active. Basic exposure, crop, lens
-   correction, denoise and spot removal are fine.
-2. In the darkroom's *output color profile* module, set the profile to *linear Rec2020 RGB*.
-3. In the lighttable's *export* module, set *target storage* to *file on disk* and *format* to
-   *TIFF*. Set *bit depth* to *32 bit (float)* (or 16 bit), *compression* to *uncompressed* or
-   *deflate*, and *profile* to *linear Rec2020 RGB*.
-4. Export. If the profile embedded in the TIFF isn't linear, halide rejects the file with a message
-   saying so (see Troubleshooting).
+1. Download the style file. In the lighttable's *styles* module, click *import* and choose it.
+2. Select every frame of the roll and apply the style *halide linear scan* to them from the same
+   module. Apply it in the lighttable (or the darkroom) rather than through the export module's own
+   style option, so the change is recorded in each image's history, where `halide check` reads it.
+3. Crop each frame (and straighten it if needed).
+4. In the lighttable's *export* module, set *format* to *TIFF*, *bit depth* to *32 bit (float)*,
+   *compression* to *deflate*, and *profile* to *linear Rec2020 RGB*. In the export module's
+   metadata preferences, keep *develop history* ticked, so `halide check` can see how each frame
+   was made.
+5. Export.
+
+White balance is fixed per profile: calibrate a new profile for scans made with the style, rather
+than reusing one made from scans with a different white balance.
 
 **RawTherapee** (check your version for exact names)
 

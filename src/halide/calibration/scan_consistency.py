@@ -26,7 +26,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from halide.io.scan_metadata import DarktableState, ScanSettings
+from halide.io.scan_metadata import CAMERA_REFERENCE, DarktableState, ScanSettings
 
 SCANNING_GUIDANCE = (
     "For one calibration to be exactly valid across a roll, digitize every frame the same way: "
@@ -63,7 +63,7 @@ class RollScanReport:
     darktable: dict[str, DarktableState | None]
     exposure_groups: dict[str, list[str]] = field(default_factory=dict)
     exposure_spread_stops: float = 0.0
-    white_balance_groups: dict[tuple[float, float, float], list[str]] = field(default_factory=dict)
+    white_balance_groups: dict[tuple[float, float, float] | str, list[str]] = field(default_factory=dict)
     white_balance_spread: tuple[float, float, float] = (0.0, 0.0, 0.0)  # max/min - 1, per channel
     tonal_modules: dict[str, tuple[str, ...]] = field(default_factory=dict)
     missing_exif: list[str] = field(default_factory=list)
@@ -74,7 +74,8 @@ class RollScanReport:
 
     @property
     def white_balance_inconsistent(self) -> bool:
-        return max(self.white_balance_spread) > _WHITE_BALANCE_TOLERANCE
+        mixed = CAMERA_REFERENCE in self.white_balance_groups and len(self.white_balance_groups) > 1
+        return mixed or max(self.white_balance_spread) > _WHITE_BALANCE_TOLERANCE
 
     @property
     def has_issues(self) -> bool:
@@ -106,9 +107,10 @@ class RollScanReport:
                 )
         if self.white_balance_inconsistent:
             spread = ", ".join(f"{c} {v * 100:.0f}%" for c, v in zip("RGB", self.white_balance_spread) if v > 0)
+            apart = f" ({spread} apart)" if spread else ""
             lines.append(
-                f"exported with {len(self.white_balance_groups)} different raw white balances "
-                f"({spread} apart) — shifts colour frame to frame and can't be corrected here; "
+                f"exported with {len(self.white_balance_groups)} different raw white balances"
+                f"{apart} — shifts colour frame to frame and can't be corrected here; "
                 "re-export with one fixed white balance"
             )
         if self.tonal_modules:
@@ -156,7 +158,9 @@ def assess_roll(metadata: dict[str, tuple[ScanSettings | None, DarktableState | 
 
     balances = {name: d.white_balance for name, d in darktable.items() if d is not None and d.white_balance}
     for name, wb in sorted(balances.items()):
-        report.white_balance_groups.setdefault(tuple(round(v, 4) for v in wb), []).append(name)
+        key = wb if wb == CAMERA_REFERENCE else tuple(round(v, 4) for v in wb)
+        report.white_balance_groups.setdefault(key, []).append(name)
+    balances = {name: wb for name, wb in balances.items() if wb != CAMERA_REFERENCE}
     if balances:
         channels = list(zip(*balances.values()))
         report.white_balance_spread = tuple(max(c) / min(c) - 1.0 for c in channels)
