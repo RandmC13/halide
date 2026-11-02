@@ -62,7 +62,7 @@ def _camera_reference_params(r, g, b):
     return struct.pack("<4fi", r, g, b, 0.0, 4).hex()
 
 
-def test_camera_reference_white_balance_is_named_not_read_from_its_stale_multipliers():
+def test_camera_reference_white_balance_is_named_not_read_from_its_multipliers():
     def state(params, modversion="4"):
         xmp = _xmp([("temperature", "1", params)]).replace('darktable:multi_priority="0"',
                                                            f'darktable:multi_priority="0" darktable:modversion="{modversion}"')
@@ -73,7 +73,7 @@ def test_camera_reference_white_balance_is_named_not_read_from_its_stale_multipl
     assert state(fixed).white_balance == pytest.approx((1.875, 1.0, 1.81))
 
     reference = state(_camera_reference_params(1.875, 1.0, 1.81))
-    other_frame = state(_camera_reference_params(2.0, 1.0, 1.7))  # stale values differ, the render doesn't
+    other_frame = state(_camera_reference_params(2.0, 1.0, 1.7))  # each frame stores its own as-shot; the render is D65 for both
     roll = assess_roll({"a": (S30, reference), "b": (S30, other_frame)})
     assert roll.white_balance_groups == {CAMERA_REFERENCE: ["a", "b"]} and not roll.white_balance_inconsistent
 
