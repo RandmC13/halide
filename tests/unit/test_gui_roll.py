@@ -126,8 +126,20 @@ def test_save_and_restore_round_trip(tmp_path):
     restored.set_roll(paths, [AT_1_30] * 3, session.roll_folder)
     assert restored.points == session.points
     assert restored.details["notes"] == "trike + shirt"
-    assert restored.tone_override.exposure == pytest.approx(0.2)
+    assert restored.tone_override is None  # the print pin belongs to the roll, never the profile
     assert restored.profile().density_scale == pytest.approx(session.profile().density_scale)
+
+
+def test_a_profile_saved_with_a_print_pin_still_restores_it(tmp_path):
+    session, paths = _session(tmp_path)
+    for i, g in enumerate((0.8, 1.2, 1.6)):
+        session.add_point(_pt(paths[i], g))
+    pin = ToneCurveParams(mode="paper", exposure=0.2, contrast=0.8)
+    path = save_named_profile(session.profile_to_save(), "old", profiles_dir=tmp_path / "profiles",
+                              **{**session.sidecars(), "tone": pin})
+    restored = CalibrationSession()
+    restored.restore(path)
+    assert restored.tone_override == pin
 
 
 def test_restore_reattaches_points_to_a_moved_roll_by_file_name(tmp_path):

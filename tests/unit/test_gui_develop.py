@@ -45,6 +45,9 @@ def test_defaults_pass_nothing_extra(settings):
     ({"existing": "skip"}, ["--skip-existing"]),
     ({"match_scan_exposure": True}, ["--match-scan-exposure"]),
     ({"device": "cpu"}, ["--device", "cpu"]),
+    ({"exposure": 0.48}, ["--exposure=0.48"]),
+    ({"exposure": -0.1, "contrast": 0.9}, ["--exposure=-0.10", "--contrast=0.90"]),
+    ({"exposure": 0.48, "output": "flat"}, ["--output", "flat"]),  # flat has no exposure: batch refuses it
 ])
 def test_each_field_gives_its_flag(settings, change, flags):
     assert batch_command(replace(settings, **change))[8:] == flags

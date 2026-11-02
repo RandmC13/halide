@@ -24,6 +24,8 @@ class DevelopSettings:
     match_scan_exposure: bool = False
     sharing: str = "none"  # none | jpg | png
     device: str | None = None  # None: halide's own default (or $HALIDE_DEVICE)
+    exposure: float | None = None  # the Print drawer's pin for this roll; None: fitted per frame
+    contrast: float | None = None  # pinned too only if its slider was moved; None: fitted per frame
 
     @property
     def sharing_dir(self) -> Path:
@@ -41,6 +43,11 @@ def _batch_args(s: DevelopSettings) -> list[str]:
         args.append("--overwrite")
     elif s.existing == "skip":
         args.append("--skip-existing")
+    if s.output == "print":  # flat has no exposure or grade: batch refuses them there
+        if s.exposure is not None:
+            args.append(f"--exposure={s.exposure:.2f}")  # one token: it may start with "-"
+        if s.contrast is not None:
+            args.append(f"--contrast={s.contrast:.2f}")
     if s.match_scan_exposure:
         args.append("--match-scan-exposure")
     if s.device:

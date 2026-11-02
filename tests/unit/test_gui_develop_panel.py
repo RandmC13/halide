@@ -222,6 +222,21 @@ def test_scan_exposure_row_only_with_differing_exposures(window):
     assert "--match-scan-exposure" in _command(panel)
 
 
+def test_one_exposure_for_the_roll_evens_out_the_scans(window):
+    from halide.core.types import ToneCurveParams
+
+    window._exposure_differs = True
+    window.session.tone_override = ToneCurveParams(exposure=0.48)
+    panel = _develop_side(window)
+    assert panel.match_exposure.isChecked() and not panel.match_exposure.isEnabled()
+    panel.choice.set_index(1)
+    assert {"--exposure=0.48", "--match-scan-exposure"} <= set(_command(panel))
+    panel.back_button.click()
+    window.session.tone_override = None  # Back to fitted: the choice is free again
+    window.primary_button.click()
+    assert panel.match_exposure.isEnabled()
+
+
 # --- the calibration choice ---------------------------------------------------------------------
 
 
@@ -329,12 +344,29 @@ def test_a_profile_without_points_develops_with_its_own_balance(window):
     assert _command(panel)[_command(panel).index("--profile") + 1] == str(path)
 
 
-def test_a_print_pin_made_after_using_a_profile_must_be_settled_before_developing(window):
+def test_a_print_pin_goes_on_the_command_line_not_into_the_profile(window):
     from halide.core.types import DensityProfile, ToneCurveParams
 
     path = save_named_profile(DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78)), "Typed")
     window.use_profile(path)
-    window.session.tone_override = ToneCurveParams(exposure=0.3, contrast=0.9)  # Use for the whole roll
+    window.session.tone_override = ToneCurveParams(exposure=0.3)  # Use for the whole roll: exposure only
+    window.primary_button.click()
+    panel = window.develop_panel
+    assert panel.choice_value() == "profile"  # nothing to settle: the profile itself is unchanged
+    command = _command(panel)
+    assert "--exposure=0.30" in command and not any(a.startswith("--contrast") for a in command)
+    window.session.tone_override = ToneCurveParams(exposure=-0.1, contrast=0.9)  # grade moved too
+    window._open_develop()
+    assert {"--exposure=-0.10", "--contrast=0.90"} <= set(_command(panel))
+
+
+def test_a_profile_saved_with_its_own_pin_must_be_settled_before_developing_with_another(window):
+    from halide.core.types import DensityProfile, ToneCurveParams
+
+    profile = DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78))
+    path = save_named_profile(profile, "Old", tone=ToneCurveParams(exposure=0.5, contrast=1.0))
+    window.use_profile(path)
+    window.session.tone_override = None  # Back to fitted: batch would still print with the file's pin
     window.primary_button.click()
     panel = window.develop_panel
     assert panel.choice.isVisibleTo(panel) and panel.choice_value() is None  # save it, or use it for this roll
