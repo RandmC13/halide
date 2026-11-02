@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from halide.calibration.profile_store import ProfileNameError, default_profiles_dir, find_profile, validate_profile_name
 from halide.cli import console
+from halide.core.types import ToneCurveParams
 from halide.gui.develop import DEFAULT_NAME, DevelopSettings, preview, shown_command
 from halide.gui.widgets import ElidedLabel, Segmented
 
@@ -53,6 +54,7 @@ class DevelopPanel(QWidget):
         self._signature: tuple | None = None
         self._name_edited = False
         self._device: str | None = None
+        self._tone: ToneCurveParams | None = None  # the Print drawer's pin for this roll
 
         col = QVBoxLayout(self)
         col.setContentsMargins(9, 0, 9, 0)  # the points side's left edge, so the panel doesn't jump when it turns
@@ -188,13 +190,14 @@ class DevelopPanel(QWidget):
     def prepare(
         self, roll: Path, case: str, *, profile_path: Path | None = None, name: str = "", new_points: int = 0,
         suggested_name: str = "", exposure_differs: bool = False, device: str | None = None,
+        tone: ToneCurveParams | None = None,
     ) -> None:
         """Show the panel for `roll` with the calibration in hand. The choice is asked afresh when the
         calibration is not the one last shown; Into is remembered while the roll stays the same."""
         if roll != self._roll:
             self._roll = roll  # a new roll gets its own default; the same roll keeps what was typed
             self.into_input.setText(str(roll / "developed"))
-        self._case, self._profile_path, self._device = case, profile_path, device
+        self._case, self._profile_path, self._device, self._tone = case, profile_path, device, tone
         signature = (case, name, new_points)
         fresh = signature != self._signature
         self._signature = signature
@@ -224,6 +227,14 @@ class DevelopPanel(QWidget):
         self.match_exposure.setVisible(exposure_differs)
         if not exposure_differs:
             self.match_exposure.setChecked(False)
+        # One exposure for the roll needs the scans evened out first, or brighter scans print brighter.
+        forced = exposure_differs and tone is not None and tone.exposure is not None
+        if forced:
+            self.match_exposure.setChecked(True)
+        self.match_exposure.setEnabled(not forced)
+        self.match_exposure.setToolTip(
+            "Needed for one exposure across the roll: these scans were digitized at different exposures" if forced
+            else "These scans were digitized at different exposures: correct for it from their EXIF")
         self._refresh()
 
     def choice_value(self) -> str | None:
@@ -256,6 +267,8 @@ class DevelopPanel(QWidget):
             output=OUTPUTS[self.output.index()], name=self.names.text().strip() or DEFAULT_NAME,
             existing=EXISTING[self.existing.index()], match_scan_exposure=self.match_exposure.isChecked(),
             sharing=SHARING[self.sharing.index()], device=self._device,
+            exposure=self._tone.exposure if self._tone is not None else None,
+            contrast=self._tone.contrast if self._tone is not None else None,
         )
 
     # --- behaviour ------------------------------------------------------------------------------

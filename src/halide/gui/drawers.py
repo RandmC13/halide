@@ -5,6 +5,8 @@ grow or scroll (the same reason the original Details panel became a fixed-height
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from PySide6.QtCore import QEvent, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
@@ -207,12 +209,15 @@ class PrintControls(QWidget):
     """Enlarger exposure and paper grade for the Positive view. Left alone they're fitted per frame
     (the project default, see core/tone_render.py::fit_print) and the sliders follow the current
     frame's fit. Moving one is a test strip: a preview on the frame on screen only, dropped when the
-    frame changes. "Use for the whole roll" pins the pair for every frame and saves it with the
-    profile as its print override. Flat output is a preview-only look at the linear positive."""
+    frame changes. "Use for the whole roll" pins the exposure for every frame of this roll (and the
+    grade too, only if its slider was moved off the frame's fit): one exposure keeps the roll as the
+    camera metered it, where a per-frame fit would push a pale sky to paper white. The pin belongs
+    to the roll, not the profile. Flat output is a preview-only look at the linear positive."""
 
     changed = Signal(object, object, bool)  # (preview ToneCurveParams or None, pinned or None, flat)
 
-    _FITTED, _PREVIEW, _PINNED = "Fitted per frame", "Previewing on this frame", "Pinned for every frame (saved with the profile)"
+    _FITTED, _PREVIEW = "Fitted per frame", "Previewing on this frame"
+    _PINNED, _PINNED_BOTH = "One exposure for this roll", "One exposure and grade for this roll"
 
     def __init__(self) -> None:
         super().__init__()
@@ -238,6 +243,7 @@ class PrintControls(QWidget):
         layout.addLayout(buttons)
         self._pin: ToneCurveParams | None = None
         self._preview: ToneCurveParams | None = None
+        self._fitted_grade: float | None = None  # this frame's own fitted grade, when last shown
         self._update_state()
 
     def _slider_row(self, layout: QVBoxLayout, label: str, value_range: tuple[int, int]) -> tuple[QSlider, QLabel]:
@@ -256,7 +262,9 @@ class PrintControls(QWidget):
         layout.addLayout(row)
         return slider, value
 
-    def _set_quietly(self, exposure: float, grade: float) -> None:
+    def _set_quietly(self, exposure: float, grade: float | None) -> None:
+        if grade is None:  # a pin of the exposure only: the grade slider shows this frame's fit
+            grade = self._fitted_grade if self._fitted_grade is not None else self.grade.value() / 100
         for slider, value in ((self.exposure, exposure), (self.grade, grade)):
             slider.blockSignals(True)
             slider.setValue(round(value * 100))
@@ -268,7 +276,8 @@ class PrintControls(QWidget):
         return ToneCurveParams(mode="paper", exposure=self.exposure.value() / 100, contrast=self.grade.value() / 100)
 
     def _update_state(self) -> None:
-        self.status.setText(self._PREVIEW if self._preview else self._PINNED if self._pin else self._FITTED)
+        pinned = (self._PINNED_BOTH if self._pin.contrast is not None else self._PINNED) if self._pin else self._FITTED
+        self.status.setText(self._PREVIEW if self._preview else pinned)
         self.pin_button.setEnabled(self._pin is None or self._preview is not None)
         self.reset_button.setEnabled(self._pin is not None or self._preview is not None)
 
@@ -282,8 +291,13 @@ class PrintControls(QWidget):
 
     def show_fitted(self, exposure: float, grade: float) -> None:
         """The current frame's own fit - shown on the sliders unless they hold a preview or a pin."""
-        if self._pin is None and self._preview is None:
-            self._set_quietly(exposure, grade)
+        if self._preview is None and (self._pin is None or self._pin.contrast is None):
+            self._fitted_grade = grade  # a real fit: with a preview or a pinned grade it's the slider's own
+        if self._preview is None:
+            if self._pin is None:
+                self._set_quietly(exposure, grade)
+            elif self._pin.contrast is None:
+                self._set_quietly(self._pin.exposure, grade)
 
     def set_override(self, tone: ToneCurveParams | None) -> None:
         """Show `tone` as the pin (a reopened profile's, or None for a new calibration); any preview goes."""
@@ -313,7 +327,9 @@ class PrintControls(QWidget):
         self._emit()
 
     def _on_pin(self) -> None:
-        self._pin, self._preview = self._slider_tone(), None
+        tone = self._slider_tone()
+        grade_moved = self._fitted_grade is None or abs(tone.contrast - self._fitted_grade) >= 0.005
+        self._pin, self._preview = (tone if grade_moved else replace(tone, contrast=None)), None
         self._update_state()
         self._emit()
 

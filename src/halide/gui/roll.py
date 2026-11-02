@@ -372,7 +372,7 @@ class CalibrationSession:
     def sidecars(self) -> dict:
         """Keyword arguments for profile_store.save_named_profile besides the profile itself."""
         return {
-            "tone": self.tone_override,
+            "tone": None,  # the Print drawer's pin belongs to the roll, never the profile
             "scan": self.reference,
             "anchors": [anchors.point_to_dict(p) for p in self.points],
         }

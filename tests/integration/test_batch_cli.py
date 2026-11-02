@@ -384,3 +384,19 @@ def test_resumed_minority_exposure_frame_is_matched_to_the_rolls_most_common_set
     assert expected != 1.0
     record = read_provenance(read_tiff_description(out_dir / "f5.tiff"))
     assert record["scan_gain"] == pytest.approx(expected)
+
+
+def test_one_exposure_on_unevenly_digitized_scans_says_to_even_them_out(tmp_path, capsys):
+    from tests.integration.test_check_cli import _frame
+
+    in_dir = tmp_path / "roll"
+    in_dir.mkdir()
+    _frame(in_dir / "a.tiff", exposure=(1, 50), seed=1)
+    _frame(in_dir / "b.tiff", exposure=(1, 25), seed=2)
+    base = ["batch", str(in_dir), str(tmp_path / "out"), "--dry-run", "--rm", "0.2", "--bm", "0.3", "--rs", "1.3", "--bs", "0.8"]
+    assert main(base + ["--exposure", "0.4"]) == 0
+    assert "one --exposure across scans digitized at different exposures" in capsys.readouterr().out
+    assert main(base + ["--exposure", "0.4", "--match-scan-exposure"]) == 0
+    assert "one --exposure across" not in capsys.readouterr().out
+    assert main(base) == 0
+    assert "one --exposure across" not in capsys.readouterr().out

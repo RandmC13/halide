@@ -280,7 +280,7 @@ def _output_text(stage: Stage, tone_params) -> str:
     if tone_params.mode == "linear":
         return "flat positive for editing elsewhere (--output flat)"
     grade = f"{tone_params.contrast:.2f}" if tone_params.contrast is not None else "fitted per frame"
-    exposure = f"{tone_params.exposure:+.2f}" if tone_params.exposure is not None else "fitted per frame"
+    exposure = f"{tone_params.exposure:+.2f} for the whole roll" if tone_params.exposure is not None else "fitted per frame"
     return f"print{_SEP}grade {grade}{_SEP}exposure {exposure}"
 
 
@@ -627,6 +627,9 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
     issues = report.summary_lines(exposure_corrected=matching)
     for line in issues:
         sheet.warn("Scans", line)
+    if getattr(args, "exposure", None) is not None and report.exposure_inconsistent and not matching:
+        sheet.warn("Scans", "one --exposure across scans digitized at different exposures prints the brighter "
+                            "scans brighter: add --match-scan-exposure")
     if issues:
         sheet.note("Scans", f"details, and how to scan a roll consistently: halide check {input_dir}")
     elif report.exposure_groups or report.white_balance_groups:

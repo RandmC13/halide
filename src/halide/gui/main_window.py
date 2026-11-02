@@ -1097,7 +1097,7 @@ class MainWindow(QWidget):
         reference = self.session.reference
         tone = self.session.print_tone()
         bits = [f"{len(self.session.points)} neutral points"]
-        bits.append("print exposure/grade pinned" if self.session.tone_override else "print fitted per frame")
+        bits.append("one exposure for this roll" if self.session.tone_override else "print fitted per frame")
         if reference is not None:
             bits.append(f"scan exposure matched to {reference.describe()}")
         frames = [(f.path, f.preview, self.session.gain(f.scan)) for f in self.session.frames]
@@ -1295,7 +1295,7 @@ class MainWindow(QWidget):
         self.extra_drawer.set_summary(stock or "film stock, process, scanner")
         controls = self.print_controls
         self.print_drawer.set_summary(
-            "previewing on this frame" if controls.previewing else "pinned for every frame" if controls.pinned else "fitted per frame"
+            "previewing on this frame" if controls.previewing else "one exposure for this roll" if controls.pinned else "fitted per frame"
         )
 
     def _on_print_changed(self, preview: ToneCurveParams | None, pin: ToneCurveParams | None, flat: bool) -> None:
@@ -1399,7 +1399,7 @@ class MainWindow(QWidget):
         self.develop_panel.prepare(
             folder, case, profile_path=path, name=name, new_points=len(session.new_points()),
             suggested_name="" if in_use is not None else self._profile_name, exposure_differs=self._exposure_differs,
-            device=self.device.kind if self.device is not None else None,
+            device=self.device.kind if self.device is not None else None, tone=self.session.tone_override,
         )
         self._turn_to(1)
 
@@ -1411,10 +1411,12 @@ class MainWindow(QWidget):
         return self._runner.is_running()
 
     def _tone_as_saved(self, path: Path) -> bool:
-        """Whether the print pin in hand is the one saved in the profile at `path`: batch prints with
-        the file's, so a pin made since must be saved (or used once) first."""
+        """Whether the profile at `path` would print as the window does. A pin is passed to batch on
+        its command line (it belongs to the roll), but a profile saved before that carries its own
+        pin, which batch would use: a different pin there, or none, must be saved (or used once) first."""
         try:
-            return load_tone_override(path) == self.session.tone_override
+            saved = load_tone_override(path)
+            return saved is None or saved == self.session.tone_override
         except (OSError, ValueError):
             return False
 

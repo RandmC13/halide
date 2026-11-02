@@ -166,7 +166,7 @@ def test_drawer_summaries_follow_the_film_stock_and_the_print_sliders(window):
     window.print_controls.exposure.setValue(window.print_controls.exposure.value() + 10)
     assert print_.header.summary == "previewing on this frame"
     window.print_controls.pin_button.click()
-    assert print_.header.summary == "pinned for every frame"
+    assert print_.header.summary == "one exposure for this roll"
     window.print_controls.reset_button.click()
     assert print_.header.summary == "fitted per frame"
 
@@ -241,7 +241,7 @@ def test_moving_a_print_slider_previews_this_frame_only(window, monkeypatch):
     assert controls.status.text() == "Previewing on this frame" and stale == []
 
 
-def test_use_for_the_whole_roll_pins_and_saves_the_print(window, monkeypatch):
+def test_use_for_the_whole_roll_pins_the_exposure_for_this_roll(window, monkeypatch):
     _positive_with_a_fit(window)
     stale = []
     monkeypatch.setattr(window, "_proof_is_stale", lambda: stale.append(1))
@@ -250,9 +250,19 @@ def test_use_for_the_whole_roll_pins_and_saves_the_print(window, monkeypatch):
     controls.pin_button.click()
     pinned = window.session.tone_override
     assert pinned is not None and pinned.exposure == pytest.approx(controls.exposure.value() / 100)
-    assert window.session.sidecars()["tone"] == pinned and stale == [1]
-    assert controls.status.text() == "Pinned for every frame (saved with the profile)"
+    assert pinned.contrast is None  # the grade slider wasn't moved: grade stays fitted per frame
+    assert window.session.sidecars()["tone"] is None and stale == [1]  # the profile stays per-frame
+    assert controls.status.text() == "One exposure for this roll"
     assert not controls.pin_button.isEnabled()  # nothing new to pin
+
+
+def test_moving_the_grade_before_pinning_pins_the_grade_too(window):
+    _positive_with_a_fit(window)
+    controls = window.print_controls
+    controls.grade.setValue(controls.grade.value() - 20)
+    controls.pin_button.click()
+    assert window.session.tone_override.contrast == pytest.approx(controls.grade.value() / 100)
+    assert controls.status.text() == "One exposure and grade for this roll"
 
 
 def test_changing_frame_drops_a_preview_but_keeps_a_pin(window, app):
@@ -266,7 +276,8 @@ def test_changing_frame_drops_a_preview_but_keeps_a_pin(window, app):
     QTest.keyClick(window, Qt.Key.Key_Right)
     _pump(app, lambda: _frame_ready(window, 1))
     assert window._preview_tone is None and window.session.tone_override == pinned
-    assert controls.grade.value() == round(pinned.contrast * 100)  # the sliders show the pin again
+    assert controls.exposure.value() == round(pinned.exposure * 100)  # the sliders show the pin again,
+    assert controls.grade.value() == round(window._resolved.contrast * 100)  # with this frame's own grade
     controls.reset_button.click()
     assert window.session.tone_override is None and controls.status.text() == "Fitted per frame"
 
