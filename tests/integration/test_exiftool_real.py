@@ -81,3 +81,38 @@ def test_one_process_serves_many_files_and_survives_a_failed_one(scan, tmp_path)
         copy_exif_metadata(tmp_path / "missing.tif", _output(tmp_path / "b.tif"))
     assert copy_exif_metadata(scan, _output(tmp_path / "c.tif")) is True
     assert exiftool.session() is session and session.pid == pid
+
+
+_DARKTABLE_XMP = (
+    b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+    b'<rdf:Description xmlns:darktable="http://darktable.sf.net/" darktable:history_end="46"/>'
+    b"</rdf:RDF></x:xmpmeta>"
+)
+
+
+@pytest.mark.parametrize("suffix", [".jpg", ".png"])
+def test_a_sharing_copy_keeps_the_camera_but_not_the_private_tags(tmp_path, suffix):
+    import json
+
+    from halide.io.raster import write_srgb_8bit_image
+
+    positive = tmp_path / "positive.tif"
+    tifffile.imwrite(
+        positive,
+        np.full((8, 8, 3), 0.25, dtype=np.float32),
+        photometric="rgb",
+        description='{"halide": "provenance"}',
+        datetime="2026:09:27 12:00:00",
+        extratags=[(271, "s", 0, "Canon", True), (272, "s", 0, "Canon EOS R6", True),
+                   (269, "s", 0, "/home/someone/scans/positive.tif", True), (700, "B", 0, _DARKTABLE_XMP, True)],
+    )
+    shared = tmp_path / f"shared{suffix}"
+    write_srgb_8bit_image(shared, np.full((8, 8, 3), 128, dtype=np.uint8))
+    assert copy_exif_metadata(positive, shared, drop_icc=True, for_sharing=True) is True
+
+    tags = json.loads(subprocess.run(["exiftool", "-j", "-G1", str(shared)], capture_output=True, text=True,
+                                     check=True).stdout)[0]
+    assert tags.get("IFD0:Model") == "Canon EOS R6"
+    assert not any(key.endswith(":ImageDescription") or key.endswith(":DocumentName") for key in tags)
+    assert not any(key.startswith("XMP-darktable:") for key in tags)
+    assert tags.get("ICC_Profile:ProfileDescription", "").startswith("sRGB")  # its own profile survives

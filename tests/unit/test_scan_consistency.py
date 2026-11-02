@@ -13,7 +13,7 @@ from halide.calibration.profile_store import (
 )
 from halide.calibration.scan_consistency import assess_roll, frame_flags, most_common_settings, scan_gain
 from halide.core.types import DensityProfile, ToneCurveParams
-from halide.io.scan_metadata import ScanSettings, darktable_state_from_xmp, settings_from_exif
+from halide.io.scan_metadata import CAMERA_REFERENCE, ScanSettings, darktable_state_from_xmp, settings_from_exif
 from halide.io.tiff import read_tiff, write_tiff
 from halide.processing import Stage, process_scan
 from tests.unit.test_icc import LINEAR_TAGS, build_icc
@@ -55,6 +55,31 @@ def test_darktable_final_state_honours_later_disables_and_history_end():
     state = darktable_state_from_xmp(xmp)
     assert state.tonal_modules == ("shadhi",)
     assert state.white_balance == pytest.approx((1.9, 1.0, 1.8))
+
+
+def _camera_reference_params(r, g, b):
+    # temperature version 4: R, G, B, G2, then the preset; 4 is darktable's "camera reference"
+    return struct.pack("<4fi", r, g, b, 0.0, 4).hex()
+
+
+def test_camera_reference_white_balance_is_named_not_read_from_its_stale_multipliers():
+    def state(params, modversion="4"):
+        xmp = _xmp([("temperature", "1", params)]).replace('darktable:multi_priority="0"',
+                                                           f'darktable:multi_priority="0" darktable:modversion="{modversion}"')
+        return darktable_state_from_xmp(xmp)
+
+    assert state(_camera_reference_params(1.875, 1.0, 1.81)).white_balance == CAMERA_REFERENCE
+    fixed = struct.pack("<4fi", 1.875, 1.0, 1.81, 0.0, 0).hex()  # preset 0 renders the stored multipliers
+    assert state(fixed).white_balance == pytest.approx((1.875, 1.0, 1.81))
+
+    reference = state(_camera_reference_params(1.875, 1.0, 1.81))
+    other_frame = state(_camera_reference_params(2.0, 1.0, 1.7))  # stale values differ, the render doesn't
+    roll = assess_roll({"a": (S30, reference), "b": (S30, other_frame)})
+    assert roll.white_balance_groups == {CAMERA_REFERENCE: ["a", "b"]} and not roll.white_balance_inconsistent
+
+    mixed = assess_roll({"a": (S30, reference), "b": (S30, state(fixed))})
+    assert mixed.white_balance_inconsistent
+    assert "2 different raw white balances — shifts" in mixed.summary_lines()[0]
 
 
 def test_scan_gain_and_most_common_reference():

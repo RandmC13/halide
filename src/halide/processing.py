@@ -947,12 +947,20 @@ def export_delivery_image(
             srgb_8bit = _export_srgb_on_device(input_path, image, device, on_warning)
         # Written under a hidden temp name beside the real one, moved into place only once the
         # PNG/JPEG is fully encoded — see process_scan's own atomic_output for why.
+        exif_warning = None
         with atomic_output(output_path) as tmp_path:
             if srgb_8bit is not None:
                 write_srgb_8bit_image(tmp_path, srgb_8bit, quality=quality)
             else:
                 write_delivery_image(tmp_path, image, quality=quality)
-        del image, frames, srgb_8bit
+            del image, frames, srgb_8bit  # before exiftool runs — see process_scan
+            try:
+                # drop_icc keeps the sRGB profile just embedded, not the positive's ACEScg one
+                copy_exif_metadata(str(input_path), str(tmp_path), drop_icc=True, for_sharing=True)
+            except _EXIF_FAILURE as exc:
+                exif_warning = f"{input_path}: exported, but its camera metadata couldn't be copied ({exc})"
+    if exif_warning is not None:
+        _warn(on_warning, exif_warning)
 
 
 def _export_on_service(input_path, frames, service, on_warning) -> np.ndarray:
