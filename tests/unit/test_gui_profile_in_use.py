@@ -139,6 +139,27 @@ def test_clear_all_keeps_the_profiles_points(setup, monkeypatch):
     assert window.session.points == old_points
 
 
+def test_clear_all_with_only_the_profiles_points_stops_using_the_profile(setup, monkeypatch):
+    window, path, _ = setup
+    before = path.read_bytes()
+    window.use_profile(path)
+    asked = []
+    monkeypatch.setattr(window, "_confirm", lambda question: asked.append(question) or True)
+    window.clear_all_button.click()
+    assert asked == ["Stop using 'Portra 400' on this roll? Its points leave this roll; the saved profile isn't changed."]
+    assert window.session.profile_in_use is None and window.session.points == []
+    assert window.profile_chip.text() == "New calibration"
+    assert path.read_bytes() == before
+
+
+def test_stopping_using_a_profile_needs_a_yes(setup, monkeypatch):
+    window, path, old_points = setup
+    window.use_profile(path)
+    monkeypatch.setattr(window, "_confirm", lambda question: False)
+    window.clear_all_button.click()
+    assert window.session.profile_in_use == path and window.session.points == old_points
+
+
 def test_a_print_preview_does_not_outlive_using_a_profile(setup):
     window, path, _ = setup
     window.positive_button.setChecked(True)
