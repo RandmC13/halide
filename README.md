@@ -122,9 +122,16 @@ whether that's what you got.
 halide comes with a darktable style that sets all of this up:
 [`darktable/halide-linear-scan.dtstyle`](darktable/halide-linear-scan.dtstyle). It switches off every
 tone and colour module (exposure, filmic, sigmoid, color calibration, curves, levels, color balance,
-local contrast, negadoctor, monochrome, sharpen, framing and so on), sets white balance to *camera
-reference* so it's the same for every frame, and sets the output profile to linear Rec2020. Crop,
-rotation, perspective, lens correction and denoise are left to you.
+local contrast, negadoctor, monochrome, sharpen, framing and so on) and sets the output profile to
+linear Rec2020. Crop, rotation, perspective, lens correction and denoise are left to you.
+
+White balance stays darktable's own: *camera reference*, which darktable sets on every raw it
+imports with its default *modern* chromatic adaptation (preferences, *processing* tab). It works
+the frame's own camera white balance back to the same D65 reference, so every frame matches even if
+the camera was on auto white balance while scanning. Check the white balance module says *camera
+reference*; if it doesn't, click that button on each frame. Don't copy white balance from one frame
+and paste it onto others: the pasted values belong to the first frame, and the others come out a
+few CC off.
 
 1. Download the style file. In the lighttable's *styles* module, click *import* and choose it.
 2. Select every frame of the roll and apply the style *halide linear scan* to them from the same
@@ -137,8 +144,8 @@ rotation, perspective, lens correction and denoise are left to you.
    was made.
 5. Export.
 
-White balance is fixed per profile: calibrate a new profile for scans made with the style, rather
-than reusing one made from scans with a different white balance.
+White balance belongs to the profile: calibrate a new profile for scans made this way, rather than
+reusing one made from scans with a different white balance.
 
 **RawTherapee** (check your version for exact names)
 

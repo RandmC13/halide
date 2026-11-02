@@ -62,9 +62,13 @@ class DarktableState:
     tonal_modules: tuple[str, ...]  # enabled modules that reshape tone/colour (should be empty)
 
 
-# darktable's "camera reference" white balance (preset 4 of the temperature module, version 4): darktable
-# then renders the camera's own D65 multipliers, not the ones stored beside the preset, which are left
-# over from whatever the module showed before.
+# darktable's "camera reference" white balance (preset 4 of the temperature module, version 4).
+# darktable renders the stored multipliers x (D65 / the frame's own as-shot), and stores the frame's
+# own as-shot multipliers, so every frame lands on D65 even when the camera's auto white balance
+# varied: the stored numbers vary while the result doesn't, so they're reported by name.
+# shortcut: assumes the stored multipliers are the frame's own (darktable's default); white balance
+# pasted from another frame isn't, and lands a few CC off. Upgrade by checking them against the
+# raw's as-shot white balance, if a real roll ever shows it.
 CAMERA_REFERENCE = "camera reference (D65)"
 _CAMERA_REFERENCE_PRESET = 4
 
