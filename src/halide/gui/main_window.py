@@ -387,7 +387,7 @@ class MainWindow(QWidget):
         self.clear_frame_button.setToolTip("Remove the points on the frame you're looking at")
         self.clear_frame_button.clicked.connect(self._on_clear_frame)
         self.clear_all_button = QPushButton("Clear all")
-        self.clear_all_button.setToolTip("Remove every point and start the calibration again")
+        self.clear_all_button.setToolTip("Remove every point and start the calibration again (with a profile in use: its new points first, then the profile)")
         self.clear_all_button.clicked.connect(self._on_clear_all)
         for button in (self.clear_frame_button, self.clear_all_button):
             button.setProperty("role", "remove")
@@ -1261,6 +1261,17 @@ class MainWindow(QWidget):
     def _on_clear_all(self) -> None:
         if self.session.profile_in_use is not None:
             count = len(self.session.new_points())
+            if not count:
+                # Only the profile's own points are left: the next step is to stop using it.
+                name = self.session.profile_in_use.stem
+                if self._confirm(f"Stop using '{name}' on this roll? Its points leave this roll; the saved "
+                                 "profile isn't changed."):
+                    self._new_calibration()
+                    self._saved_points = []
+                    self._nudge = None
+                    self._points_changed()
+                    self._status(f"Stopped using '{name}': a new calibration")
+                return
             question = f"Remove the {console.plural(count, 'new point')}? The profile's own points stay."
         else:
             count = len(self.session.points)

@@ -13,6 +13,7 @@ venv/
 # Local-only material: test scans, Claude Code settings and worktrees
 Roll16-Testing/
 Roll9-BW-Testing/
+0013-KodakGold200-Testing/
 .claude/
 
 # Real-scan outputs of `pytest -m gpu` (tests/gpu/test_gpu_parity.py), deleted after every test
