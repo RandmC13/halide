@@ -63,8 +63,8 @@ Later, `uv tool upgrade halide` updates to the latest version and `uv tool unins
 removes it. Use the full GitHub address above: a different, unrelated package called `halide` is on
 PyPI, so `uv tool install halide` on its own installs the wrong thing.
 
-Tested with numpy 2.5, colour-science 0.4.7, tifffile 2026.9, PySide6 6.11, Pillow 12.3, psutil 7.2 and
-shtab 1.12. Older versions within halide's declared ranges should work but aren't tested.
+Tested with numpy 2.5, colour-science 0.4.7, tifffile 2026.10, PySide6 6.12, Pillow 13.0, psutil 7.2 and
+shtab 1.13. Older versions within halide's declared ranges should work but aren't tested.
 
 halide is developed and tested on Linux. It is plain Python (numpy, Qt via PySide6), so macOS and
 Windows should work, but they haven't been tested yet.
@@ -96,7 +96,7 @@ leave out halide's processing record, the scan's file path and darktable's edit 
 Minimal Linux installs can be missing libraries Qt needs. On Debian/Ubuntu:
 
 ```bash
-sudo apt install libegl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 \
+sudo apt install libgl1 libegl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 \
                  libxcb-shape0 libxcb-xkb1
 ```
 </details>
@@ -163,7 +163,8 @@ A typical roll:
 # 1. Check the scans were made consistently (reads file headers only, so it's fast)
 halide check portra-roll-03/
 
-# 2. Pick neutral points across the roll and save them as a profile
+# 2. Pick neutral points across the roll and save them as a profile named "Portra 400"
+#    (the window can also develop the roll for you: see "Calibrating a roll" below)
 halide open portra-roll-03/
 
 # 3. Develop the whole roll with that profile
@@ -175,7 +176,9 @@ halide contact portra-roll-03-developed/ portra-roll-03-sheet.jpg
 ```
 
 Run `invert` or `batch` without a calibration flag and halide offers your saved profiles, the
-picking in the halide window, or an automatic estimate. For a single frame:
+picking in the halide window, or an automatic estimate. The automatic estimate (`--auto-density`
+for one frame, `--auto-density-roll` for a roll) guesses the neutrals statistically: fine for a
+first look, but approximate. For finished pictures, pick neutral points. For a single frame:
 
 ```bash
 halide invert IMG_0158.tif IMG_0158-positive.tif --pick    # click neutrals on this frame
@@ -187,6 +190,60 @@ writes and asks nothing.
 
 Want to try settings before committing disk space? `halide batch portra-roll-03/ --contact-sheet
 preview.jpg` develops every frame at full quality but keeps only the contact sheet.
+
+## Calibrating a roll
+
+`halide open portra-roll-03/` opens the roll in the halide window: a filmstrip of its frames along
+the top (a ⚠ marks a frame scanned differently from the rest), the frame you're on below it, and
+the calibration panel on the right. Left and right arrow keys step through the frames.
+
+**Pick neutral points.** Click things that were white, grey or black in the scene: a white wall, a
+grey road, a black tyre, a cloud. You're looking at the negative, so brightness is reversed: real
+whites look dark. Pick on any frames of the roll, and spread the points across the tones, from deep
+shadow to bright highlight; three to six good points is usually plenty. *Show likely neutrals*,
+above the picture, marks candidates, as a hint only. The step wedge at the top of the panel
+(*Coverage of the roll's densities*) shows where your points sit in density; points spread along it
+give a fit that holds for the whole roll.
+
+**Read the agreement.** From three points on, each point gets a reading: how far it is from what the
+other points agree neutral is, as a colour-printing filter pack on a dichroic head (CC 10 = 0.10
+density; *what's CC?* in the panel explains it). Up to about CC 5 is good; CC 5 to 10 (amber) is worth a second look; over CC 10 (red)
+usually means the object wasn't neutral after all (a cream wall, a warm-lit cloud, skin). The note
+under the point list names the point that disagrees most; deal with that one first, since one bad point
+pulls the others a few CC off too. Ctrl+Z takes a point back.
+
+**Check the positive.** Once two points are far enough apart in density (0.1 D), the
+**Negative | Positive** switch above the picture shows the frame printed with your calibration.
+Before that, the positive is a rough automatic estimate and says so. *Raw negative* shows the scan
+as it is, orange mask and all. If the fit only holds over part of the density
+range, the window says where ("Fit reliable over D 0.4-1.2 only") and suggests where to add a point.
+
+**The drawers** under the point list hold the rest: *Extra information* (film stock, process and
+scanner, saved with the profile), *Print* (exposure and grade sliders, previewed on this frame; *Use
+for the whole roll* pins them for every frame) and *Details* (the numbers behind the fit).
+
+**Save and develop.** *Save profile* names the calibration ("Portra 400"), so you can reuse it on
+every later roll of that film, process and scanner. *Develop roll…* then
+develops the whole roll from the window, exactly as `halide batch` would, with a contact sheet and,
+if you like, JPEG or PNG copies for sharing. You can also use a calibration once without saving it.
+
+**Later rolls.** Open the next roll, choose your profile in the *Profiles* window (top right) and
+*Use for this roll*. If its colour looks slightly off on the new roll, click a few more points to refine it, then
+update the profile or save it as a new one. From the command line, `--profile "Portra 400"` does the
+same for `invert` and `batch`.
+
+## Scanning a roll consistently
+
+One calibration is exactly right for a whole roll only if every frame was digitized the same way:
+the same manual camera exposure (shutter, aperture, ISO), the same white balance, and no tone or
+colour edits in the raw developer. `halide check portra-roll-03/` reads the file headers and tells
+you, in seconds; `batch` runs the same check before it starts.
+
+If the frames were digitized at different shutter speeds (an auto-exposure mode on the copy camera,
+say), add `--match-scan-exposure` to `invert` or `batch`. It evens out the difference exactly, from
+each scan's EXIF, against the exposure the profile was made at (or `--scan-reference FRAME`). A
+different white balance between frames can't be corrected after export: re-export with one fixed
+white balance (the darktable style does this for you).
 
 ## Commands
 
@@ -200,6 +257,7 @@ preview.jpg` develops every frame at full quality but keeps only the contact she
 | `halide contact DIR SHEET` | Contact sheet of developed frames |
 | `halide check DIR` | Report inconsistent scan settings across a roll |
 | `halide profile list\|show\|rename\|delete\|edit` | Manage saved profiles (see Troubleshooting for where they live) |
+| `halide gpu [--install]` | Show whether an NVIDIA GPU can be used, and add GPU support (see below) |
 
 Every command has `--help`, with examples. `halide --version` prints the version. `batch`, `invert`,
 `print` and `export` never write over a scan. If an output already exists they ask (in a terminal)
