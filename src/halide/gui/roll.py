@@ -20,7 +20,7 @@ import numpy as np
 
 from halide.calibration import anchors
 from halide.calibration.anchors import Agreement, NeutralPoint
-from halide.calibration.auto import auto_density_balance
+from halide.calibration.auto import at_scan_gain, auto_density_balance, median_profile
 from halide.calibration.profile_store import load_anchors, load_profile, load_scan_reference, load_tone_override
 from halide.calibration.scan_consistency import scan_gain
 from halide.core._constants import MIN_TRANSMITTANCE
@@ -99,6 +99,7 @@ class CalibrationSession:
     profile_in_use: Path | None = None  # a saved profile used on this roll ("Use for this roll")
     _profile_points: list[NeutralPoint] = field(default_factory=list)  # ... and the points it came with
     _profile_fit: DensityProfile | None = None  # ... or, with no points, its saved balance
+    _roll_estimates: dict = field(default_factory=dict, repr=False)  # roll -> (key, estimate, votes)
 
     # --- the roll -----------------------------------------------------------------------------
 
@@ -348,14 +349,36 @@ class CalibrationSession:
 
     # --- Positive view ------------------------------------------------------------------------
 
+    def _roll_vote(self, roll: Path) -> tuple[DensityProfile | None, int]:
+        """The median of the roll's loaded frames' own estimates, each moved to the reference scan
+        exposure; cached until a frame's estimate or the reference changes."""
+        voters = [f for f in self.frames if f.roll == roll and f.estimate is not None]
+        reference = self.reference
+        key = (reference, tuple((f.path, id(f.estimate)) for f in voters))
+        cached = self._roll_estimates.get(roll)
+        if cached is None or cached[0] != key:
+            estimate = median_profile([at_scan_gain(f.estimate, self.gain(f.scan)) for f in voters]) if voters else None
+            cached = self._roll_estimates[roll] = (key, estimate, len(voters))
+        return cached[1], cached[2]
+
+    def roll_estimate(self, roll: Path) -> DensityProfile | None:
+        return self._roll_vote(roll)[0]
+
+    def roll_votes(self, roll: Path) -> int:
+        return self._roll_vote(roll)[1]
+
     def positive_source(self, frame: Frame, full_estimate: DensityProfile | None = None) -> tuple[DensityProfile | None, bool, float]:
         """(profile, is_fit, scan gain) to print `frame` with: the live fit at the reference scan
-        exposure once there is one, else the frame's own auto estimate (no gain - it was measured on
-        the frame as scanned). `full_estimate` prefers an estimate measured on the frame at display
-        resolution over its small preview's, when the caller has one."""
+        exposure once there is one, else its roll's automatic estimate (every loaded frame's vote,
+        also at the reference exposure). Only while its roll has no estimate yet does the frame's own
+        stand in, with no gain (it was measured on the frame as scanned); `full_estimate`, one
+        measured at display resolution, is preferred over its small preview's."""
         fitted = self.profile()
         if fitted is not None:
             return fitted, True, self.gain(frame.scan)
+        roll = self.roll_estimate(frame.roll)
+        if roll is not None:
+            return roll, False, self.gain(frame.scan)
         return (full_estimate or frame.estimate), False, 1.0
 
     def print_tone(self) -> ToneCurveParams:

@@ -24,10 +24,11 @@ class Notice:
     rows: list[tuple[str, str, int | None]] = field(default_factory=list)  # (label, text, frame index or None)
     error: bool = False
     footer: str = ""  # a last, dim line: what to do about it
+    quiet: bool = False  # information, not a warning: the plain text colour
 
 
-def _chip_style(error: bool, open_: bool) -> str:
-    colour = theme.AGREE_RED if error else theme.TEXT_WARNING
+def _chip_style(notice: Notice, open_: bool) -> str:
+    colour = theme.AGREE_RED if notice.error else theme.TEXT if notice.quiet else theme.TEXT_WARNING
     border = colour if open_ else theme.BORDER
     background = theme.BORDER if open_ else theme.BACKGROUND_ALT
     return (
@@ -173,7 +174,7 @@ class NoticeBar(QWidget):
             self._chip_row.addWidget(chip)
         chip.setText(notice.chip)
         chip.setToolTip(notice.title)
-        chip.setStyleSheet(_chip_style(notice.error, key == self._open))
+        chip.setStyleSheet(_chip_style(notice, key == self._open))
         if key == self._open and self._panel is not None:
             self._panel.show_notice(notice)
             self._place_panel()
@@ -203,14 +204,14 @@ class NoticeBar(QWidget):
         if key not in self._notices or self._panel is None:
             return
         self._open = key
-        self._chips[key].setStyleSheet(_chip_style(self._notices[key].error, True))
+        self._chips[key].setStyleSheet(_chip_style(self._notices[key], True))
         self._panel.show_notice(self._notices[key])
         self._place_panel()
 
     def close_list(self) -> None:
         key, self._open = self._open, None
         if key in self._chips:
-            self._chips[key].setStyleSheet(_chip_style(self._notices[key].error, False))
+            self._chips[key].setStyleSheet(_chip_style(self._notices[key], False))
         if self._panel is not None:
             self._panel.hide()
         if key is not None and key.startswith("error") and key in self._notices:

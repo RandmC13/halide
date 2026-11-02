@@ -1,8 +1,9 @@
 """The roll as a strip of film across the top of the picker: every frame in order, in the same
 visual language as halide's contact sheets and terminal progress display - black rebate, sprocket
 holes, orange edge-print frame numbers. The current frame is outlined; frames with neutral points on
-them carry a count in the lower rebate, and frames scanned differently from the rest of the roll a ⚠
-there. Frames "develop" in as their previews load.
+them carry a count in the lower rebate, frames scanned differently from the rest of the roll a ⚠
+there, and frames whose colour runs away from the rest of the roll a word in its centre (WARM, COOL,
+GREEN, MAGENTA). Frames "develop" in as their previews load.
 
 Thumbnails are handed in as QPixmaps (negative or positive, following the main view's switch); this
 widget only lays them out, paints the film and reports clicks.
@@ -40,6 +41,7 @@ class _Strip(QWidget):
         self._pixmaps: list[QPixmap | None] = []
         self._failed: dict[int, str] = {}  # frame index -> why it didn't load
         self._flags: dict[int, str] = {}  # frame index -> how it was scanned differently
+        self._marks: dict[int, str] = {}  # frame index -> the way its colour runs ("warm")
         self._numbers: list[int] = []
         self._roll_starts: list[tuple[int, str]] = []  # (first frame index, roll name), several rolls only
         self._counts: list[int] = []
@@ -73,6 +75,7 @@ class _Strip(QWidget):
         self._counts = [0] * len(numbers)
         self._failed = {}
         self._flags = {}
+        self._marks = {}
         self._current = None
         self._appear = [1.0] * len(numbers)
         self._generation += 1
@@ -196,6 +199,11 @@ class _Strip(QWidget):
         self._flags = dict(flags)
         self.update()
 
+    def set_marks(self, marks: dict[int, str]) -> None:
+        """Name frames whose colour differs from the rest of the roll: frame index -> its direction."""
+        self._marks = dict(marks)
+        self.update()
+
     def failure_at(self, pos) -> str | None:
         for i in self._failed:
             if self.frame_rect(i).contains(pos):
@@ -295,6 +303,10 @@ class _Strip(QWidget):
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                     f"● {self._counts[i]} ",
                 )
+            if i in self._marks:  # centred, clear of the flag on the left and the count on the right
+                below = QRect(rect.x() + 16, rect.bottom() + 1, rect.width() - 32, REBATE)
+                word = painter.fontMetrics().elidedText(self._marks[i].upper(), Qt.TextElideMode.ElideRight, below.width())
+                painter.drawText(below, Qt.AlignmentFlag.AlignCenter, word)
             if i in self._flags:
                 _paint_flag(painter, QPointF(rect.x() + 8, rect.bottom() + 1 + REBATE / 2))
                 painter.setFont(edge_font)

@@ -202,7 +202,11 @@ The window runs these same commands underneath, so its prints are identical to t
 Run `invert` or `batch` without a calibration flag and halide offers your saved profiles, the
 picking in the halide window, or an automatic estimate. The automatic estimate (`--auto-density`
 for one frame, `--auto-density-roll` for a roll) guesses the neutrals statistically: fine for a
-first look, but approximate. For finished pictures, pick neutral points. For a single frame:
+first look, but approximate. For a roll, every frame makes its own guess and the roll takes the
+middle one, so one odd frame can't pull the rest off; it's best on a full roll and rough under six
+frames. Frames whose colour runs well away from the rest (a scene under warm light, say) are named
+on the run sheet: they print that way, as the film recorded them. For finished pictures, pick
+neutral points. For a single frame:
 
 ```bash
 halide invert IMG_0158.tif IMG_0158-positive.tif --pick    # click neutrals on this frame
@@ -238,7 +242,10 @@ pulls the others a few CC off too. Ctrl+Z takes a point back.
 
 **Check the positive.** Once two points are far enough apart in density (0.1 D), the
 **Negative | Positive** switch above the picture shows the frame printed with your calibration.
-Before that, the positive is a rough automatic estimate and says so. *Raw negative* shows the scan
+Before that, the positive is the roll's rough automatic estimate and says so; it settles as the
+frames load. Once they have, a chip under the picture (*2 run warm*) names frames whose colour runs
+away from the rest of the roll, and the strip marks them WARM, COOL, GREEN or MAGENTA. Neutrals
+picked on those frames may be tinted by their light. *Raw negative* shows the scan
 as it is, orange mask and all. If the fit only holds over part of the density
 range, the window says where ("Fit reliable over D 0.4-1.2 only") and suggests where to add a point.
 

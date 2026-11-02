@@ -3,8 +3,9 @@ that stays consistent between the image, the magnifier and the filmstrip. Pure n
 Qt - the same split as gui/sampling.py.
 
 The positive is one of two things (see gui/roll.py::CalibrationSession.positive_source):
-  - the frame's own auto-density estimate (calibration/auto.py) - a rough, statistics-only guess,
-    shown until the user has picked enough points to fit, and labelled as such;
+  - the roll's auto-density estimate (calibration/auto.py: the median of its frames' own) - a
+    rough, statistics-only guess, shown until the user has picked enough points to fit, and
+    labelled as such;
   - the user's live fit, applied at the roll's reference scan exposure: a frame digitized brighter
     or darker than the reference is scaled by its scan gain first, exactly as
     `batch --match-scan-exposure` develops it (calibration/scan_consistency.py).

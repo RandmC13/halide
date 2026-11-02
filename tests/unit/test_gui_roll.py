@@ -88,7 +88,8 @@ def test_positive_switches_from_estimate_to_fit_at_two_separated_points(tmp_path
     session, paths = _session(tmp_path, scans=[AT_1_30, AT_1_60, AT_1_30])
     estimate = DensityProfile(white_balance=(1.0, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0))
     session.frames[1].estimate = estimate
-    assert session.positive_source(session.frames[1]) == (estimate, False, 1.0)
+    # The roll's estimate (here, its one vote) is at the reference exposure: the frame gets its gain.
+    assert session.positive_source(session.frames[1]) == (session.roll_estimate(tmp_path), False, 2.0)
 
     session.add_point(_pt(paths[0], 0.9))
     session.add_point(_pt(paths[2], 1.5))
@@ -96,6 +97,49 @@ def test_positive_switches_from_estimate_to_fit_at_two_separated_points(tmp_path
     assert is_fit
     assert profile.density_scale == pytest.approx(SCALE)
     assert gain == pytest.approx(2.0)  # the 1/60 frame is printed at the 1/30 reference, as batch would
+
+
+def _estimate(red_wb, red_scale=1.0):
+    return DensityProfile(white_balance=(red_wb, 1.0, 1.0), density_scale=(red_scale, 1.0, 1.0), source="auto")
+
+
+def test_positive_before_points_is_the_rolls_median_at_the_reference(tmp_path):
+    from halide.calibration.auto import at_scan_gain, median_profile
+
+    session, paths = _session(tmp_path, scans=[AT_1_30, AT_1_60, AT_1_30])
+    estimates = [_estimate(0.7, 1.1), _estimate(0.8, 1.2), _estimate(5.0, 1.3)]
+    for frame, estimate in zip(session.frames, estimates):
+        frame.estimate = estimate  # each measured on its frame as scanned
+    expected = median_profile([estimates[0], at_scan_gain(estimates[1], 2.0), estimates[2]])
+    profile, is_fit, gain = session.positive_source(session.frames[1])
+    assert (profile, is_fit, gain) == (expected, False, 2.0)
+    assert session.roll_votes(tmp_path) == 3
+    assert session.positive_source(session.frames[0])[2] == 1.0
+
+
+def test_a_new_preview_moves_the_rolls_estimate(tmp_path):
+    session, paths = _session(tmp_path)
+    session.frames[0].estimate = _estimate(0.5)
+    assert session.roll_estimate(tmp_path).white_balance[0] == pytest.approx(0.5)
+    session.frames[1].estimate = _estimate(0.7)
+    assert session.roll_estimate(tmp_path).white_balance[0] == pytest.approx(np.sqrt(0.5 * 0.7))
+    assert session.roll_votes(tmp_path) == 2
+
+
+def test_a_frame_falls_back_to_its_own_estimate_only_before_its_roll_has_one(tmp_path):
+    session, paths = _session(tmp_path)
+    own = _estimate(0.9)
+    assert session.positive_source(session.frames[0], own) == (own, False, 1.0)
+
+
+def test_each_roll_open_gets_its_own_rolls_estimate(tmp_path):
+    session, paths = _session(tmp_path, names=("a.tif", "b.tif", "c.tif", "d.tif"))
+    other = tmp_path / "other"
+    for frame, estimate in zip(session.frames, (_estimate(0.5), _estimate(0.5), _estimate(2.0), _estimate(2.0))):
+        frame.estimate = estimate
+    session.frames[2].roll = session.frames[3].roll = other
+    assert session.positive_source(session.frames[0])[0].white_balance[0] == pytest.approx(0.5)
+    assert session.positive_source(session.frames[3])[0].white_balance[0] == pytest.approx(2.0)
 
 
 def test_views_carry_frame_numbers_density_and_agreement(tmp_path):
