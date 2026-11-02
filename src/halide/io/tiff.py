@@ -154,7 +154,15 @@ def set_description(path: str | Path, text: str) -> None:
     tifffile.tiffcomment(path, text)
 
 
-def copy_exif_metadata(source_path: str | Path, dest_path: str | Path, drop_icc: bool = False) -> bool:
+# Left out of copies meant for sharing: halide's provenance JSON (photo apps show ImageDescription as
+# the caption), the scan's full path on this machine, and darktable's edit history of the negative,
+# which darktable could apply again to the positive it's embedded in.
+_NOT_FOR_SHARING = ("--ImageDescription", "--DocumentName", "--XMP-darktable:all")
+
+
+def copy_exif_metadata(
+    source_path: str | Path, dest_path: str | Path, drop_icc: bool = False, for_sharing: bool = False
+) -> bool:
     """Copy EXIF metadata from source_path onto dest_path via exiftool, if available.
     Returns False (without raising) if exiftool isn't installed — metadata is a nice-to-have,
     not a correctness requirement of the pipeline. On Linux it runs on this process's kept-open
@@ -170,5 +178,7 @@ def copy_exif_metadata(source_path: str | Path, dest_path: str | Path, drop_icc:
     ]
     if drop_icc:
         args.append("--icc_profile")
+    if for_sharing:
+        args.extend(_NOT_FOR_SHARING)
     args.extend(["-overwrite_original", str(dest_path)])
     return exiftool.execute(args, written=dest_path)

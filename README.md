@@ -86,8 +86,9 @@ The `halide` command then works whenever that virtual environment is active.
 </details>
 
 **Optional:** install [exiftool](https://exiftool.org/) (`sudo apt install libimage-exiftool-perl`,
-`brew install exiftool`) so developed images keep their camera metadata. Without it halide still
-works; it just doesn't copy EXIF.
+`brew install exiftool`) so developed images and their JPEG/PNG copies keep their camera metadata
+(date taken, camera, lens). Without it halide still works; it just doesn't copy EXIF. Shared copies
+leave out halide's processing record, the scan's file path and darktable's edit history.
 
 <details>
 <summary>Linux: the halide window won’t open?</summary>
