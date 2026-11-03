@@ -37,18 +37,4 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install exiftool
       - run: pip install -e ".[dev]"
-      - name: Font diagnostic (temporary)
-        if: runner.os == 'macOS'
-        run: |
-          python - <<'PY'
-          from importlib.resources import files
-          from PySide6.QtWidgets import QApplication
-          from PySide6.QtGui import QFontDatabase
-          app = QApplication([])
-          for n in ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSansCondensed-Bold.ttf"):
-              p = files("halide.assets") / "fonts" / n
-              i = QFontDatabase.addApplicationFont(str(p))
-              print(n, type(p).__name__, p, p.is_file(), i, QFontDatabase.applicationFontFamilies(i) if i >= 0 else None)
-          print([f for f in QFontDatabase.families() if "eja" in f])
-          PY
       - run: python -m pytest tests/ -q
