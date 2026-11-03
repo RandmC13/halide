@@ -12,6 +12,7 @@ venv/
 
 # Local-only material: test scans, Claude Code settings and worktrees
 Roll16-Testing/
+Roll15-Testing/
 Roll9-BW-Testing/
 0013-KodakGold200-Testing/
 .claude/

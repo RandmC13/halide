@@ -193,7 +193,7 @@ def test_roll_estimate_names_a_frame_that_runs_warmer_than_the_rest(tmp_path, ca
     assert main(["batch", str(in_dir), str(tmp_path / "out"), "--auto-density-roll", "--workers", "1"]) == 0
     out = _plain(capsys)
     assert "one profile for the whole roll, from 7 frames" in out
-    assert "frame 7 runs warmer than the rest — they'll print that way, as the film recorded" in out
+    assert "frame 7 runs warmer than the rest — it'll print that way, as the film recorded" in out
     assert "rough on a short roll" not in out
     assert "for the most faithful colour, pick neutral points" in out
     log = (tmp_path / "out" / "halide-log.txt").read_text()

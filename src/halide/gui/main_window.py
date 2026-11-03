@@ -1031,7 +1031,9 @@ class MainWindow(QWidget):
                 self.source_note.setText(f"Your calibration · {len(self.session.points)} points")
             elif profile is not None:
                 votes = self.session.roll_votes(frame.roll)
-                few = f" · from {console.plural(votes, 'frame')}" if 0 < votes < MIN_ROLL_FRAMES else ""
+                # A short roll, not one still loading: only once every frame of it has had its say.
+                settled = all(f.loaded for f in self.session.frames if f.roll == frame.roll)
+                few = f" · from {console.plural(votes, 'frame')}" if settled and 0 < votes < MIN_ROLL_FRAMES else ""
                 self.source_note.setText(f"Rough auto estimate — not your final output{few}")
             else:
                 self.source_note.setText("No auto estimate for this frame — showing the negative")

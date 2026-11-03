@@ -303,8 +303,9 @@ class _Strip(QWidget):
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                     f"● {self._counts[i]} ",
                 )
-            if i in self._marks:  # centred, clear of the flag on the left and the count on the right
-                below = QRect(rect.x() + 16, rect.bottom() + 1, rect.width() - 32, REBATE)
+            if i in self._marks:  # centred between the flag's place on the left and the count on the right
+                count = painter.fontMetrics().horizontalAdvance(f"● {self._counts[i]} ") if self._counts and self._counts[i] else 16
+                below = QRect(rect.x() + 16, rect.bottom() + 1, rect.width() - 16 - count, REBATE)
                 word = painter.fontMetrics().elidedText(self._marks[i].upper(), Qt.TextElideMode.ElideRight, below.width())
                 painter.drawText(below, Qt.AlignmentFlag.AlignCenter, word)
             if i in self._flags:

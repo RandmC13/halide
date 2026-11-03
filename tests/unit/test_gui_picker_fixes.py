@@ -333,7 +333,7 @@ def test_the_positive_follows_the_rolls_estimate_as_previews_arrive(tmp_path, ap
     window._on_preview_ready(window._generation, 0, preview, first, None)
     window._follow_roll_estimate()  # what the throttle timer runs
     assert window._positive_profile == window.session.roll_estimate(tmp_path)
-    assert window.source_note.text().endswith(" · from 1 frame")
+    assert "from" not in window.source_note.text()  # still loading: not yet a short roll
     for i in (1, 2):
         estimate = DensityProfile(white_balance=(0.7 + i, 1.0, 1.0), density_scale=(1.0, 1.0, 1.0), source="auto")
         window._on_preview_ready(window._generation, i, preview, estimate, None)

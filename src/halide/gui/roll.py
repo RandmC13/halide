@@ -354,7 +354,7 @@ class CalibrationSession:
         exposure; cached until a frame's estimate or the reference changes."""
         voters = [f for f in self.frames if f.roll == roll and f.estimate is not None]
         reference = self.reference
-        key = (reference, tuple((f.path, id(f.estimate)) for f in voters))
+        key = (reference, tuple((f.path, f.estimate) for f in voters))
         cached = self._roll_estimates.get(roll)
         if cached is None or cached[0] != key:
             estimate = median_profile([at_scan_gain(f.estimate, self.gain(f.scan)) for f in voters]) if voters else None
