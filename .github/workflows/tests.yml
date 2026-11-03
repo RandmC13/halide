@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    # A window test that hangs on a modal would otherwise hold the runner for hours.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.14"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libglib2.0-0 libxkbcommon-x11-0 libxcb-cursor0 \
+            libfontconfig1 libdbus-1-3 libimage-exiftool-perl
+      - name: System packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install exiftool
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest tests/ -q
