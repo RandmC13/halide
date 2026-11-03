@@ -62,9 +62,16 @@ edit: halide adds `~/.config/fish/completions/halide.fish`. To opt out, delete t
 (it won't come back), or set `HALIDE_NO_COMPLETION=1`. Other shells, such as PowerShell on
 Windows, don't get completion yet.
 
-Later, `uv tool upgrade halide` updates to the latest version and `uv tool uninstall halide`
-removes it. Use the full GitHub address above: a different, unrelated package called `halide` is on
-PyPI, so `uv tool install halide` on its own installs the wrong thing.
+To update to the latest version, run the install command again with `--force`:
+
+```bash
+uv tool install --force git+https://github.com/RandmC13/halide
+```
+
+`uv tool uninstall halide` removes it. Always use the full GitHub address: a different, unrelated
+package called `halide` is on PyPI, so `uv tool install halide` on its own installs the wrong thing,
+and `uv tool upgrade halide` can replace halide with it (it then says "No executables are provided
+by package `halide`" and removes the tool). Your saved profiles aren't affected either way.
 
 Tested with numpy 2.5, colour-science 0.4.7, tifffile 2026.10, PySide6 6.12, Pillow 13.0, psutil 7.2 and
 shtab 1.13. Older versions within halide's declared ranges should work but aren't tested.
