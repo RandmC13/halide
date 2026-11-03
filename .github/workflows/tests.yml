@@ -20,7 +20,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python: ["3.11", "3.14"]
     env:
-      QT_QPA_PLATFORM: offscreen
+      # Linux runners have no display; macOS ones do, so the window is tested as a Mac user sees it.
+      QT_QPA_PLATFORM: ${{ matrix.os == 'ubuntu-latest' && 'offscreen' || '' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
