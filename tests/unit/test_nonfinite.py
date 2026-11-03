@@ -5,6 +5,7 @@ profile with NaN.
 """
 
 import json
+import sys
 
 import numpy as np
 import pytest
@@ -36,6 +37,9 @@ from tests.unit.test_icc import LINEAR_TAGS, build_icc
 SHADOW_RGB = (0.094, 0.131, 0.050)
 HIGHLIGHT_RGB = (0.048, 0.054, 0.016)
 PROFILE = DensityProfile(white_balance=(1.0, 1.2, 1.5), density_scale=(1.0, 1.05, 1.1))
+
+
+needs_service = pytest.mark.skipif(sys.version_info < (3, 13), reason="the shared GPU service needs Python 3.13 or newer")
 
 
 def _write_negative(path, seed=1, bad_slice=None, bad_value=np.nan, bad_fraction=None):
@@ -193,6 +197,7 @@ def test_over_one_percent_nonfinite_on_device_raises_plainly_no_gpu_wording_no_r
     assert not out.exists()
 
 
+@needs_service
 def test_over_one_percent_nonfinite_through_service_raises_plainly_no_retry(tmp_path, fake_gpu):
     # Same requirement, through the GPU service: the client must raise the ScanColorError the
     # service sends back as-is, not a DeviceJobFailed.
@@ -220,6 +225,7 @@ def test_over_one_percent_nonfinite_through_service_raises_plainly_no_retry(tmp_
         assert reply.resolved is not None
 
 
+@needs_service
 def test_service_reports_nonfinite_warning_without_printing(tmp_path, capsys, fake_gpu):
     # The warning must travel back in the reply, not be printed from inside
     # the spawned/threaded service process — nothing here is a photographer's terminal.
@@ -243,6 +249,7 @@ def test_service_reports_nonfinite_warning_without_printing(tmp_path, capsys, fa
     assert out == "" and err == ""  # the service printed nothing
 
 
+@needs_service
 def test_process_scan_through_service_re_emits_the_warning_via_on_warning(tmp_path, capsys, fake_gpu):
     # The full path a batch worker takes (processing.process_scan(..., service=...)): the worker's
     # own on_warning must receive the message exactly as the in-process paths deliver it, and the

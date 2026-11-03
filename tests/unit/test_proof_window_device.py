@@ -25,6 +25,9 @@ from halide.core.types import DensityProfile, ToneCurveParams
 from halide.device import ComputeDevice
 
 
+needs_service = pytest.mark.skipif(sys.version_info < (3, 13), reason="the shared GPU service needs Python 3.13 or newer")
+
+
 class _QThread:
     def __init__(self, parent=None):
         pass
@@ -164,6 +167,8 @@ class _RecordingPool(orchestrator.ProcessPoolExecutor):
         return future
 
 
+@needs_service
+@pytest.mark.skipif(sys.platform != "linux", reason="halide only finds an NVIDIA card on Linux and Windows; these watch /dev/shm")
 def test_the_window_runs_its_frames_through_one_service_and_stops_it(proof_window, monkeypatch, tmp_path, services):
     monkeypatch.setattr(orchestrator, "_SERVICE_INITIALIZER", _fake_device.install_as_gpu)
     before = _shm()
@@ -179,6 +184,8 @@ def test_the_window_runs_its_frames_through_one_service_and_stops_it(proof_windo
     assert _shm() - before == set()
 
 
+@needs_service
+@pytest.mark.skipif(sys.platform != "linux", reason="halide only finds an NVIDIA card on Linux and Windows; these watch /dev/shm")
 def test_closing_the_window_mid_render_stops_the_workers_and_the_service(proof_window, monkeypatch, tmp_path,
                                                                         services):
     # The service holds a frame and never answers: the window is closed while it's in its hands.
@@ -212,6 +219,7 @@ def test_closing_the_window_mid_render_stops_the_workers_and_the_service(proof_w
     assert _shm() - before == set()  # the killed workers' frames were swept
 
 
+@needs_service
 def test_closing_the_window_while_the_service_is_still_starting_does_not_hang(proof_window, monkeypatch, tmp_path,
                                                                               services, capsys):
     """Finding 4, final whole-branch review: closing the contact sheet window while the service is

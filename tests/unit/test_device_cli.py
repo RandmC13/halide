@@ -21,6 +21,8 @@ from halide.device import ComputeDevice, DeviceUnavailableError
 from halide.io.tiff import read_tiff, write_tiff
 from tests.unit.test_icc import LINEAR_TAGS, build_icc
 
+needs_service = pytest.mark.skipif(sys.version_info < (3, 13), reason="the shared GPU service needs Python 3.13 or newer")
+
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -506,6 +508,7 @@ def _sheet_lines(out: str, label: str) -> list[str]:
     return [line for line in out.splitlines() if label in line]
 
 
+@needs_service
 @pytest.mark.parametrize("command, module, runner", [
     (["batch", *MANUAL], "batch_cmd", "run_batch"),
     (["export"], "export_cmd", "run_export_batch"),
@@ -528,6 +531,7 @@ def test_the_run_sheet_says_the_workers_share_the_gpu_service(roll_dir, tmp_path
     assert "GPU memory" not in " ".join(_sheet_lines(out, "Workers"))  # no VRAM cap in service mode
 
 
+@needs_service
 def test_the_run_sheet_says_why_the_gpu_service_isnt_used(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves):
     import halide.batch.orchestrator as orchestrator
     import halide.cli.commands.batch_cmd as batch_cmd
@@ -543,6 +547,7 @@ def test_the_run_sheet_says_why_the_gpu_service_isnt_used(roll_dir, tmp_path, mo
     assert "GPU service not used: shared memory (/dev/shm) has 0 KiB free" in out
 
 
+@needs_service
 def test_halide_gpu_service_off_is_per_worker_gpu_mode_and_the_run_sheet_says_so(roll_dir, tmp_path, monkeypatch,
                                                                                 capsys, gpu_resolves, fake_gpu_service):
     import halide.cli.commands.batch_cmd as batch_cmd
@@ -557,6 +562,7 @@ def test_halide_gpu_service_off_is_per_worker_gpu_mode_and_the_run_sheet_says_so
     assert "GPU service not used: turned off by HALIDE_GPU_SERVICE=0" in out
 
 
+@needs_service
 def test_a_real_gpu_batch_through_the_service(roll_dir, tmp_path, monkeypatch, capsys, gpu_resolves, fake_gpu_service):
     out_dir = tmp_path / "out"
     assert main(["batch", str(roll_dir), str(out_dir), *MANUAL, "--workers", "2", "--quiet"]) == 0

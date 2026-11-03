@@ -1,12 +1,14 @@
 """Unit tests for halide.batch.orchestrator's own resilience logic, using a fake executor so a
 process pool crash can be simulated deterministically rather than relying on an actual OOM."""
 
+import sys
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 from halide.io.roll import RUN_LOG_NAME
 from halide.batch.orchestrator import (
@@ -27,6 +29,9 @@ from halide.batch.orchestrator import (
 from halide.core.types import ToneCurveParams
 from halide.io.tiff import write_tiff
 from halide.processing import Stage
+
+
+needs_service = pytest.mark.skipif(sys.version_info < (3, 13), reason="the shared GPU service needs Python 3.13 or newer")
 
 
 class _FakeExecutor:
@@ -312,10 +317,7 @@ def test_run_export_batch_rejects_a_non_positive_explicit_worker_count(tmp_path)
 # plumbing — what each worker is handed, how many there are, what the forkserver preloads — is
 # tested separately.
 
-import sys  # noqa: E402
 import types  # noqa: E402
-
-import pytest  # noqa: E402
 
 import halide.batch.orchestrator as orchestrator  # noqa: E402
 import halide.device  # noqa: E402
@@ -774,6 +776,7 @@ def test_the_cpu_path_is_plain_cpu_and_starts_nothing(monkeypatch):
             assert compute.worker_args(4) == ("cpu", None)
 
 
+@needs_service
 def test_a_gpu_batch_shares_one_service_and_no_worker_touches_cuda(tmp_path, monkeypatch, fake_gpu_service, clean_shm):
     scans = _roll(tmp_path, 4)
     out = tmp_path / "out"
@@ -797,6 +800,7 @@ def test_a_gpu_batch_shares_one_service_and_no_worker_touches_cuda(tmp_path, mon
         np.testing.assert_array_equal(read_tiff_pixels(out / scan.name), read_tiff_pixels(tmp_path / "cpu.tif"))
 
 
+@needs_service
 def test_service_mode_export_and_print_match_the_in_process_gpu_path(tmp_path, fake_gpu_service, clean_shm, fake_gpu):
     # Compared with the in-process GPU path on the same (fake) device: the service runs the same
     # device code. (A device export may differ from the CPU's by one 8-bit code value — the device
@@ -819,6 +823,7 @@ def test_service_mode_export_and_print_match_the_in_process_gpu_path(tmp_path, f
         assert _provenance(tmp_path / f"{p.stem}-print.tif")["device"] == "gpu"
 
 
+@needs_service
 def test_when_the_service_dies_mid_batch_the_rest_develop_on_the_cpu(tmp_path, fake_gpu_service, clean_shm):
     scans = _roll(tmp_path, 4)
     out = tmp_path / "out"
@@ -866,6 +871,7 @@ def test_the_service_starts_on_a_supported_python_even_when_patched_true(monkeyp
     assert fake_gpu_service == ["gpu"]
 
 
+@needs_service
 def test_a_service_that_wont_start_means_per_worker_gpu_mode_with_the_reason(tmp_path, monkeypatch):
     from tests.unit.test_gpu_service import _fail_at_startup
 
@@ -876,6 +882,7 @@ def test_a_service_that_wont_start_means_per_worker_gpu_mode_with_the_reason(tmp
         assert compute.worker_args(2) == ("gpu", (6 * 2**30) // 2 - _CUDA_CONTEXT_BYTES)  # as before the service
 
 
+@needs_service
 @pytest.mark.parametrize("value", ["0", "off", " OFF ", "false", "no"])
 def test_halide_gpu_service_off_means_per_worker_gpu_mode_and_starts_no_service(monkeypatch, value):
     _no_service(monkeypatch)
@@ -886,6 +893,7 @@ def test_halide_gpu_service_off_means_per_worker_gpu_mode_and_starts_no_service(
         assert compute.worker_args(2) == ("gpu", (6 * 2**30) // 2 - _CUDA_CONTEXT_BYTES)  # as before the service
 
 
+@needs_service
 @pytest.mark.parametrize("value", [None, "", "1", "on", "yes"])
 def test_the_gpu_service_is_on_unless_halide_gpu_service_turns_it_off(monkeypatch, fake_gpu_service, clean_shm, value):
     if value is None:
@@ -922,6 +930,7 @@ def test_halide_gpu_service_off_hands_every_runners_workers_their_own_gpu(tmp_pa
     assert fake_gpu_service == []
 
 
+@needs_service
 def test_too_little_shared_memory_means_per_worker_gpu_mode_with_the_reason(tmp_path, monkeypatch):
     _no_service(monkeypatch)
     monkeypatch.setattr(orchestrator, "_shared_memory_free", lambda: 64 * _MIB)  # a small container
@@ -1076,6 +1085,7 @@ def test_no_sweep_without_shared_frames(tmp_path, monkeypatch):
         orchestrator._run_pool([job], _worker, (), 1)
 
 
+@needs_service
 def test_the_service_stops_and_its_frames_are_swept_when_the_batch_ends(tmp_path, fake_gpu_service, clean_shm):
     with batch_compute([], _GPU) as compute:
         pid = compute.service.address.pid
@@ -1089,6 +1099,7 @@ def test_the_service_stops_and_its_frames_are_swept_when_the_batch_ends(tmp_path
     assert f"{compute.shm_prefix}dead" not in _shm_entries()
 
 
+@needs_service
 def test_sweep_runs_after_the_service_has_actually_stopped(monkeypatch, fake_gpu_service, clean_shm):
     """Finding 2, final whole-branch review: batch_compute's sweep callback must unwind *after* the
     service's own context manager has stopped it (ExitStack is LIFO: the callback registered first

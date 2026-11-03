@@ -5,6 +5,7 @@ never leak a /dev/shm segment."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -25,12 +26,16 @@ from halide.shared_frames import (
 )
 
 
+needs_313 = pytest.mark.skipif(sys.version_info < (3, 13), reason="attach and sweep need Python 3.13 or newer")
+
+
 def _segment_exists(name: str) -> bool:
+    import _posixshmem  # what SharedMemory itself opens with; its track= keyword is 3.13+
+
     try:
-        shm = shared_memory.SharedMemory(name=name, create=False, track=False)
+        os.close(_posixshmem.shm_open("/" + name, os.O_RDONLY))
     except FileNotFoundError:
         return False
-    shm.close()
     return True
 
 
@@ -68,6 +73,7 @@ def test_new_frame_removes_its_segment_on_exception():
     assert not _segment_exists(name)
 
 
+@needs_313
 def test_attach_frame_sees_the_creators_data_and_does_not_unlink():
     with new_frame((2, 2, 3), np.float32) as frame:
         frame.array[:] = 5.0
@@ -230,6 +236,7 @@ def test_new_frame_with_a_prefix_names_the_segment_accordingly():
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
+@needs_313
 def test_sweep_removes_a_leaked_segment_by_prefix_and_unregisters_it():
     prefix = "sweep-leak-test-"
     # A segment "leaked" the same way a killed worker would leave one: created, then never unlinked
@@ -251,6 +258,7 @@ def test_sweep_removes_a_leaked_segment_by_prefix_and_unregisters_it():
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
+@needs_313
 def test_sweep_leaves_a_differently_prefixed_segment_alone():
     """Selectivity: sweeping one batch's prefix must never touch another batch's (or an unrelated
     live frame's) segment, even one sitting right next to it in /dev/shm."""
@@ -273,6 +281,7 @@ def test_sweep_leaves_a_differently_prefixed_segment_alone():
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="forkserver + resource_tracker sharing is exercised on Linux")
+@needs_313
 def test_sweep_removes_a_sigkilled_pool_workers_segment_with_no_resource_tracker_warning(tmp_path):
     """Review Focus item 5, under the *real* batch topology: a batch's worker pool is a forkserver
     pool, and every worker shares the *parent's* resource_tracker (its registration pipe is
@@ -358,6 +367,7 @@ def test_default_prefix_is_keyed_on_this_processs_own_pid_not_its_parents():
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
+@needs_313
 def test_a_frame_already_swept_by_name_still_closes_cleanly_with_no_tracker_noise():
     # new_frame's own unlink must tolerate the name being gone already (an early sweep), and still
     # close its mapping — with nothing left in the tracker to warn about at exit.
@@ -378,6 +388,7 @@ def test_a_frame_already_swept_by_name_still_closes_cleanly_with_no_tracker_nois
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="/dev/shm-based sweep is Linux-only")
+@needs_313
 def test_sweeping_a_segment_this_processs_tracker_never_registered_prints_nothing():
     # E.g. an orphan from an earlier SIGKILLed run whose pid was reused: an UNREGISTER for a name
     # the tracker doesn't hold made the tracker process print a KeyError traceback.

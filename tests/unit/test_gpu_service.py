@@ -67,6 +67,9 @@ DEVELOP_CASES = [
 ]
 DEVELOP_IDS = ["print", "flat+gain", "pinned", "auto", "invert-only", "density-only+gain"]
 
+# Below 3.13 halide never starts the service (batches run per worker), so there's nothing to test.
+pytestmark = pytest.mark.skipif(sys.version_info < (3, 13), reason="the shared GPU service needs Python 3.13 or newer")
+
 
 class OutOfMemoryError(MemoryError):
     """Named and based like cupy.cuda.memory.OutOfMemoryError (a MemoryError subclass)."""
