@@ -171,6 +171,9 @@ def run(args: argparse.Namespace) -> int:
     maybe_save_profile(args, density_profile, tone=saved_tone, scan=scan_reference)
     tone_params = resolve_tone_params(args, saved_tone=saved_tone)
 
+    if stage is not Stage.INVERT_ONLY and args.auto_density and not getattr(args, "pick", False):
+        print(console.dim("automatic estimate from this frame alone — rough; for faithful colour, pick "
+                          "neutral points with halide open"))
     start = time.monotonic()
     label = f"{console.VERB['invert']} {input_path.name}..."
     try:

@@ -9,6 +9,9 @@ restricts candidate "neutral" pixels to the least-saturated fraction of the imag
 takes percentiles only within that filtered set — a materially different, better-justified
 algorithm than a global-median filter.
 
+A roll's estimate is the median of its frames' own estimates (`roll_auto_density_balance`), and
+frames whose mid-tone greys sit well away from it are named (`differing_frames`).
+
 Everything up to the final shadow/highlight percentiles runs on whichever array library the image
 belongs to (numpy, or CuPy for a frame already on the GPU — see core/_xp.py): only those two
 3-vectors come back to the host, where `solve_density_balance` and `_check_density_separation` run.
@@ -17,13 +20,15 @@ On numpy it is the same code it always was, bit for bit.
 
 from __future__ import annotations
 
+import math
 import warnings
+from dataclasses import replace
 
 import numpy as np
 
 from halide.core._constants import MIN_TRANSMITTANCE
 from halide.core._xp import array_namespace
-from halide.core.density import solve_density_balance
+from halide.core.density import describe_cast, solve_density_balance
 from halide.core.types import DensityProfile
 
 DEFAULT_NEUTRAL_FRACTION = 0.5  # fraction of least-saturated pixels kept as calibration candidates
@@ -57,6 +62,15 @@ MIN_PIXELS_PER_BIN = 200  # below this, a bin's own median is too noisy to trust
 # survives — investigated and found not fixable by better statistics on this same data; picking neutral
 # points by hand remains the reliable option when this matters.
 MIN_DENSITY_SEPARATION = 0.1  # log10 density units; deliberately conservative, see _check_density_separation
+
+
+# A roll's frames are compared once it has this many; below it the median itself is rough, so a
+# frame can't be said to differ from it.
+MIN_ROLL_FRAMES = 6
+DIFFERS_CC = 10.0  # the picker's red agreement band: well beyond what real neutrals disagree by
+# Where a frame's people and walls sit; its estimate's extremes are extrapolation.
+MID_TONE_GREEN_DENSITY = (0.9, 1.5)
+_MID_TONE_SAMPLES = 13
 
 
 def _density_local_saturation(pixels: np.ndarray, target_bins: int = DEFAULT_DENSITY_BINS) -> np.ndarray:
@@ -255,38 +269,98 @@ def auto_density_balance(
     )
 
 
-def roll_auto_density_balance(
-    images: list[np.ndarray],
-    neutral_fraction: float = DEFAULT_NEUTRAL_FRACTION,
-    shadow_percentile: float = DEFAULT_SHADOW_PERCENTILE,
-    highlight_percentile: float = DEFAULT_HIGHLIGHT_PERCENTILE,
-) -> DensityProfile:
-    """Estimate one shared density-balance profile from several frames of the same roll —
-    generally more robust than per-frame estimation, since a single shared film-base (shadow) and
-    typical highlight density are measured across many frames' worth of candidate pixels rather
-    than one frame's, at the cost of not adapting to a given frame's individual content.
+def frame_estimates(images: list[np.ndarray]) -> list[DensityProfile | None]:
+    """Each frame's own estimate, or None where a frame has too few near-neutral pixels. A weak
+    frame's "candidates unusually close in density" warning is kept quiet: it is one vote of many,
+    and the median absorbs it."""
+    estimates: list[DensityProfile | None] = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        for image in images:
+            try:
+                estimates.append(auto_density_balance(image))
+            except ValueError:
+                estimates.append(None)
+    return estimates
 
-    Selects neutral candidates *per frame first* (each pixel judged against the per-channel
-    median of the *other pixels of that frame at a similar density* — `_density_local_saturation`,
-    not one frame-wide median), then pools only the resulting candidate pixels before the final shadow/highlight percentiles —
-    not the other way around. Concatenating raw pixels from every frame before computing one
-    shared median (the original implementation) was a real bug, found via testing on two real
-    scans of genuinely different scenes (a warm-toned portrait and a daylight street scene): the
-    combined median ends up a blend of both frames' average *scene color*, not just the film's
-    systematic dye imbalance the normalization is meant to isolate (see `_saturation`), because
-    that blend is not actually shared across frames the way the film-base imbalance is. That
-    mis-selected candidates for whichever frame differed most from the blended average, producing
-    a visible color cast (confirmed: the affected frame's neutral objects, e.g. a white car,
-    rendered visibly blue). Selecting per-frame first keeps each frame's candidate selection
-    correct on its own terms; only the final shadow/highlight measurement is roll-wide.
-    """
-    per_frame_candidates = [_neutral_candidates(image, neutral_fraction) for image in images]
-    xp = array_namespace(per_frame_candidates[0]) if per_frame_candidates else np
-    combined_candidates = xp.concatenate(per_frame_candidates, axis=0)
-    shadow_rgb, highlight_rgb = _shadow_and_highlight_from_candidates(
-        combined_candidates, shadow_percentile, highlight_percentile
-    )
-    profile = solve_density_balance(tuple(shadow_rgb), tuple(highlight_rgb))
+
+def at_scan_gain(profile: DensityProfile, gain: float) -> DensityProfile:
+    """The estimate the same frame would give scanned `gain` times brighter, without estimating it
+    again. Brightening lowers every channel's density by log10(gain); the neutral axis
+    D_c = log10(wb_c) + D_G / s_c keeps its slope, so only the white balance moves, by
+    gain ** (1 / s_c - 1). The estimate itself is unchanged by a global multiply (candidates are
+    chosen by colour ratios, and the percentiles move together)."""
+    scale = profile.density_scale
+    white_balance = tuple(float(wb * gain ** (1.0 / s - 1.0)) for wb, s in zip(profile.white_balance, scale))
+    return replace(profile, white_balance=white_balance)
+
+
+def median_profile(estimates: list[DensityProfile | None]) -> DensityProfile:
+    """The roll's estimate: the per-channel median of the frames' own estimates (None ignored),
+    white balance taken in log since it is a density offset."""
+    votes = [e for e in estimates if e is not None]
+    if not votes:
+        raise ValueError(
+            "not enough near-neutral pixels found to estimate density balance automatically "
+            "— pick neutral points with `halide open` instead"
+        )
+    log_wb = np.median([np.log10(e.white_balance) for e in votes], axis=0)
+    scale = np.median([e.density_scale for e in votes], axis=0)
+    log_wb[1], scale[1] = 0.0, 1.0
     return DensityProfile(
-        white_balance=profile.white_balance, density_scale=profile.density_scale, source="auto"
+        white_balance=tuple((10.0**log_wb).tolist()), density_scale=tuple(scale.tolist()), source="auto"
     )
+
+
+def roll_auto_density_balance(images: list[np.ndarray]) -> DensityProfile:
+    """One estimate for a whole roll: every frame makes its own estimate, and the roll takes the
+    median of them.
+
+    The median, because a roll's frames don't all agree. A warm-lit frame's greys really are warm
+    on the film, and its own estimate pulls toward neutralising that. Pooling every frame's
+    candidate pixels and taking roll-wide extremes lets the one or two frames holding the most
+    extreme pixels decide the whole roll; a mean lets one badly-off frame drag it (on a real
+    37-frame roll, one frame CC 57 off moved the mean to CC 5 against a hand-picked profile, where
+    the median was CC 1). Each frame still judges its own pixels: candidate selection never mixes
+    frames, whose scene colours differ.
+    """
+    return median_profile(frame_estimates(images))
+
+
+def cast_word(deviation) -> str:
+    """The direction of a cast, as one word: warm (red, orange, yellow), green, cool (cyan, blue)
+    or magenta. Its hue in an opponent plane: a = d_R - d_G, b = (d_R + d_G) / 2 - d_B, where the
+    primaries fall at red 27, yellow 90, green 153, cyan 207, blue 270 and magenta 333 degrees; the
+    words split at the midpoints between them."""
+    d_r, d_g, d_b = (float(v) for v in deviation)
+    angle = math.degrees(math.atan2((d_r + d_g) / 2 - d_b, d_r - d_g)) % 360.0
+    if angle < 120.0:
+        return "warm"
+    if angle < 180.0:
+        return "green"
+    if angle < 300.0:
+        return "cool"
+    return "magenta"
+
+
+def colour_difference(roll: DensityProfile, estimate: DensityProfile) -> tuple[float, str, str]:
+    """How a frame's own greys print through the roll's estimate, over the mid-tones: (CC, filter
+    pack, direction word). The frame's grey axis, D_c = log10(wb_c) + D_G / s_c, is balanced as the
+    roll's profile would balance it; its average deviation from neutral is the cast."""
+    green = np.linspace(*MID_TONE_GREEN_DENSITY, _MID_TONE_SAMPLES)[:, None]
+    axis = np.log10(estimate.white_balance) + green / np.asarray(estimate.density_scale)
+    balanced = np.asarray(roll.density_scale) * (axis - np.log10(roll.white_balance))
+    deviation = (balanced - balanced.mean(axis=1, keepdims=True)).mean(axis=0)
+    cc, pack = describe_cast(deviation)
+    return cc, pack, cast_word(deviation)
+
+
+def differing_frames(
+    roll: DensityProfile, estimates: list[DensityProfile | None]
+) -> list[tuple[int, float, str, str]]:
+    """(index, CC, pack, word) for every frame whose greys print more than DIFFERS_CC off through
+    the roll's estimate, largest first; none on a roll with fewer than MIN_ROLL_FRAMES votes."""
+    if sum(e is not None for e in estimates) < MIN_ROLL_FRAMES:
+        return []
+    found = [(i, *colour_difference(roll, e)) for i, e in enumerate(estimates) if e is not None]
+    return sorted((f for f in found if f[1] > DIFFERS_CC), key=lambda f: -f[1])

@@ -92,7 +92,8 @@ def test_colour_science_matplotlib_notice_is_not_a_calibration_row(roll, tmp_pat
     def fake_estimate(paths, **kwargs):
         warnings.warn(COLOUR_MATPLOTLIB_MESSAGE.replace("\\", ""), UserWarning)
         warnings.warn("a genuine halide warning", UserWarning)
-        return DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78))
+        profile = DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78))
+        return processing.RollEstimate(profile, len(paths), [])
 
     monkeypatch.setattr(processing, "estimate_roll_density_profile", fake_estimate)
     assert main(["batch", str(roll), str(tmp_path / "out"), "--auto-density-roll", "--workers", "1"]) == 0

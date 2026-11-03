@@ -220,9 +220,30 @@ AUTO_CALIBRATION_ADVICE = (
 )
 
 
+_COMPARATIVE = {"warm": "warmer", "cool": "cooler", "green": "greener", "magenta": "more magenta"}
+_MAX_NAMED_FRAMES = 4
+
+
+def _differing_note(differing, numbers: dict) -> str:
+    """The run sheet's note on frames whose colour differs from the roll's estimate: the largest
+    few, by frame number, and what the photographer will see."""
+    shown = sorted(differing[:_MAX_NAMED_FRAMES], key=lambda d: numbers[d[0]])
+    words = {_COMPARATIVE[word] for *_, word in shown}
+    one_way = len(words) == 1
+    names = [str(numbers[path]) if one_way else f"{numbers[path]} ({_COMPARATIVE[word]})"
+             for path, _, _, word in shown]
+    if len(differing) > len(shown):
+        names.append(f"{len(differing) - len(shown)} more")
+    listed = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    many = len(differing) > 1
+    what = (f"{'run' if many else 'runs'} {words.pop()} than the rest" if one_way
+            else "differ in colour from the rest")
+    return f"{'frames' if many else 'frame'} {listed} {what} — {"they'll" if many else "it'll"} print that way, as the film recorded"
+
+
 def _calibration_text(args: argparse.Namespace, profile, saved_tone) -> str:
     if profile is None:
-        return f"auto{_SEP}estimated separately for each frame"
+        return f"auto{_SEP}each frame guessed on its own — --auto-density-roll makes one estimate for the whole roll"
     if args.profile:
         text = f"profile {args.profile}"
         if saved_tone is not None and (saved_tone.exposure is not None or saved_tone.contrast is not None):
@@ -671,21 +692,28 @@ def _prepare(args: argparse.Namespace, stage: Stage, input_dir: Path, jobs: list
             ignore_colour_matplotlib_warning()  # "always" would bring back colour's plotting notice
             with sheet.working("Calibration", f"estimating one profile from all {frame_count(len(roll_jobs))}…"):
                 try:
-                    density_profile = estimate_roll_density_profile(
+                    roll_estimate = estimate_roll_density_profile(
                         [job.input_path for job in roll_jobs],
                         scan_gains={str(job.input_path): job.scan_gain for job in roll_jobs},
                         on_skip=lambda path, exc: skipped.append(f"{path.name} ({exc})"),
                     )
-                except ScanColorError as exc:
+                except (ScanColorError, ValueError) as exc:  # ValueError: no frame could vote
                     raise SystemExit(str(exc))
-        saved_tone = None
-        used = len(roll_jobs) - len(skipped)
+        density_profile, saved_tone = roll_estimate.profile, None
+        used = roll_estimate.used
         sheet.row("Calibration", f"auto{_SEP}one profile for the whole roll, from {frame_count(used)}")
         for name in skipped:
             sheet.warn("Calibration", f"skipped unreadable {name}")
         for caught_warning in caught:
             sheet.warn("Calibration", str(caught_warning.message))
-        sheet.note("Calibration", AUTO_CALIBRATION_ADVICE)
+        if roll_estimate.differing:
+            numbers = {job.input_path: n for n, job in enumerate(roll_jobs, start=1)}
+            sheet.note("Calibration", _differing_note(roll_estimate.differing, numbers))
+        from halide.calibration.auto import MIN_ROLL_FRAMES  # numpy: kept out of CLI start-up
+
+        sheet.note("Calibration", AUTO_CALIBRATION_ADVICE if used >= MIN_ROLL_FRAMES else (
+            f"automatic estimate from {frame_count(used)} — rough on a short roll; for faithful "
+            "colour, pick neutral points with `halide open`"))
     else:
         if dry and args.profile:
             _check_profile_exists(args.profile)  # the real error, without the real run's "did you mean?" prompt

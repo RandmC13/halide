@@ -227,3 +227,26 @@ def test_the_calibration_menu_is_not_offered_when_output_is_redirected(monkeypat
                               rm=None, bm=None, rs=None, bs=None)
     _calibration_args.choose_calibration_source(args, "invert")
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    ("command", "fields", "expected"),
+    [
+        ("batch", {"auto_density_roll": False}, ("auto_roll", "One automatic estimate for the whole roll (approximate)")),
+        ("invert", {"pick": False}, ("auto", "Quick automatic estimate from this frame (approximate)")),
+    ],
+)
+def test_the_calibration_menu_offers_one_automatic_estimate(monkeypatch, command, fields, expected):
+    import argparse
+
+    from halide.cli import _calibration_args
+
+    offered = []
+    monkeypatch.setattr(_calibration_args, "is_interactive", lambda: True)
+    monkeypatch.setattr(_calibration_args, "list_profiles", lambda: [])
+    monkeypatch.setattr(_calibration_args.console, "menu", lambda prompt, options: offered.extend(options) or "cancel")
+    args = argparse.Namespace(profile=None, auto_density=False, rm=None, bm=None, rs=None, bs=None, **fields)
+    with pytest.raises(SystemExit):
+        _calibration_args.choose_calibration_source(args, command)
+    automatic = [option for option in offered if option[0].startswith("auto")]
+    assert automatic == [expected]

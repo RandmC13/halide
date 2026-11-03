@@ -35,7 +35,7 @@ def test_invert_with_manual_calibration_produces_valid_output(negative_tiff, tmp
     assert result.icc_profile is not None  # output ACEScg profile must be embedded
 
 
-def test_invert_with_saved_profile(negative_tiff, tmp_path):
+def test_invert_with_saved_profile(negative_tiff, tmp_path, capsys):
     profile_path = tmp_path / "profile.json"
     save_profile(
         DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78)), profile_path
@@ -43,6 +43,7 @@ def test_invert_with_saved_profile(negative_tiff, tmp_path):
     output = tmp_path / "positive.tiff"
     exit_code = main(["invert", str(negative_tiff), str(output), "--profile", str(profile_path)])
     assert exit_code == 0
+    assert "automatic estimate" not in capsys.readouterr().out
 
 
 def test_linear_output_is_viewable_not_solid_white(negative_tiff, tmp_path):
@@ -62,7 +63,7 @@ def test_linear_output_is_viewable_not_solid_white(negative_tiff, tmp_path):
     assert (result.image >= 1.0).mean() < 0.01
 
 
-def test_invert_with_auto_density(tmp_path):
+def test_invert_with_auto_density(tmp_path, capsys):
     # A roughly-balanced split between the two reference patches with a little per-pixel noise
     # (avoiding an exact bimodal tie, which is a synthetic-fixture artifact — see
     # tests/unit/test_auto_calibration.py for the detailed behavior of the neutral_fraction
@@ -79,6 +80,7 @@ def test_invert_with_auto_density(tmp_path):
     assert exit_code == 0
     result = read_tiff(output)
     assert np.all(np.isfinite(result.image))
+    assert "automatic estimate from this frame alone — rough" in capsys.readouterr().out
 
 
 def test_invert_only_skips_density_balance(negative_tiff, tmp_path):

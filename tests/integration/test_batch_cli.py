@@ -159,11 +159,68 @@ def test_batch_cli_prints_its_settings_as_one_run_sheet_before_developing(roll_d
     assert rows["Roll"].replace(" ", "") == f"in{nbsp}·4frames→{out_dir}"  # the long tmp path wraps
     # The automatic tiers point to the faithful one, on a dimmed line of their own
     assert rows["Calibration"] == (
-        f"auto{nbsp}· one profile for the whole roll, from 4 frames automatic estimate - for the most "
-        "faithful colour, pick neutral points with `halide open`"
+        f"auto{nbsp}· one profile for the whole roll, from 4 frames automatic estimate from 4 frames — "
+        "rough on a short roll; for faithful colour, pick neutral points with `halide open`"
     )
     assert rows["Output"] == f"print{nbsp}· grade 0.80{nbsp}· exposure fitted per frame"
     assert rows["Workers"] == "1 (--workers)"
+
+
+def _plain(capsys):
+    import re
+
+    return " ".join(re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", capsys.readouterr().out).split())
+
+
+def _fake_roll_estimate(monkeypatch, warm_frame=None):
+    """The roll's estimate with `warm_frame` (a file name) named as running warm."""
+    from halide.core.types import DensityProfile
+
+    def fake(paths, **kwargs):
+        profile = DensityProfile(white_balance=(2.28, 1.0, 1.47), density_scale=(1.32, 1.0, 0.78))
+        differing = [(Path(p), 19.0, "CC 19Y", "warm") for p in paths if Path(p).name == warm_frame]
+        return processing.RollEstimate(profile, len(paths), differing)
+
+    monkeypatch.setattr(processing, "estimate_roll_density_profile", fake)
+
+
+def test_roll_estimate_names_a_frame_that_runs_warmer_than_the_rest(tmp_path, capsys, monkeypatch):
+    in_dir = tmp_path / "roll"
+    in_dir.mkdir()
+    for i in range(7):
+        _write_negative(in_dir / f"frame_{i + 1:02d}.tiff", seed=i)
+    _fake_roll_estimate(monkeypatch, warm_frame="frame_07.tiff")
+    assert main(["batch", str(in_dir), str(tmp_path / "out"), "--auto-density-roll", "--workers", "1"]) == 0
+    out = _plain(capsys)
+    assert "one profile for the whole roll, from 7 frames" in out
+    assert "frame 7 runs warmer than the rest — it'll print that way, as the film recorded" in out
+    assert "rough on a short roll" not in out
+    assert "for the most faithful colour, pick neutral points" in out
+    log = (tmp_path / "out" / "halide-log.txt").read_text()
+    assert "frame 7 runs warmer than the rest" in " ".join(log.split())
+
+
+def test_differing_note_wording():
+    from halide.cli.commands.batch_cmd import _differing_note
+
+    a, b, c, d, e, f = (Path(x) for x in "abcdef")
+    numbers = {a: 4, b: 13, c: 9, d: 20, e: 2, f: 30}
+    warm = [(b, 35.0, "CC 35Y", "warm"), (a, 11.0, "CC 11Y", "warm")]
+    assert _differing_note(warm, numbers) == (
+        "frames 4 and 13 run warmer than the rest — they'll print that way, as the film recorded")
+    mixed = [(a, 20.0, "", "warm"), (c, 12.0, "", "cool")]
+    assert _differing_note(mixed, numbers) == (
+        "frames 4 (warmer) and 9 (cooler) differ in colour from the rest — they'll print that way, "
+        "as the film recorded")
+    many = [(b, 40.0, "", "magenta"), (a, 30.0, "", "magenta"), (c, 20.0, "", "magenta"),
+            (d, 15.0, "", "magenta"), (e, 12.0, "", "magenta"), (f, 11.0, "", "magenta")]
+    assert _differing_note(many, numbers).startswith("frames 4, 9, 13, 20 and 2 more run more magenta than")
+
+
+def test_batch_auto_density_per_frame_points_to_the_roll_estimate(roll_dir, tmp_path, capsys):
+    assert main(["batch", str(roll_dir), str(tmp_path / "out"), "--auto-density", "--workers", "1"]) == 0
+    assert ("auto · each frame guessed on its own — --auto-density-roll makes one estimate for the whole roll"
+            in _plain(capsys).replace("\u00a0", " "))
 
 
 def test_batch_cli_run_sheet_names_the_roll_when_run_on_the_current_directory(roll_dir, tmp_path, monkeypatch, capsys):
@@ -263,8 +320,7 @@ def test_batch_skip_existing_contact_sheet_covers_new_and_old_frames(roll_dir, t
 def test_run_sheet_advises_picking_points_after_an_automatic_estimate(roll_dir, tmp_path, capsys, source, advised):
     assert main(["batch", str(roll_dir), str(tmp_path / "out"), *source, "--workers", "1"]) == 0
     out = " ".join(capsys.readouterr().out.split())  # a long row wraps with a hanging indent
-    advice = "automatic estimate - for the most faithful colour, pick neutral points with `halide open`"
-    assert (advice in out) is advised
+    assert ("pick neutral points with `halide open`" in out) is advised  # a 4-frame roll: the short-roll wording
 
 
 def test_auto_density_roll_with_another_source_is_argparses_refusal(roll_dir, tmp_path, capsys):

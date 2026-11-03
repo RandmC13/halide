@@ -22,7 +22,7 @@ from PIL import Image
 from halide import banding
 from halide import device as _device  # to_device/to_host looked up at call time: tests inject a fake
 from halide.banding import map_in_bands
-from halide.calibration.auto import auto_density_balance, roll_auto_density_balance
+from halide.calibration.auto import auto_density_balance, differing_frames, frame_estimates, median_profile
 from halide.core._xp import array_namespace
 from halide.core.density import apply_density_balance, apply_white_balance
 from halide.core.pipeline import negative_to_positive
@@ -995,16 +995,27 @@ def _export_srgb_on_device(input_path, acescg_image: np.ndarray, device: Compute
     return srgb_8bit
 
 
+@dataclasses.dataclass(frozen=True)
+class RollEstimate:
+    """The roll's automatic estimate, how many frames voted for it, and the frames whose colour
+    differs from it: (scan, CC, filter pack, direction word), largest first."""
+
+    profile: DensityProfile
+    used: int
+    differing: list[tuple[Path, float, str, str]]
+
+
 def estimate_roll_density_profile(
     input_paths: list[str | Path],
     stride: int = 8,
     scan_gains: dict[str, float] | None = None,
     on_skip: Callable[[Path, Exception], None] | None = None,
-) -> DensityProfile:
+) -> RollEstimate:
     """Estimate one shared density-balance profile from a whole roll's worth of input files, for
     --auto-density-roll batch mode. Reads every file (downsampled by `stride` for speed/memory —
     a roll's worth of full-resolution scans held in memory at once would be wasteful for what is
-    just a statistical estimate) and combines them via calibration.auto.roll_auto_density_balance.
+    just a statistical estimate); each frame estimates for itself and the roll takes the median
+    (calibration.auto.roll_auto_density_balance), naming the frames whose colour differs from it.
 
     Runs in the main process, ahead of (and outside) the per-worker try/except in
     batch.orchestrator — so a single unreadable/malformed file here must not abort the whole roll
@@ -1020,7 +1031,7 @@ def estimate_roll_density_profile(
     color-managed. `batch.orchestrator._worker` already catches broadly for the same reason — a
     corrupt file is exactly the kind of one-bad-frame case this function exists to tolerate.
     """
-    images = []
+    images, read_paths = [], []
     for path in input_paths:
         try:
             # .copy(): a strided slice is a *view* that keeps the whole full-resolution frame alive
@@ -1029,6 +1040,7 @@ def estimate_roll_density_profile(
             image = load_working_space_image(path)[::stride, ::stride, :].copy()
             gain = (scan_gains or {}).get(str(path), 1.0)
             images.append(image * np.asarray(gain, dtype=image.dtype) if gain != 1.0 else image)
+            read_paths.append(Path(path))
         except Exception as exc:  # noqa: BLE001 — one corrupt frame must not abort the roll estimate
             if on_skip is not None:
                 on_skip(Path(path), exc)
@@ -1036,7 +1048,10 @@ def estimate_roll_density_profile(
                 print(f"Warning: skipping {path} while estimating roll density balance ({exc})")
     if not images:
         raise ScanColorError("no readable frames found to estimate a roll density-balance profile from")
-    return roll_auto_density_balance(images)
+    estimates = frame_estimates(images)
+    profile = median_profile(estimates)
+    differing = [(read_paths[i], cc, pack, word) for i, cc, pack, word in differing_frames(profile, estimates)]
+    return RollEstimate(profile, sum(e is not None for e in estimates), differing)
 
 
 def read_roll_scan_metadata(paths: list[str | Path]) -> dict[str, tuple[ScanSettings | None, DarktableState | None]]:

@@ -257,9 +257,10 @@ def choose_calibration_source(args: argparse.Namespace, what: str) -> None:
         options.append((f"profile:{stem}", f"Profile '{stem}'" + (f"  ({' · '.join(bits)})" if bits else "")))
     if hasattr(args, "pick"):
         options.append(("pick", "Pick neutral points in the halide window now"))
-    options.append(("auto", "Quick automatic estimate, per frame (approximate)"))
     if hasattr(args, "auto_density_roll"):
         options.append(("auto_roll", "One automatic estimate for the whole roll (approximate)"))
+    else:
+        options.append(("auto", "Quick automatic estimate from this frame (approximate)"))
     options.append(("cancel", "Cancel"))
 
     prompt = f"No calibration given for {what}. Which would you like to use?"

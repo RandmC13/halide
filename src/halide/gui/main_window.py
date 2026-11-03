@@ -53,7 +53,7 @@ from PySide6.QtWidgets import (
 
 from halide.io.roll import list_scans
 from halide.calibration.anchors import NeutralPoint, point_rolls
-from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, _neutral_candidate_mask
+from halide.calibration.auto import DEFAULT_NEUTRAL_FRACTION, MIN_ROLL_FRAMES, _neutral_candidate_mask, at_scan_gain, differing_frames
 from halide.calibration.scan_consistency import assess_roll, frame_flags
 from halide.calibration.profile_store import (
     ProfileError,
@@ -114,6 +114,7 @@ _DISPLAY_BUDGET = (1600, 1100)  # downsampled display resolution; painted scaled
 # Re-printing all the filmstrip thumbnails takes ~0.4 s on a 37-frame roll, so a slider drag or a run of
 # clicks waits for a pause and prints once at the end.
 _THUMBS_DELAY_MS = 150
+_ROLL_ESTIMATE_REFRESH_MS = 500  # while previews load, the positive follows the roll's estimate this often
 
 _MAGNIFIER_RADIUS = 10
 _MAGNIFIER_ZOOM = 6
@@ -227,6 +228,9 @@ class MainWindow(QWidget):
         self._thumbs_timer = QTimer(self)
         self._thumbs_timer.setSingleShot(True)
         self._thumbs_timer.timeout.connect(self._refresh_filmstrip_thumbnails)
+        self._roll_estimate_timer = QTimer(self)
+        self._roll_estimate_timer.setSingleShot(True)
+        self._roll_estimate_timer.timeout.connect(self._follow_roll_estimate)
 
         self._build_ui()
         size = _compute_window_size()
@@ -591,6 +595,7 @@ class MainWindow(QWidget):
         self._select_frame(0)
         self._refresh_points()
         self._show_scan_check(flags)
+        self.notice_bar.clear_notice("colour")  # the roll's colour is checked once its previews are in
 
     def _show_scan_check(self, flags: dict[str, str]) -> None:
         """The roll's scan check as a chip; its list names each frame and why, and goes to it."""
@@ -611,6 +616,42 @@ class MainWindow(QWidget):
             rows=rows,
             footer="One profile shifts colour between them; scan a roll at one manual exposure and one white "
                    "balance (halide batch --match-scan-exposure evens out exposure)",
+        ))
+
+    def _show_colour_check(self) -> None:
+        """Frames whose colour runs away from the rest of their roll, as a quiet chip and a word on
+        the strip: compared with the roll's automatic estimate, from MIN_ROLL_FRAMES frames."""
+        several = len(self.session.rolls) > 1
+        found = []  # (CC, frame index, pack, word)
+        for roll in self.session.rolls:
+            estimate = self.session.roll_estimate(roll)
+            voters = [(i, f) for i, f in enumerate(self.session.frames) if f.roll == roll and f.estimate is not None]
+            if estimate is None:
+                continue
+            votes = [at_scan_gain(f.estimate, self.session.gain(f.scan)) for _, f in voters]
+            found += [(cc, voters[j][0], pack, word) for j, cc, pack, word in differing_frames(estimate, votes)]
+        found.sort(key=lambda item: -item[0])
+        self.filmstrip.strip.set_marks({i: word for _, i, _, word in found})
+        if not found:
+            self.notice_bar.clear_notice("colour")
+            return
+        rows = []
+        for _, i, pack, word in found:
+            frame = self.session.frames[i]
+            label = f"FRAME {frame.number:02d}" + (f" {frame.roll.name.upper()}" if several else "")
+            rows.append((label, f"runs {word} · {pack}", i))
+        n, words = len(found), {word for *_, word in found}
+        comparative = {"warm": "warmer", "cool": "cooler", "green": "greener", "magenta": "more magenta"}
+        if len(words) == 1:
+            word = words.pop()
+            chip = f"{n} {'runs' if n == 1 else 'run'} {word}"
+            title = f"{console.plural(n, 'frame')} {'runs' if n == 1 else 'run'} {comparative[word]} than the rest of the roll"
+        else:
+            chip = f"{n} differ in colour"
+            title = f"{n} frames differ in colour from the rest of the roll"
+        self.notice_bar.set_notice("colour", Notice(
+            chip=chip, title=title, rows=rows, quiet=True,
+            footer="They'll print that way, as the film recorded. Neutrals picked on them may be tinted by their light",
         ))
 
     def show_profiles(self) -> ProfilesWindow:
@@ -792,9 +833,24 @@ class MainWindow(QWidget):
             self.filmstrip.strip.set_pixmap(index, QPixmap.fromImage(_qimage(self._thumbnail(frame))))
         if index == self._current and self.display is None and preview is not None:
             self._show_placeholder_preview(frame)
-        if all(f.loaded for f in self.session.frames):
+        loaded = all(f.loaded for f in self.session.frames)
+        if loaded:
             self._loading_progress(f"Roll loaded: {len(self.session.frames)} frames")
+            self._show_colour_check()
+        if estimate is not None and self._positive_mode() and self.session.profile() is None:
+            # Each frame's estimate is a vote for its roll's: the positive moves as they arrive.
+            if loaded:
+                self._roll_estimate_timer.stop()
+                self._follow_roll_estimate()
+            elif not self._roll_estimate_timer.isActive():
+                self._roll_estimate_timer.start(_ROLL_ESTIMATE_REFRESH_MS)
         self._refresh_wedge()
+
+    def _follow_roll_estimate(self) -> None:
+        if self._closing or not self._positive_mode() or self.session.profile() is not None:
+            return
+        self._refresh_image()
+        self._refresh_filmstrip_thumbnails()
 
     def _loading_progress(self, message: str) -> None:
         """Loading's own status line: it replaces anything but a sticky status that's still showing."""
@@ -974,7 +1030,11 @@ class MainWindow(QWidget):
             elif is_fit:
                 self.source_note.setText(f"Your calibration · {len(self.session.points)} points")
             elif profile is not None:
-                self.source_note.setText("Rough auto estimate — not your final output")
+                votes = self.session.roll_votes(frame.roll)
+                # A short roll, not one still loading: only once every frame of it has had its say.
+                settled = all(f.loaded for f in self.session.frames if f.roll == frame.roll)
+                few = f" · from {console.plural(votes, 'frame')}" if settled and 0 < votes < MIN_ROLL_FRAMES else ""
+                self.source_note.setText(f"Rough auto estimate — not your final output{few}")
             else:
                 self.source_note.setText("No auto estimate for this frame — showing the negative")
             self._positive_profile, self._positive_gain = profile, gain
@@ -1231,6 +1291,13 @@ class MainWindow(QWidget):
             wb = ", ".join(f"{x:.4f}" for x in self._display_estimate.white_balance)
             ds = ", ".join(f"{x:.4f}" for x in self._display_estimate.density_scale)
             lines.append(f"This frame's auto estimate (comparison only): ({wb}) / ({ds})")
+        frame = self.session.frames[self._current] if self._current is not None else None
+        roll_estimate = self.session.roll_estimate(frame.roll) if frame is not None else None
+        if roll_estimate is not None:
+            wb = ", ".join(f"{x:.4f}" for x in roll_estimate.white_balance)
+            ds = ", ".join(f"{x:.4f}" for x in roll_estimate.density_scale)
+            votes = self.session.roll_votes(frame.roll)
+            lines.append(f"The roll's auto estimate, from {console.plural(votes, 'frame')}: ({wb}) / ({ds})")
         lines.extend(v.note for v in views if v.note)
         lines.append(CC_EXPLANATION)
         self.details_label.setText("\n\n".join(lines))
