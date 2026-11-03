@@ -142,8 +142,11 @@ def slow(tmp_path, monkeypatch):
 def test_cancel_ends_as_the_cli_does_and_carry_on_skips_existing(window, app, slow):
     panel = _develop_side(window)
     panel.choice.set_index(_ONCE)
+    # The strip only shows a frame printing once its preview has loaded, and this run is instant.
+    _pump(app, lambda: all(frame.preview is not None for frame in window.session.frames))
     panel.develop_button.click()
-    _pump(app, lambda: window._dev["done"] == 1)
+    # The next frame's start line can arrive in a later read than the first one's done line.
+    _pump(app, lambda: window._dev["done"] == 1 and window.filmstrip.strip.print_phase(1) is not None)
     assert panel.develop_button.text() == "Developing… 1 of 2" and panel.cancel_button.isVisible()
     assert not window.load_button.isEnabled() and not panel.output.isEnabled()
     assert window.filmstrip.strip.print_phase(1) in ("expose", "tray")
