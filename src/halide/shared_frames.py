@@ -40,6 +40,7 @@ orchestrator (`batch/orchestrator.py`) calls it; this module only provides the p
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import uuid
@@ -221,7 +222,8 @@ def new_frame(shape: tuple[int, ...], dtype, *, prefix: str | None = None) -> It
         # that same mistake into a catchable `BufferError` from `close()` (below) rather than memory
         # corruption — and if nothing still references the array, there's no export left and close()
         # succeeds normally, exactly as before.
-        array = np.frombuffer(shm.buf, dtype=np_dtype).reshape(shape)
+        # count=: macOS rounds a segment's buffer up to whole pages, so it can be longer than the frame.
+        array = np.frombuffer(shm.buf, dtype=np_dtype, count=math.prod(shape)).reshape(shape)
         yield SharedFrame(name=shm.name, shape=tuple(shape), dtype=np_dtype.str, array=array)
     finally:
         # unlink() before close(): the name should stop being attachable regardless of whether this
@@ -269,7 +271,7 @@ def attach_frame(name: str, shape: tuple[int, ...], dtype) -> Iterator[np.ndarra
         )
     shm = shared_memory.SharedMemory(name=name, create=False, track=False)
     try:
-        yield np.frombuffer(shm.buf, dtype=np.dtype(dtype)).reshape(shape)
+        yield np.frombuffer(shm.buf, dtype=np.dtype(dtype), count=math.prod(shape)).reshape(shape)
     finally:
         _close_tolerating_live_exports(shm)
 
