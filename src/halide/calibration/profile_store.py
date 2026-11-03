@@ -83,16 +83,13 @@ def find_profile(name: str, profiles_dir: Path | None = None) -> Path | None:
     if name.startswith("."):  # never a profile: hidden files are leftover temps
         return None
     directory = profiles_dir or default_profiles_dir()
-    exact = directory / f"{name}.json"
-    if exact.exists():
-        return exact
     if not directory.exists():
         return None
+    # From the listing, never `(directory / name).exists()`: on macOS that is true in any capitals,
+    # and the path would then carry the capitals typed, not the file's own.
+    paths = [path for path in sorted(directory.glob("*.json")) if not path.name.startswith(".")]
     target = name.casefold()
-    for path in sorted(directory.glob("*.json")):
-        if not path.name.startswith(".") and path.stem.casefold() == target:
-            return path
-    return None
+    return next((p for p in paths if p.stem == name), None) or next((p for p in paths if p.stem.casefold() == target), None)
 
 
 def save_profile(
@@ -180,9 +177,6 @@ def resolve_profile_path(name_or_path: str | Path, profiles_dir: Path | None = N
         return candidate
 
     directory = profiles_dir or default_profiles_dir()
-    named = directory / (candidate.name if candidate.suffix == ".json" else f"{candidate.name}.json")
-    if named.exists():
-        return named
     found = find_profile(candidate.stem if candidate.suffix == ".json" else candidate.name, directory)
     if found is not None:
         return found
