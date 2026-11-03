@@ -43,7 +43,7 @@ def _version() -> str:
     try:
         return metadata.version("halide")
     except metadata.PackageNotFoundError:
-        return "0.1.2"
+        return "0.1.3"
 
 
 def build_parser() -> argparse.ArgumentParser:

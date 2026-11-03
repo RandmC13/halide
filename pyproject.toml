@@ -1,6 +1,6 @@
 [project]
 name = "halide"
-version = "0.1.2"
+version = "0.1.3"
 description = "Colorimetrically accurate inversion of digital scans of color negative film."
 readme = "README.md"
 license = "GPL-3.0-or-later"
