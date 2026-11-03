@@ -37,4 +37,8 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install exiftool
       - run: pip install -e ".[dev]"
-      - run: python -m pytest tests/ -q
+      - name: Tests
+        # Inside the job's limit, so a hang still ends with a log: the faulthandler prints where every
+        # thread is when a single test passes 4 minutes.
+        timeout-minutes: 20
+        run: python -m pytest tests/ -q -o faulthandler_timeout=240
