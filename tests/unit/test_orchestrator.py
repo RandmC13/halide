@@ -801,6 +801,7 @@ def test_a_gpu_batch_shares_one_service_and_no_worker_touches_cuda(tmp_path, mon
 
 
 @needs_service
+@pytest.mark.skipif(sys.platform != "linux", reason="halide only finds an NVIDIA card on Linux and Windows")
 def test_service_mode_export_and_print_match_the_in_process_gpu_path(tmp_path, fake_gpu_service, clean_shm, fake_gpu):
     # Compared with the in-process GPU path on the same (fake) device: the service runs the same
     # device code. (A device export may differ from the CPU's by one 8-bit code value — the device

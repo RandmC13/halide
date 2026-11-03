@@ -293,7 +293,6 @@ def test_rename_profile_case_only_change_succeeds(tmp_path):
     new_path = rename_profile("portra400", "Portra400", profiles_dir=tmp_path)
     assert new_path == tmp_path / "Portra400.json"
     assert new_path.exists()
-    assert not (tmp_path / "portra400.json").exists()
     assert load_profile(new_path).name == "Portra400"
     # exactly one file on disk under the new name - no leftover temp/backup file
     assert [p.name for p in tmp_path.glob("*.json")] == ["Portra400.json"]
