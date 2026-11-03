@@ -330,15 +330,15 @@ def test_provenance_accepts_finite_values():
 # --- No regression on clean input -----------------------------------------------------------------
 
 
-def test_clean_input_bit_identical_to_before(tmp_path):
-    """A hash of a clean synthetic frame's invert output, pinned so this whole change can't have
-    touched clean-input behaviour (the hard constraint: nan_to_num must only ever run on a band
-    that actually has a non-finite value)."""
-    import hashlib
+def test_clean_input_never_reaches_nan_to_num(tmp_path, monkeypatch):
+    """Clean input must come out bit-identical to before the non-finite handling existed, so
+    `nan_to_num` must only ever run on a band that actually has a non-finite value. Checked by the
+    call itself, not a pinned output hash: numpy's SIMD paths differ between CPUs in the last bit."""
 
+    def refuse(*args, **kwargs):
+        raise AssertionError("nan_to_num ran on a clean frame")
+
+    monkeypatch.setattr(np, "nan_to_num", refuse)
     scan = tmp_path / "clean.tif"
     _write_negative(scan, seed=5)
-    out = tmp_path / "out.tif"
-    process_scan(scan, out, Stage.FULL, PROFILE, ToneCurveParams())
-    digest = hashlib.sha256(read_tiff(out).image.tobytes()).hexdigest()
-    assert digest == "b3fd5cd6ade915bad200a8c1602d6a6616a67c9f387fffa9f16374cc13d5035c"
+    process_scan(scan, tmp_path / "out.tif", Stage.FULL, PROFILE, ToneCurveParams())

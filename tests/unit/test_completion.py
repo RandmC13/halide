@@ -73,7 +73,7 @@ def test_values_are_completed_not_just_flag_names():
 
 @pytest.mark.parametrize("shell", ["zsh", "bash"])
 def test_first_run_writes_script_and_hooks_rc_once(home, shell):
-    rc = home / f".{shell}rc"
+    rc = completion.shell_setup(shell).rc
     rc.write_text("# the user's own settings\n")
 
     note = install(shell)
@@ -99,7 +99,7 @@ def test_fish_needs_no_rc_file(home):
 @pytest.mark.parametrize("shell", ["zsh", "bash"])
 def test_removed_block_is_not_added_back(home, shell):
     install(shell)
-    rc = home / f".{shell}rc"
+    rc = completion.shell_setup(shell).rc
     rc.write_text("# the user took it out\n")
     assert install(shell) is None
     assert completion.RC_BEGIN not in rc.read_text()
@@ -208,7 +208,7 @@ def test_opt_out_skips_shell_detection_and_psutil(home, monkeypatch):
 
 
 def test_failed_rc_edit_is_retried_next_run(home, monkeypatch):
-    rc = home / ".bashrc"
+    rc = completion.shell_setup("bash").rc
     real_open = type(rc).open
 
     def broken(self, *args, **kwargs):
