@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFontMetrics, QFontMetricsF, QTextOption
+from PySide6.QtGui import QFontDatabase, QFontMetrics, QFontMetricsF, QTextOption
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -135,7 +135,10 @@ class DevelopPanel(QWidget):
         self.command.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.command.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
         # Through a style sheet: the theme's sets every widget's font, which beats setFont().
-        self.command.setStyleSheet("font-family: 'DejaVu Sans Mono', monospace; font-size: 8pt;")
+        mono = "DejaVu Sans Mono"
+        if mono not in QFontDatabase.families():  # macOS has none, and ignores "monospace" here
+            mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont).family()
+        self.command.setStyleSheet(f"font-family: '{mono}'; font-size: 8pt;")
         self.command.ensurePolished()
         self.command.document().setDocumentMargin(3)
         # Exactly four whole lines: a half-cut fifth looked unfinished (the full command is the tooltip).

@@ -315,7 +315,13 @@ def edge_font(pixel_size: int):
     """The bold condensed face for anything drawn as film edge print."""
     from PySide6.QtGui import QFont
 
+    from PySide6.QtGui import QFontDatabase
+
     font = QFont(EDGE_FAMILY)
+    if EDGE_FAMILY not in QFontDatabase.families():
+        # macOS lists the condensed face under its typographic family, as a style of DejaVu Sans.
+        font = QFont("DejaVu Sans")
+        font.setStyleName(next((s for s in QFontDatabase.styles("DejaVu Sans") if "Condensed" in s), ""))
     font.setBold(True)  # the family has only a bold face registered
     font.setPixelSize(pixel_size)
     return font

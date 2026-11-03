@@ -1,7 +1,7 @@
 """The picker's stylesheet rules and the edge-print font."""
 
 import pytest
-from PySide6.QtGui import QFontDatabase, QFontInfo
+from PySide6.QtGui import QFontInfo
 from PySide6.QtWidgets import QApplication
 
 from halide.gui import theme
@@ -35,12 +35,8 @@ def test_red_edge_only_in_primary_blocks():
     assert blocks and all('QPushButton[role="primary"]' in b for b in blocks)
 
 
-def test_edge_family_is_registered(app):
-    assert theme.EDGE_FAMILY in QFontDatabase.families()
-
-
 def test_edge_font_resolves_to_condensed_bold(app):
     font = theme.edge_font(9)
     info = QFontInfo(font)
-    assert info.family() == theme.EDGE_FAMILY and info.bold() and info.pixelSize() == 9
+    assert info.family().startswith("DejaVu Sans") and info.bold() and info.pixelSize() == 9
     assert "Condensed" in info.styleName()
