@@ -128,7 +128,7 @@ _SERVICE_OFF = ("0", "off", "false", "no")
 
 # The shared service needs Python 3.13 or newer.
 # shared_frames.attach_frame's service-side attach uses `SharedMemory(..., track=False)`, which is
-# a Python 3.13 addition (gh-82300) — this project's own floor is 3.11 (pyproject.toml). Below
+# a Python 3.13 addition (gh-82300) — this project's own floor is 3.12 (pyproject.toml). Below
 # 3.13 attach_frame raises SharedMemoryUnavailable and sweep does nothing (a tracked attach would
 # corrupt the batch's shared resource tracker — see shared_frames' module docstring), so a GPU batch
 # there uses per-worker GPU mode, with the reason on the run sheet. One helper, not

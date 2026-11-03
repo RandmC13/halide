@@ -82,7 +82,7 @@ Windows should work, but they haven't been tested yet.
 <details>
 <summary>Without uv (pip)</summary>
 
-With Python 3.11 or newer:
+With Python 3.12 or newer:
 
 ```bash
 git clone https://github.com/RandmC13/halide.git

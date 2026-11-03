@@ -19,7 +19,7 @@ Two roles, two functions, deliberately not symmetric:
   block runs. It attaches with `track=False`, so the *service's own* resource tracker doesn't also
   register the segment: if it did, the segment would have two trackers claiming its cleanup,
   defeating the "let the resource tracker clean it up when its creator dies" guarantee above.
-  `track=False` is a Python 3.13 addition (gh-82300); this project's floor is 3.11
+  `track=False` is a Python 3.13 addition (gh-82300); this project's floor is 3.12
   (pyproject.toml). Below 3.13 `attach_frame` raises `SharedMemoryUnavailable` and `sweep` does
   nothing (see `_UNTRACKED_ATTACH_SUPPORTED`). Attaching the old, tracked way and
   unregistering by hand doesn't work: a batch's processes share one resource tracker, so that unregister also

@@ -5,7 +5,7 @@ description = "Colorimetrically accurate inversion of digital scans of color neg
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0,<3",
     "tifffile>=2024.8",  # asarray(out=, buffersize=) (io/tiff.py)

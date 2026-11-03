@@ -853,7 +853,7 @@ def test_when_the_service_dies_mid_batch_the_rest_develop_on_the_cpu(tmp_path, f
 def test_the_service_is_off_below_python_3_13_with_the_reason(monkeypatch):
     """Finding 1, final whole-branch review: SharedMemory(..., track=False) — what
     shared_frames.attach_frame uses to attach to a service-mode worker's frame — is a Python 3.13
-    addition; this project's own floor is 3.11 (pyproject.toml). Patch the gate helper itself
+    addition; this project's own floor is 3.12 (pyproject.toml). Patch the gate helper itself
     (batch.orchestrator._service_python_supported), not sys.version_info, so this runs the same way
     regardless of the interpreter actually running the suite."""
     _no_service(monkeypatch)
