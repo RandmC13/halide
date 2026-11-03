@@ -103,3 +103,16 @@ def cancel_on_hangup_and_term():
     KeyboardInterrupt, so they take exactly the same orderly cancel path as Ctrl-C. The previous
     handlers come back on the way out; nested use is fine."""
     return _handlers(_CANCEL_SIGNALS, _raise_interrupt)
+
+
+@contextmanager
+def interrupts_held() -> Iterator[None]:
+    """A context manager for a step that mustn't be cut in half, such as a pool starting a worker
+    (Python < 3.14 starts the process, then records it: a Ctrl-C between the two leaves a worker
+    nobody waits for, which prints a traceback when the batch exits). A Ctrl-C, SIGHUP or SIGTERM
+    arriving inside is raised as KeyboardInterrupt on the way out instead. Keep it short."""
+    held = []
+    with _handlers((signal.SIGINT, *_CANCEL_SIGNALS), lambda signum, frame: held.append(signum)):
+        yield
+    if held:
+        raise KeyboardInterrupt

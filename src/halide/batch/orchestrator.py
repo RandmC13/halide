@@ -33,7 +33,8 @@ from typing import Callable
 from halide.cli.console import plural
 from halide.core.types import DensityProfile, Stage, ToneCurveParams
 from halide.device import ComputeDevice
-from halide.interrupts import cancel_on_hangup_and_term, children_ignore_terminal_signals, pool_worker_init
+from halide.interrupts import (cancel_on_hangup_and_term, children_ignore_terminal_signals, interrupts_held,
+                               pool_worker_init)
 from halide.io.contact_sheet_defaults import DEFAULT_FRAME_WIDTH
 from halide.io.roll import TIFF_SUFFIXES, list_scans  # noqa: F401 -- TIFF_SUFFIXES re-exported
 
@@ -963,11 +964,12 @@ def _run_pool(
                             while pending:
                                 job = pending.pop(0)
                                 try:
-                                    future = executor.submit(worker, job, *worker_args)
+                                    with interrupts_held():
+                                        future = executor.submit(worker, job, *worker_args)
+                                        in_flight[future] = job
                                 except BrokenProcessPool:
                                     record(_crashed_result(job))
                                     continue
-                                in_flight[future] = job
                                 if on_start:
                                     on_start(job)
                                 break
