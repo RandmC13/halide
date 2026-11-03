@@ -238,7 +238,7 @@ def _differing_note(differing, numbers: dict) -> str:
     many = len(differing) > 1
     what = (f"{'run' if many else 'runs'} {words.pop()} than the rest" if one_way
             else "differ in colour from the rest")
-    return f"{'frames' if many else 'frame'} {listed} {what} — {"they'll" if many else "it'll"} print that way, as the film recorded"
+    return f"{'frames' if many else 'frame'} {listed} {what} — {'they' if many else 'it'}'ll print that way, as the film recorded"
 
 
 def _calibration_text(args: argparse.Namespace, profile, saved_tone) -> str:
